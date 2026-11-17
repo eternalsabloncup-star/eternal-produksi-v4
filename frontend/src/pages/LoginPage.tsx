@@ -17,7 +17,7 @@ export function LoginPage() {
     setSubmitting(true);
     try {
       await login(email.trim(), password);
-      navigate("/app", { replace: true });
+      navigate("/app/control", { replace: true });
     } catch (err) {
       const message =
         err instanceof Error ? err.message : "Email atau kata sandi salah";
