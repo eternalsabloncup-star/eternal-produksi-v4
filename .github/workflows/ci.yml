@@ -1,0 +1,80 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  backend:
+    name: Backend tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: backend/requirements.txt
+
+      - name: Install backend dependencies
+        run: pip install -r backend/requirements.txt
+
+      - name: Start test MongoDB replica set
+        run: |
+          chmod +x scripts/start-test-mongo.sh scripts/mongo-entrypoint.sh scripts/mongo-rs-init.sh
+          ./scripts/start-test-mongo.sh
+
+      - name: Run backend tests
+        working-directory: backend
+        env:
+          APP_ENV: test
+          MONGODB_URI: mongodb://eternal:eternal_dev_password@127.0.0.1:27017/?authSource=admin&replicaSet=rs0&directConnection=true
+          MONGODB_DB: eternal_produksi_v4_test
+          COOKIE_SECURE: "false"
+          SESSION_TTL_SECONDS: "3600"
+          LOGIN_RATE_LIMIT_ATTEMPTS: "5"
+          LOGIN_RATE_LIMIT_WINDOW_SECONDS: "60"
+        run: pytest -q
+
+      - name: Stop test MongoDB
+        if: always()
+        run: docker rm -f eternal-v4-test-mongo || true
+
+  frontend:
+    name: Frontend typecheck and build
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: frontend/package.json
+
+      - name: Install frontend dependencies
+        working-directory: frontend
+        run: npm install
+
+      - name: Typecheck
+        working-directory: frontend
+        run: npm run typecheck
+
+      - name: Build
+        working-directory: frontend
+        run: npm run build
