@@ -1,7 +1,10 @@
 /// <reference types="vite/client" />
 
 interface ImportMetaEnv {
-  /** `api` = Inbox Accurate dari Mongo V4; default / kosong = DEMO. */
+  /**
+   * Inbox source: `api`|`accurate` = Mongo V4; `demo` = fixture.
+   * Unset: development → demo; production build → api (lihat .env.production).
+   */
   readonly VITE_INBOX_PO_SOURCE?: string;
 }
 

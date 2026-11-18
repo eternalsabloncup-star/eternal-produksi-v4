@@ -60,8 +60,6 @@ export function ControlPage() {
   return (
     <div>
       <PageHeading
-        title="Kontrol Produksi"
-        subtitle="Satu layar untuk memantau progres, antrean, dan hasil produksi (DEMO)."
         actions={
           <Link className="ep-btn primary" to="/app/schedule">
             Jadwal Produksi

@@ -1,12 +1,15 @@
 import { useState } from "react";
 import { useAuth } from "../auth";
+import type { ShellDataMode } from "../demo/resolveInboxMode";
+import { shellModeBadgeLabel } from "../demo/resolveInboxMode";
 import type { AppNavItem } from "./nav";
 
 type Props = {
   current: AppNavItem;
+  dataMode: ShellDataMode;
 };
 
-export function Header({ current }: Props) {
+export function Header({ current, dataMode }: Props) {
   const { user, logout } = useAuth();
   const [busy, setBusy] = useState(false);
   const initials = (user?.display_name || user?.email || "EP")
@@ -15,6 +18,7 @@ export function Header({ current }: Props) {
     .join("")
     .slice(0, 2)
     .toUpperCase();
+  const badge = shellModeBadgeLabel(dataMode);
 
   async function onLogout() {
     setBusy(true);
@@ -29,7 +33,15 @@ export function Header({ current }: Props) {
     <header className="ep-topbar">
       <strong>{current.label}</strong>
       <div className="ep-topright">
-        <span className="ep-demo-pill">● DEMO INTERAKTIF</span>
+        {badge ? (
+          <span
+            className={dataMode === "api" ? "ep-api-pill" : "ep-demo-pill"}
+            data-testid="shell-mode-badge"
+            data-mode={dataMode}
+          >
+            {badge}
+          </span>
+        ) : null}
         <span className="ep-sub" title={user?.email}>
           {user?.display_name || user?.email}
           {user?.role ? ` · ${user.role}` : ""}

@@ -11,6 +11,7 @@ from app.auth.deps import AuthContext, require_csrf, require_session
 from app.config import get_settings
 from app.db import get_db
 from app.repositories.po_repository import (
+    aggregate_inbox_metrics,
     get_by_accurate_id,
     get_by_po_no,
     list_sales_orders,
@@ -26,18 +27,67 @@ class SyncPayloadRequest(BaseModel):
     sales_order: dict[str, Any] = Field(default_factory=dict)
 
 
+def _label_for_api(value: Any) -> Any:
+    """Pastikan field tampilan bukan dict mentah / str(dict)."""
+    from app.integrations.accurate.normalize import _business_label
+
+    if value is None:
+        return None
+    labeled = _business_label(value)
+    if isinstance(value, (dict, list, tuple)):
+        return labeled or None
+    if isinstance(value, str) and value.strip().startswith("{"):
+        return labeled or None
+    return labeled if labeled != "" else value
+
+
+def _sanitize_header_for_api(header: dict[str, Any]) -> dict[str, Any]:
+    out = dict(header)
+    for key in (
+        "customer",
+        "payment_terms",
+        "expedition",
+        "seller",
+        "ship_zone",
+        "recipient",
+        "address",
+        "user_name",
+        "buffer_label",
+        "notes",
+        "po_date",
+        "eta_ship",
+    ):
+        if key in out:
+            out[key] = _label_for_api(out.get(key))
+    items = out.get("items")
+    if isinstance(items, list):
+        cleaned_items = []
+        for raw in items:
+            if not isinstance(raw, dict):
+                continue
+            item = dict(raw)
+            for ikey in ("item_code", "item_name", "unit", "color", "process_raw"):
+                if ikey in item and isinstance(item.get(ikey), (dict, list)):
+                    item[ikey] = _label_for_api(item.get(ikey))
+            cleaned_items.append(item)
+        out["items"] = cleaned_items
+    return out
+
+
 def _serialize_po_doc(row: dict[str, Any]) -> dict[str, Any]:
     """Dokumen Mongo → JSON Inbox (header+items lengkap, tanpa _id)."""
     doc = dict(row)
     doc.pop("_id", None)
-    header = doc.get("header") if isinstance(doc.get("header"), dict) else {}
+    header_raw = doc.get("header") if isinstance(doc.get("header"), dict) else {}
+    header = _sanitize_header_for_api(header_raw)
     items = header.get("items") if isinstance(header.get("items"), list) else []
+    customer = _label_for_api(header.get("customer"))
     return {
         "accurate_id": doc.get("accurate_id"),
         "source_po_id": doc.get("source_po_id"),
         "po_no": doc.get("po_no"),
         "origin": doc.get("origin"),
-        "customer": header.get("customer"),
+        "customer": customer,
         "item_count": len(items),
         "updated_at": doc.get("updated_at"),
         "created_at": doc.get("created_at"),
@@ -83,6 +133,22 @@ def list_po(
         "total": total,
         "page": page,
         "pageSize": page_size,
+        "source": "mongodb",
+        "origin": "accurate",
+        # Filter cabang/status/mesin belum didukung di sumber Accurate.
+        "supportedFilters": ["q", "urgent"],
+    }
+
+
+@router.get("/metrics")
+def po_metrics(
+    auth: AuthContext = Depends(require_session),
+) -> dict[str, Any]:
+    """KPI Inbox Accurate — agregasi seluruh PO, bukan sample halaman list."""
+    del auth
+    metrics = aggregate_inbox_metrics(get_db(), origin="accurate")
+    return {
+        **metrics,
         "source": "mongodb",
         "origin": "accurate",
     }

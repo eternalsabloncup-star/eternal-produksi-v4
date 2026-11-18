@@ -1,34 +1,22 @@
 import { NavLink } from "react-router-dom";
+import type { ShellDataMode } from "../demo/resolveInboxMode";
+import { shellSidefootCopy } from "../demo/resolveInboxMode";
+import { NavIcon } from "./icons";
 import { APP_NAV } from "./nav";
 
 type Props = {
-  collapsed: boolean;
-  onToggle: () => void;
   inboxBadge?: number;
+  dataMode: ShellDataMode;
 };
 
-export function Sidebar({ collapsed, onToggle, inboxBadge }: Props) {
+/** Sidebar rail hijau — menu Tahap 01 saja (tanpa flyout / modul Tahap 02). */
+export function Sidebar({ inboxBadge, dataMode }: Props) {
+  const foot = shellSidefootCopy(dataMode);
   return (
-    <aside className={`ep-sidebar${collapsed ? " compact" : ""}`} id="sidebar">
-      <button
-        type="button"
-        className="ep-sidebar-edge"
-        onClick={onToggle}
-        title={collapsed ? "Perluas sidebar" : "Ciutkan sidebar"}
-        aria-label={collapsed ? "Perluas sidebar" : "Ciutkan sidebar"}
-      >
-        {collapsed ? "❯" : "❮"}
-      </button>
-      <div className="ep-brand">
+    <aside className="ep-sidebar ep-sidebar-rail" id="sidebar">
+      <div className="ep-brand" title="Eternal Production V4">
         <span className="ep-brandmark">E</span>
-        <div className="ep-brandtext">
-          <h1>
-            ETERNAL <span style={{ fontWeight: 400, color: "#b9d1ff" }}>V4</span>
-          </h1>
-          <small>PRODUCTION OPERATIONS</small>
-        </div>
       </div>
-      <div className="ep-navtitle">Workspace</div>
       <nav className="ep-nav" aria-label="Navigasi utama">
         {APP_NAV.map((item) => (
           <NavLink
@@ -36,23 +24,34 @@ export function Sidebar({ collapsed, onToggle, inboxBadge }: Props) {
             to={item.path}
             className={({ isActive }) => (isActive ? "active" : undefined)}
             title={item.label}
+            aria-label={item.label}
           >
-            <span className="ico">{item.icon}</span>
-            <span className="ep-navlabel">{item.label}</span>
+            <span
+              className="ep-nav-ibox"
+              style={{ background: item.box, color: item.fg }}
+              aria-hidden
+            >
+              <NavIcon name={item.icon} size={20} />
+            </span>
             {item.id === "inbox" && inboxBadge != null && inboxBadge > 0 ? (
-              <span className="counter">{inboxBadge}</span>
+              <span
+                className={`ep-nav-badge${inboxBadge < 100 ? " is-round" : " is-pill"}`}
+                aria-label={`${inboxBadge} PO masuk`}
+              >
+                {inboxBadge}
+              </span>
             ) : null}
           </NavLink>
         ))}
       </nav>
-      <div className="ep-sidefoot">
-        <span className="ep-sidefoot-ico" style={{ fontSize: 17 }}>
+      <div
+        className="ep-sidefoot"
+        title={`${foot.title} — ${foot.sub}`}
+        data-testid="shell-sidefoot"
+        data-mode={dataMode}
+      >
+        <span className="ep-sidefoot-ico" aria-hidden>
           ⬡
-        </span>
-        <span>
-          UI Shell Mode
-          <br />
-          <small style={{ color: "#7690ab" }}>Demo · tidak menulis MongoDB</small>
         </span>
       </div>
     </aside>
