@@ -31,6 +31,17 @@ PASSWORD = "password-kuat-123"
 OWNER = {"email_normalized": "owner@eternal.local", "role": "super_admin"}
 
 
+@pytest.fixture(autouse=True)
+def _enable_sj_sync_kill_switch(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Uji sync menyalakan kill switch; default produksi tetap OFF."""
+    monkeypatch.setenv("V4_SJ_SYNC_ENABLED", "1")
+    from app.config import clear_settings_cache
+
+    clear_settings_cache()
+    yield
+    clear_settings_cache()
+
+
 def _detail(sj_id: int = 880101, **overrides) -> dict:
     payload = json.loads(LIVE_FIXTURE.read_text(encoding="utf-8"))
     payload["id"] = sj_id
@@ -225,6 +236,42 @@ def _login(client: TestClient, email: str) -> str:
     return res.json()["csrf_token"]
 
 
+def test_kill_switch_blocks_sync_when_disabled(
+    db: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from app.config import clear_settings_cache
+
+    monkeypatch.setenv("V4_SJ_SYNC_ENABLED", "0")
+    clear_settings_cache()
+    with pytest.raises(delivery_sync.DeliverySyncDisabledError) as exc:
+        delivery_sync.sync_delivery_order_payload(db, OWNER, _detail(880101))
+    assert exc.value.code == "SJ_SYNC_DISABLED"
+
+
+def test_preview_db_name_is_not_accepted_as_sync_target(
+    mongo_client, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Nama non eternal_v4_test_* (mis. preview) ditolak — jangan tebak isolasi dari host saja."""
+    from app.config import clear_settings_cache
+    from app.db import close_client
+
+    monkeypatch.setenv("APP_ENV", "test")
+    monkeypatch.setenv(
+        "MONGODB_URI",
+        "mongodb://eternal:eternal_dev_password@127.0.0.1:27017/"
+        "?authSource=admin&replicaSet=rs0&directConnection=true",
+    )
+    monkeypatch.setenv("MONGODB_DB", "eternal_v4_preview_pr6")
+    monkeypatch.setenv("V4_SJ_SYNC_ENABLED", "1")
+    clear_settings_cache()
+    close_client()
+    preview = mongo_client["eternal_v4_preview_pr6"]
+    with pytest.raises(UnsafeMongoTargetError):
+        delivery_sync.sync_delivery_order_payload(
+            preview, OWNER, _detail(880101), mongo_guard="test"
+        )
+
+
 def test_sync_api_permission_denied_for_ordinary_user(
     app_client: TestClient, db: Database
 ) -> None:
@@ -253,3 +300,27 @@ def test_sync_api_permission_denied_for_ordinary_user(
         json={"page_size": 20, "max_pages": 1, "max_rows": 10},
     )
     assert denied.status_code == 403
+
+
+def test_sync_api_blocked_when_kill_switch_off(
+    app_client: TestClient, db: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from app.config import clear_settings_cache
+
+    create_admin_user(
+        db,
+        email="owner@eternal.local",
+        display_name="Owner",
+        password=PASSWORD,
+        allow_if_admin_exists=True,
+    )
+    monkeypatch.setenv("V4_SJ_SYNC_ENABLED", "0")
+    clear_settings_cache()
+    csrf = _login(app_client, "owner@eternal.local")
+    denied = app_client.post(
+        "/api/delivery/sync/accurate",
+        headers={"X-CSRF-Token": csrf},
+        json={"page_size": 20, "max_pages": 1, "max_rows": 10},
+    )
+    assert denied.status_code == 403
+    assert "V4_SJ_SYNC_ENABLED" in denied.json()["detail"]

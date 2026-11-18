@@ -81,10 +81,12 @@ aktor, waktu, dan alasan. Riwayat bersifat append-only.
 
 ## Status integrasi Accurate
 
-Integrasi **live** Surat Jalan Accurate masih **BLOCKED**: belum ada payload
-sumber yang terverifikasi. Yang tersedia adalah adapter yang diuji beserta
-endpoint ingest untuk data test. Status ini tidak boleh dinyatakan selesai
-sebelum payload dan sinkronisasi nyata diverifikasi Owner.
+Konektor read-only Delivery Order + sync manual ber-guard sudah ada di kode
+(GET list/detail, kill switch `V4_SJ_SYNC_ENABLED` default OFF, Mongo test
+`eternal_v4_test_*` saja). **Aktivasi live sync** (non-prod maupun production)
+tetap memerlukan verifikasi Owner/CEO: kredensial live, DB test terisolasi,
+dan bukti uji — lihat `docs/sj-accurate-sync-activation.md`. Webhook dan
+auto-sync dilarang sampai diputuskan terpisah.
 
 ---
 

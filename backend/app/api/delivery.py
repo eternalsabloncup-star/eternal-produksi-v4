@@ -63,6 +63,8 @@ def _handle(exc: Exception) -> HTTPException:
         return HTTPException(status.HTTP_403_FORBIDDEN, str(exc))
     if isinstance(exc, delivery_sync.DeliverySyncInProgressError):
         return HTTPException(status.HTTP_409_CONFLICT, str(exc))
+    if isinstance(exc, delivery_sync.DeliverySyncDisabledError):
+        return HTTPException(status.HTTP_403_FORBIDDEN, str(exc))
     if isinstance(exc, UnsafeMongoTargetError):
         return HTTPException(
             status.HTTP_403_FORBIDDEN,
@@ -104,6 +106,7 @@ def post_accurate_delivery_sync(
 ) -> dict[str, Any]:
     """Sinkronisasi manual SJ Accurate → Mongo V4 test (operasi penuh saja).
 
+    Memerlukan V4_SJ_SYNC_ENABLED=1 (kill switch) + operations.full.
     Selalu memakai mongo_guard=test. Production ditolak fail-closed.
     Tidak menulis Accurate. Tidak menghapus SJ yang absen dari listing.
     """

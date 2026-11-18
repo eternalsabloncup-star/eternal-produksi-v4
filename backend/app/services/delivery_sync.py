@@ -50,9 +50,29 @@ class DeliverySyncTimeoutError(TimeoutError):
     code = "SYNC_TIMEOUT"
 
 
+class DeliverySyncDisabledError(PermissionError):
+    """Kill switch V4_SJ_SYNC_ENABLED=0 — sync ditolak."""
+
+    code = "SJ_SYNC_DISABLED"
+
+
+def is_sj_sync_enabled() -> bool:
+    """Kill switch eksplisit; default OFF di Settings."""
+    return bool(get_settings().sj_sync_enabled)
+
+
+def require_sj_sync_enabled() -> None:
+    if not is_sj_sync_enabled():
+        raise DeliverySyncDisabledError(
+            "Sinkronisasi Surat Jalan nonaktif (V4_SJ_SYNC_ENABLED). "
+            "Aktifkan hanya setelah verifikasi non-prod dan persetujuan Owner/CEO.",
+        )
+
+
 def _guard_db(db: Database, *, mongo_guard: MongoGuardMode = "test") -> None:
     import os
 
+    require_sj_sync_enabled()
     if mongo_guard != "test":
         raise UnsafeMongoTargetError(
             "Sinkronisasi Surat Jalan Accurate tahap ini hanya mengizinkan "
