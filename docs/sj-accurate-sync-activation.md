@@ -21,26 +21,27 @@ Tidak ada langkah yang mengizinkan penulisan ke Accurate Online.
 
 ## 2. Bukti isolasi non-production (wajib sebelum sync)
 
+Topologi VPS Owner: **27019 = test**, **27018 = production V4**, **27017 = ERP lama**.
+Port 27017/27018 ditolak untuk sync test.
+
 Jangan mengklaim aman hanya dari hostname. Verifikasi:
 
 1. `DB_NAME` / `MONGODB_DB` diawali `eternal_v4_test_`
-2. `APP_ENV` + URI lolos `assert_safe_mongo_sync_target`
-3. `authSource` sesuai user test (bila kontrak VPS dipakai)
-4. Host Accurate **bukan** `*.test`
-5. Pin DB numerik (`V4_ACCURATE_DB_ID`) bila `V4_ACCURATE_REQUIRE_DB_PIN=1`
+2. URI memakai **27019** (+ `replicaSet=eternalV4TestRS`)
+3. `APP_ENV` + URI lolos `assert_safe_mongo_sync_target`
+4. `authSource` sesuai user test
+5. Host Accurate **bukan** `*.test`
+6. Kill switch `V4_SJ_SYNC_ENABLED=1` hanya di proses uji
 
-Perintah audit (tanpa sync):
-
-```bash
-PYTHONPATH=backend python3 scripts/verify_sj_sync_isolation.py
-```
-
-Sync manual non-prod (hanya setelah audit `live_sync_ready=true`):
+### One-shot VPS (setelah PR #6 di repo)
 
 ```bash
-export V4_SJ_SYNC_ENABLED=1
-PYTHONPATH=backend python3 scripts/accurate_sj_sync_nonprod.py --max-pages 3 --max-rows 60
+sudo -u ubuntu bash /opt/eternal-v4/src/scripts/vps_sj_live_sync_oneshot.sh
 ```
+
+Script ini membuat worktree terpisah, memuat kredensial dari file VPS
+(tanpa mencetaknya), menolak 27017/27018, seed PO uji, sync dua kali, dan
+mencetak ringkasan PASS/FAIL aman.
 
 ---
 
