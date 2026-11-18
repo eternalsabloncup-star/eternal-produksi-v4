@@ -14,6 +14,7 @@ class UserPublic(BaseModel):
     id: str
     email: str
     display_name: str
+    # super_admin | admin | user — never include password fields
     role: str
 
 

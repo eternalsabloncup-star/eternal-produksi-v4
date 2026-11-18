@@ -27,12 +27,12 @@ export function Header({ current }: Props) {
 
   return (
     <header className="ep-topbar">
-      <span className="ep-crumb">Workspace /</span>
       <strong>{current.label}</strong>
       <div className="ep-topright">
         <span className="ep-demo-pill">● DEMO INTERAKTIF</span>
         <span className="ep-sub" title={user?.email}>
           {user?.display_name || user?.email}
+          {user?.role ? ` · ${user.role}` : ""}
         </span>
         <span className="ep-avatar" aria-hidden>
           {initials}
