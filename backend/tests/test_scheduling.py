@@ -129,11 +129,14 @@ def test_allocation_split_between_two_operators(db: Database) -> None:
     assert len(set(ids)) == 2
     assert schedules.active_allocated_qty(db, LINE_A) == 1000
 
-    # Persiapan Helper per item line + Screen per alokasi.
+    # Persiapan Helper per item line + Screen & tugas sampel per alokasi.
     assert f"task:persiapan-cup:po:{PO_ID}:line:{LINE_A}" in result["follow_up_task_keys"]
     screens = tasks.list_tasks(db, task_type="screen")
     assert len(screens) == 2
     assert {s["ref"]["allocation_id"] for s in screens} == set(ids)
+    sample_tasks = tasks.list_tasks(db, task_type="konfirmasi-sample")
+    assert {s["ref"]["allocation_id"] for s in sample_tasks} == set(ids)
+    assert all(s["assigned_role"] == "operator" for s in sample_tasks)
 
 
 def test_same_item_code_two_lines_stay_separate(db: Database) -> None:

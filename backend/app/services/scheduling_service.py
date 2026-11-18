@@ -236,22 +236,36 @@ def _create_follow_up_tasks(
     keys.append(prep["task_key"])
 
     for alloc in created:
+        alloc_ref = TaskRef(
+            accurate_po_id=accurate_po_id,
+            po_no=po_no,
+            accurate_line_id=line_id,
+            item_code=str(line.get("item_code") or ""),
+            allocation_id=alloc["allocation_id"],
+        )
         screen = tasks.upsert_task(
             db,
             task_type="screen",
             scope="po_line_allocation",
             assigned_role=master.assigned_role_for(db, "screen") or "screener",
-            ref=TaskRef(
-                accurate_po_id=accurate_po_id,
-                po_no=po_no,
-                accurate_line_id=line_id,
-                item_code=str(line.get("item_code") or ""),
-                allocation_id=alloc["allocation_id"],
-            ),
+            ref=alloc_ref,
             label="Screen",
             context={"operator_email": alloc["operator_email"], "qty_alokasi": alloc["qty"]},
         )
         keys.append(screen["task_key"])
+
+        # Operator butuh tugas sendiri sebagai titik unggah sampel; prasyarat
+        # (screen + kuota Helper) tetap divalidasi saat unggah.
+        sample = tasks.upsert_task(
+            db,
+            task_type="konfirmasi-sample",
+            scope="po_line_allocation",
+            assigned_role=master.assigned_role_for(db, "konfirmasi-sample") or "operator",
+            ref=alloc_ref,
+            label="Upload/Konfirmasi Sample",
+            context={"operator_email": alloc["operator_email"], "qty_alokasi": alloc["qty"]},
+        )
+        keys.append(sample["task_key"])
     return keys
 
 

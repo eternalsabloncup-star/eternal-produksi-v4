@@ -10,6 +10,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from app.api.health import router as health_router
 from app.api.operational import router as operational_router
 from app.api.po import router as po_router
+from app.api.production import router as production_router
 from app.api.scheduling import router as scheduling_router
 from app.api.table_preferences import router as table_preferences_router
 from app.api.workflow import router as workflow_router
@@ -51,6 +52,7 @@ def create_app() -> FastAPI:
     application.include_router(operational_router)
     application.include_router(workflow_router)
     application.include_router(scheduling_router)
+    application.include_router(production_router)
     return application
 
 

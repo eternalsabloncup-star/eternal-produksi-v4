@@ -1,11 +1,15 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
-  confirmTaskQty,
+  confirmProductionQty,
+  decideSample,
+  fetchSamples,
   fetchTaskConfirmations,
   fetchTasks,
   newIdempotencyKey,
+  uploadSample,
   type OperationalRole,
   type OperationalTask,
+  type ProductionSample,
   type TaskConfirmation,
 } from "../api/operational";
 
@@ -27,6 +31,16 @@ function formatQty(n: number | undefined): string {
   return n.toLocaleString("id-ID");
 }
 
+/** Istilah kekurangan Qty mengikuti ketentuan Owner per jenis pekerjaan. */
+function shortfallLabel(taskType: string): string {
+  if (taskType === "persiapan-cup") return "Belum Disiapkan";
+  if (taskType === "qc-packing") return "Belum Di-QC & Packing";
+  return "Kekurangan Qty";
+}
+
+const SAMPLE_UPLOAD_TASK = "konfirmasi-sample";
+const SAMPLE_APPROVAL_TASK = "approval-sampel";
+
 /** Tugas peran dari task engine MongoDB V4 — tanpa fixture DEMO. */
 export function TeamTaskApiPanel({ role, roleLabel }: Props) {
   const [tasks, setTasks] = useState<OperationalTask[]>([]);
@@ -39,6 +53,9 @@ export function TeamTaskApiPanel({ role, roleLabel }: Props) {
   const [busy, setBusy] = useState(false);
   const [actionError, setActionError] = useState<string | null>(null);
   const [actionNotice, setActionNotice] = useState<string | null>(null);
+  const [sampleRows, setSampleRows] = useState<ProductionSample[]>([]);
+  const [rejectReason, setRejectReason] = useState("");
+  const fileRef = useRef<HTMLInputElement | null>(null);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -66,9 +83,14 @@ export function TeamTaskApiPanel({ role, roleLabel }: Props) {
     return { total: tasks.length, done, open: tasks.length - done };
   }, [tasks]);
 
+  const isSampleTask =
+    selected?.task_type === SAMPLE_UPLOAD_TASK ||
+    selected?.task_type === SAMPLE_APPROVAL_TASK;
+
   async function openTask(task: OperationalTask) {
     setSelected(task);
     setQtyInput("");
+    setRejectReason("");
     setActionError(null);
     setActionNotice(null);
     try {
@@ -76,6 +98,87 @@ export function TeamTaskApiPanel({ role, roleLabel }: Props) {
       setHistory(res.items);
     } catch {
       setHistory([]);
+    }
+    const allocationId = task.ref.allocation_id;
+    if (
+      allocationId &&
+      (task.task_type === SAMPLE_UPLOAD_TASK || task.task_type === SAMPLE_APPROVAL_TASK)
+    ) {
+      try {
+        const res = await fetchSamples(allocationId);
+        setSampleRows(res.items);
+      } catch {
+        setSampleRows([]);
+      }
+    } else {
+      setSampleRows([]);
+    }
+  }
+
+  async function reloadAfterAction(task: OperationalTask) {
+    const [listed, hist] = await Promise.all([
+      fetchTasks({ role, done: filter === "all" ? undefined : filter === "done" }),
+      fetchTaskConfirmations(task.task_key).catch(() => ({ items: [] as TaskConfirmation[] })),
+    ]);
+    setTasks(listed.items);
+    setHistory(hist.items);
+    if (task.ref.allocation_id && isSampleTask) {
+      const res = await fetchSamples(task.ref.allocation_id).catch(() => ({
+        items: [] as ProductionSample[],
+      }));
+      setSampleRows(res.items);
+    }
+  }
+
+  async function onUploadSample() {
+    const file = fileRef.current?.files?.[0];
+    if (!selected?.ref.allocation_id || !file) {
+      setActionError("Pilih file sampel terlebih dahulu.");
+      return;
+    }
+    setBusy(true);
+    setActionError(null);
+    setActionNotice(null);
+    try {
+      const res = await uploadSample(selected.ref.allocation_id, file);
+      setActionNotice(`Sampel versi ${res.sample.version} tersimpan.`);
+      if (fileRef.current) fileRef.current.value = "";
+      await reloadAfterAction(selected);
+    } catch (err) {
+      setActionError(err instanceof Error ? err.message : "Upload sampel gagal.");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function onDecideSample(version: number, approved: boolean) {
+    if (!selected?.ref.allocation_id) return;
+    if (!approved && !rejectReason.trim()) {
+      setActionError("Alasan penolakan wajib diisi.");
+      return;
+    }
+    setBusy(true);
+    setActionError(null);
+    setActionNotice(null);
+    try {
+      const res = await decideSample(
+        selected.ref.allocation_id,
+        version,
+        approved,
+        approved ? undefined : rejectReason.trim(),
+      );
+      setActionNotice(
+        approved
+          ? `Sampel versi ${version} disetujui — cetak massal terbuka.`
+          : `Sampel versi ${version} ditolak.`,
+      );
+      setRejectReason("");
+      void res;
+      await reloadAfterAction(selected);
+    } catch (err) {
+      setActionError(err instanceof Error ? err.message : "Keputusan sampel gagal.");
+    } finally {
+      setBusy(false);
     }
   }
 
@@ -90,8 +193,8 @@ export function TeamTaskApiPanel({ role, roleLabel }: Props) {
     setActionError(null);
     setActionNotice(null);
     try {
-      const res = await confirmTaskQty(
-        selected.task_key,
+      const res = await confirmProductionQty(
+        selected,
         qty,
         newIdempotencyKey(`${role}:${selected.task_key}`),
       );
@@ -102,12 +205,7 @@ export function TeamTaskApiPanel({ role, roleLabel }: Props) {
       );
       setSelected(res.task);
       setQtyInput("");
-      const [listed, hist] = await Promise.all([
-        fetchTasks({ role, done: filter === "all" ? undefined : filter === "done" }),
-        fetchTaskConfirmations(res.task.task_key),
-      ]);
-      setTasks(listed.items);
-      setHistory(hist.items);
+      await reloadAfterAction(res.task);
     } catch (err) {
       setActionError(err instanceof Error ? err.message : "Konfirmasi gagal.");
     } finally {
@@ -231,9 +329,114 @@ export function TeamTaskApiPanel({ role, roleLabel }: Props) {
                 <dd>{formatQty(selected.qty_target)}</dd>
                 <dt>Qty Terkonfirmasi</dt>
                 <dd>{formatQty(selected.qty_confirmed)}</dd>
+                {selected.qty_target !== undefined ? (
+                  <>
+                    <dt>{shortfallLabel(selected.task_type)}</dt>
+                    <dd>
+                      {formatQty(
+                        Math.max(selected.qty_target - selected.qty_confirmed, 0),
+                      )}
+                    </dd>
+                  </>
+                ) : null}
+                {selected.ref.allocation_id ? (
+                  <>
+                    <dt>Allocation ID</dt>
+                    <dd>{selected.ref.allocation_id}</dd>
+                  </>
+                ) : null}
                 <dt>Status</dt>
                 <dd>{statusLabel(selected.status)}</dd>
               </dl>
+
+              {isSampleTask ? (
+                <>
+                  <p className="ep-sectionlabel">Riwayat Sampel</p>
+                  {sampleRows.length === 0 ? (
+                    <p className="ep-empty">Belum ada sampel diunggah.</p>
+                  ) : (
+                    <table className="ep-table">
+                      <thead>
+                        <tr>
+                          <th>Versi</th>
+                          <th>File</th>
+                          <th>Status</th>
+                          <th>Operator</th>
+                          <th>Alasan Tolak</th>
+                          {selected.task_type === SAMPLE_APPROVAL_TASK ? (
+                            <th>Keputusan</th>
+                          ) : null}
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {sampleRows.map((s) => (
+                          <tr key={s.sample_id}>
+                            <td>{s.version}</td>
+                            <td>{s.filename}</td>
+                            <td>{s.status}</td>
+                            <td>{s.submitted_by}</td>
+                            <td>{s.reject_reason || "—"}</td>
+                            {selected.task_type === SAMPLE_APPROVAL_TASK ? (
+                              <td>
+                                {s.status === "menunggu_approval" ? (
+                                  <>
+                                    <button
+                                      type="button"
+                                      className="ep-btn primary"
+                                      disabled={busy}
+                                      onClick={() => void onDecideSample(s.version, true)}
+                                    >
+                                      Setujui
+                                    </button>
+                                    <button
+                                      type="button"
+                                      className="ep-btn"
+                                      disabled={busy}
+                                      onClick={() => void onDecideSample(s.version, false)}
+                                    >
+                                      Tolak
+                                    </button>
+                                  </>
+                                ) : (
+                                  "—"
+                                )}
+                              </td>
+                            ) : null}
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  )}
+
+                  {selected.task_type === SAMPLE_APPROVAL_TASK ? (
+                    <div className="ep-filterbar">
+                      <label htmlFor="reject-reason">Alasan tolak</label>
+                      <input
+                        id="reject-reason"
+                        value={rejectReason}
+                        onChange={(e) => setRejectReason(e.target.value)}
+                      />
+                    </div>
+                  ) : (
+                    <div className="ep-filterbar">
+                      <input
+                        ref={fileRef}
+                        type="file"
+                        aria-label="File sampel"
+                        accept="image/png,image/jpeg,image/webp,application/pdf"
+                      />
+                      <button
+                        type="button"
+                        className="ep-btn primary"
+                        disabled={busy}
+                        onClick={() => void onUploadSample()}
+                      >
+                        {busy ? "Mengunggah…" : "Konfirmasi Upload Sampel"}
+                      </button>
+                    </div>
+                  )}
+                </>
+              ) : null}
 
               <p className="ep-sectionlabel">Riwayat Konfirmasi</p>
               {history.length === 0 ? (
@@ -248,7 +451,7 @@ export function TeamTaskApiPanel({ role, roleLabel }: Props) {
                 </ul>
               )}
 
-              {selected.qty_target !== undefined ? (
+              {selected.qty_target !== undefined || selected.task_type === "screen" ? (
                 <div className="ep-filterbar">
                   <label htmlFor="qty-confirm">Qty</label>
                   <input
