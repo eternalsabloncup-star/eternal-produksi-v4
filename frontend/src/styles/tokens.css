@@ -1,0 +1,22 @@
+:root {
+  --ep-bg: #f3f6fa;
+  --ep-paper: #fff;
+  --ep-ink: #152238;
+  --ep-muted: #697b91;
+  --ep-line: #e2e9f1;
+  --ep-blue: #175ce5;
+  --ep-blue-soft: #ecf3ff;
+  --ep-green: #15835d;
+  --ep-amber: #a76d13;
+  --ep-red: #bd4254;
+  --ep-nav: #0f2139;
+  --ep-navmuted: #aab9cc;
+  --ep-shadow: 0 4px 20px rgba(19, 41, 73, 0.035);
+  --ep-font: Inter, "Segoe UI", Arial, sans-serif;
+  --ep-sidebar-w: 224px;
+  --ep-sidebar-compact-w: 62px;
+  --ep-topbar-h: 61px;
+  --ep-radius: 7px;
+  --ep-sticky-po: 95px;
+  --ep-sticky-customer: 170px;
+}

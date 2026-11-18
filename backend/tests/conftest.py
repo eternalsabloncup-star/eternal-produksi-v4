@@ -27,17 +27,28 @@ os.environ.setdefault("LOGIN_RATE_LIMIT_WINDOW_SECONDS", "60")
 os.environ.setdefault("CORS_ORIGINS", "")
 
 
-def _wait_for_mongo(uri: str, timeout_seconds: float = 60.0) -> MongoClient:
-    client = MongoClient(uri, serverSelectionTimeoutMS=2000)
+def _wait_for_mongo(uri: str, timeout_seconds: float = 90.0) -> MongoClient:
+    """Tunggu ping + PRIMARY replica set (hindari race saat RS election)."""
+    client = MongoClient(uri, serverSelectionTimeoutMS=3000)
     deadline = time.time() + timeout_seconds
     last_error: Exception | None = None
     while time.time() < deadline:
         try:
             client.admin.command("ping")
-            return client
+            hello = client.admin.command("hello")
+            set_name = hello.get("setName")
+            is_primary = bool(
+                hello.get("isWritablePrimary") or hello.get("ismaster")
+            )
+            # URI CI memakai replicaSet=rs0 — jangan lanjut sebelum PRIMARY.
+            if set_name == "rs0" and is_primary:
+                return client
+            last_error = RuntimeError(
+                f"Mongo belum PRIMARY rs0 (setName={set_name!r}, primary={is_primary})"
+            )
         except Exception as exc:  # noqa: BLE001
             last_error = exc
-            time.sleep(1)
+        time.sleep(1)
     raise RuntimeError(f"MongoDB test instance not reachable: {last_error}")
 
 
@@ -63,7 +74,9 @@ def db(
     db_name: str,
     monkeypatch: pytest.MonkeyPatch,
 ) -> Generator[Database, None, None]:
+    # AliasChoices mengutamakan DB_NAME — samakan agar tidak nyasar ke env shell.
     monkeypatch.setenv("MONGODB_DB", db_name)
+    monkeypatch.setenv("DB_NAME", db_name)
     monkeypatch.setenv("APP_ENV", "test")
     monkeypatch.setenv("COOKIE_SECURE", "false")
     monkeypatch.setenv("LOGIN_RATE_LIMIT_ATTEMPTS", "5")

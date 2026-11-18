@@ -5,7 +5,7 @@ from __future__ import annotations
 from functools import lru_cache
 from typing import Literal
 
-from pydantic import Field, field_validator, model_validator
+from pydantic import AliasChoices, Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -14,13 +14,20 @@ class Settings(BaseSettings):
         env_file=".env",
         env_file_encoding="utf-8",
         extra="ignore",
+        populate_by_name=True,
     )
 
     app_env: Literal["development", "production", "test"] = Field(
         default="development", alias="APP_ENV"
     )
-    mongodb_uri: str = Field(alias="MONGODB_URI")
-    mongodb_db: str = Field(default="eternal_produksi_v4", alias="MONGODB_DB")
+    # Independen dari ERP lama: MONGO_URL / DB_NAME (alias MONGODB_*).
+    mongodb_uri: str = Field(
+        validation_alias=AliasChoices("MONGO_URL", "MONGODB_URI"),
+    )
+    mongodb_db: str = Field(
+        default="eternal_v4",
+        validation_alias=AliasChoices("DB_NAME", "MONGODB_DB"),
+    )
     cookie_secure: bool | None = Field(default=None, alias="COOKIE_SECURE")
     session_ttl_seconds: int = Field(default=86400, alias="SESSION_TTL_SECONDS", ge=60)
     cookie_name: str = Field(default="eternal_session", alias="COOKIE_NAME")
@@ -33,18 +40,59 @@ class Settings(BaseSettings):
         default=60, alias="LOGIN_RATE_LIMIT_WINDOW_SECONDS", ge=1
     )
 
+    # Accurate api_token — account base (bukan host SO). Tidak di-log.
+    accurate_base_url: str = Field(
+        default="",
+        validation_alias=AliasChoices(
+            "ACCURATE_BASE_URL",
+            "ACCURATE_ACCOUNT_BASE",
+            "V4_ACCURATE_BASE_URL",
+            "V4_ACCURATE_ACCOUNT_BASE",
+        ),
+    )
+    accurate_api_token: str = Field(
+        default="",
+        validation_alias=AliasChoices("ACCURATE_API_TOKEN", "V4_ACCURATE_API_TOKEN"),
+    )
+    accurate_api_signature_secret: str = Field(
+        default="",
+        validation_alias=AliasChoices(
+            "ACCURATE_API_SIGNATURE_SECRET",
+            "ACCURATE_SIGNATURE_SECRET",
+            "V4_ACCURATE_API_SIGNATURE_SECRET",
+        ),
+    )
+    # Pin numerik d.database.id — utamakan V4_* agar terpisah dari UUID ERP lama.
+    accurate_db_id: str = Field(
+        default="",
+        validation_alias=AliasChoices("V4_ACCURATE_DB_ID", "ACCURATE_DB_ID"),
+    )
+    # Produksi: jangan izinkan Accurate tanpa pin kecuali di-override eksplisit.
+    accurate_require_db_pin: bool | None = Field(
+        default=None,
+        validation_alias=AliasChoices(
+            "V4_ACCURATE_REQUIRE_DB_PIN",
+            "ACCURATE_REQUIRE_DB_PIN",
+        ),
+    )
+    accurate_http_timeout_seconds: float = Field(
+        default=30.0,
+        alias="ACCURATE_HTTP_TIMEOUT_SECONDS",
+        gt=0,
+    )
+
     @field_validator("mongodb_uri")
     @classmethod
     def mongodb_uri_required(cls, value: str) -> str:
         if not value or not value.strip():
-            raise ValueError("MONGODB_URI is required")
+            raise ValueError("MONGO_URL or MONGODB_URI is required")
         return value.strip()
 
     @field_validator("mongodb_db")
     @classmethod
     def mongodb_db_required(cls, value: str) -> str:
         if not value or not value.strip():
-            raise ValueError("MONGODB_DB is required")
+            raise ValueError("DB_NAME or MONGODB_DB is required")
         return value.strip()
 
     @model_validator(mode="after")
@@ -52,6 +100,21 @@ class Settings(BaseSettings):
         if self.cookie_secure is None:
             object.__setattr__(self, "cookie_secure", self.app_env == "production")
         return self
+
+    @model_validator(mode="after")
+    def derive_accurate_require_db_pin(self) -> Settings:
+        """Produksi default wajib pin; development/test boleh tanpa pin untuk smoke."""
+        if self.accurate_require_db_pin is None:
+            object.__setattr__(
+                self,
+                "accurate_require_db_pin",
+                self.app_env == "production",
+            )
+        return self
+
+    @property
+    def accurate_db_pin_required(self) -> bool:
+        return bool(self.accurate_require_db_pin)
 
     @property
     def cors_origin_list(self) -> list[str]:
@@ -69,6 +132,29 @@ class Settings(BaseSettings):
             "cors_origins": self.cors_origin_list,
             "login_rate_limit_attempts": self.login_rate_limit_attempts,
             "login_rate_limit_window_seconds": self.login_rate_limit_window_seconds,
+            "accurate_base_url_configured": bool(self.accurate_base_url.strip()),
+            "accurate_api_token_configured": bool(self.accurate_api_token.strip()),
+            "accurate_signature_configured": bool(
+                self.accurate_api_signature_secret.strip()
+            ),
+            "accurate_db_id_configured": bool(self.accurate_db_id.strip()),
+            "accurate_db_id_length": (
+                len(self.accurate_db_id.strip()) if self.accurate_db_id.strip() else 0
+            ),
+            "accurate_require_db_pin": self.accurate_db_pin_required,
+            "accurate_auth_mode": "api_token",
+            "accurate_auth_headers": [
+                "Authorization",
+                "X-Api-Timestamp",
+                "X-Api-Signature",
+                "X-Session-ID (hanya jika session non-kosong)",
+            ],
+            "accurate_paths": {
+                "api_token": "/api/api-token.do",
+                "open_db": "/api/open-db.do",
+                "so_list": "/accurate/api/sales-order/list.do",
+                "so_detail": "/accurate/api/sales-order/detail.do",
+            },
         }
 
 
