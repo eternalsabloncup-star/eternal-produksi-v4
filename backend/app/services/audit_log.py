@@ -22,13 +22,23 @@ AUDIT_INDEXES: list[dict[str, Any]] = [
 ]
 
 
+_INDEXED_DATABASES: set[str] = set()
+
+
 def ensure_audit_indexes(db: Database) -> list[str]:
     created: list[str] = []
     coll = db[COLLECTION]
     for spec in AUDIT_INDEXES:
         name = coll.create_index(spec["keys"], name=spec["name"])
         created.append(name)
+    _INDEXED_DATABASES.add(db.name)
     return created
+
+
+def _ensure_audit_indexes_once(db: Database) -> None:
+    if db.name in _INDEXED_DATABASES:
+        return
+    ensure_audit_indexes(db)
 
 
 def append_audit_event(
@@ -40,7 +50,7 @@ def append_audit_event(
     detail: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Insert one audit row. Never stores passwords/hashes/tokens/secrets."""
-    ensure_audit_indexes(db)
+    _ensure_audit_indexes_once(db)
     safe_detail = dict(detail or {})
     for banned in ("password", "password_hash", "token", "secret", "csrf"):
         safe_detail.pop(banned, None)
