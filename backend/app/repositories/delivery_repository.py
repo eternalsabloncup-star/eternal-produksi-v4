@@ -40,6 +40,10 @@ _INDEXED_DATABASES: set[str] = set()
 class DeliveryNoteIdentityError(ValueError):
     """Identitas SJ/PO line tidak lengkap — tidak boleh ditebak dari nama barang."""
 
+    def __init__(self, message: str, *, code: str = "DELIVERY_NOTE_IDENTITY") -> None:
+        super().__init__(message)
+        self.code = code
+
 
 def delivery_notes_collection(db: Database) -> Collection:
     return db[DELIVERY_NOTES_COLLECTION]
@@ -141,14 +145,17 @@ _HEADER_SOURCE_KEYS = (
     "description",
     "branch",
     "masterSalesman",
+    "masterSalesmanId",
     "charField3",
     "printedByUser",
     "deliveryPrintedTime",
     "deliveryPackingNumber",
+    "createdBy",
     "createdByUserName",
     "statusName",
     "attachmentExist",
     "contactInfo",
+    "contactInfoId",
 )
 
 
@@ -184,31 +191,92 @@ def _normalize_item(raw: dict[str, Any], seen: set[str]) -> dict[str, Any]:
     }
 
 
-def _sales_order_from_items(raw_items: list[Any]) -> tuple[str, str]:
-    """Relasi Sales Order dari ``detailItem[].salesOrder`` bila header tak punya.
+def _customer_po_from_items(raw_items: list[Any]) -> str:
+    """PO pelanggan dari item — bukan pengganti nomor Sales Order."""
+    for raw in raw_items:
+        if not isinstance(raw, dict):
+            continue
+        from_item = as_text(raw.get("salesOrderPoNumber"))
+        if from_item:
+            return from_item
+        so = raw.get("salesOrder")
+        if isinstance(so, dict):
+            from_so = as_text(so.get("poNumber"))
+            if from_so:
+                return from_so
+    return ""
 
-    Dua Sales Order berbeda dalam satu SJ membuat identitas PO ambigu →
-    fail-closed, bukan memilih salah satu.
+
+def _resolve_sales_order(
+    raw_items: list[Any], payload: dict[str, Any]
+) -> tuple[str, str]:
+    """Identitas SO: utamakan ``detailItem[].salesOrder.id``.
+
+    - ``salesOrderId`` item dicek konsisten terhadap ``salesOrder.id``.
+    - Header ``salesOrder`` boolean Accurate diabaikan (bukan objek SO).
+    - Multi-SO dalam satu SJ → ``MULTI_SO_NOT_SUPPORTED`` (fail-closed).
     """
     pairs: dict[str, str] = {}
     for raw in raw_items:
         if not isinstance(raw, dict):
             continue
         so = raw.get("salesOrder")
-        if not isinstance(so, dict):
+        so_id_from_obj = as_text(so.get("id")) if isinstance(so, dict) else ""
+        so_id_flat = as_text(raw.get("salesOrderId"))
+        if so_id_from_obj and so_id_flat and so_id_from_obj != so_id_flat:
+            raise DeliveryNoteIdentityError(
+                "salesOrderId item bertentangan dengan salesOrder.id — "
+                "identitas SO tidak boleh ditebak.",
+                code="SO_ID_CONFLICT",
+            )
+        so_id = so_id_from_obj or so_id_flat
+        if not so_id:
             continue
-        so_id = as_text(so.get("id"))
-        if so_id:
-            pairs[so_id] = as_text(so.get("number"))
-    if not pairs:
-        return "", ""
+        so_no = as_text(so.get("number")) if isinstance(so, dict) else ""
+        if so_id in pairs and pairs[so_id] and so_no and pairs[so_id] != so_no:
+            raise DeliveryNoteIdentityError(
+                "Nomor Sales Order tidak konsisten antar item SJ.",
+                code="SO_NUMBER_CONFLICT",
+            )
+        pairs[so_id] = so_no or pairs.get(so_id, "")
+
     if len(pairs) > 1:
+        # Hanya jumlah SO — jangan paparkan nomor pelanggan/ID mentah di pesan.
         raise DeliveryNoteIdentityError(
-            "Item Surat Jalan merujuk lebih dari satu Sales Order: "
-            f"{', '.join(sorted(pairs))} — relasi PO tidak boleh ditebak."
+            f"MULTI_SO_NOT_SUPPORTED: satu Surat Jalan merujuk {len(pairs)} "
+            "Sales Order berbeda — sinkron otomatis ditolak.",
+            code="MULTI_SO_NOT_SUPPORTED",
         )
-    so_id, so_no = next(iter(pairs.items()))
-    return so_id, so_no
+
+    line_po_id, line_po_no = ("", "")
+    if pairs:
+        line_po_id, line_po_no = next(iter(pairs.items()))
+
+    # Header salesOrderId legacy (bila ada) harus cocok; header salesOrder boolean diabaikan.
+    header_so = payload.get("salesOrder")
+    header_po_id = ""
+    if isinstance(header_so, dict):
+        header_po_id = as_text(header_so.get("id"))
+        if not line_po_no:
+            line_po_no = as_text(header_so.get("number"))
+    header_po_id = (
+        header_po_id
+        or as_text(payload.get("salesOrderId") or payload.get("accurate_po_id"))
+    )
+    if header_po_id and line_po_id and header_po_id != line_po_id:
+        raise DeliveryNoteIdentityError(
+            "salesOrderId header bertentangan dengan salesOrder item — "
+            "identitas SO tidak boleh ditebak.",
+            code="SO_ID_CONFLICT",
+        )
+
+    accurate_po_id = line_po_id or header_po_id
+    if not accurate_po_id:
+        raise DeliveryNoteIdentityError("Surat Jalan wajib merujuk Accurate PO ID.")
+    po_no = (
+        as_text(payload.get("salesOrderNumber") or payload.get("po_no")) or line_po_no
+    )
+    return accurate_po_id, po_no
 
 
 def normalize_delivery_note(payload: dict[str, Any]) -> dict[str, Any]:
@@ -231,13 +299,10 @@ def normalize_delivery_note(payload: dict[str, Any]) -> dict[str, Any]:
 
     seen: set[str] = set()
     items = [_normalize_item(raw, seen) for raw in raw_items if isinstance(raw, dict)]
+    if not items:
+        raise DeliveryNoteIdentityError("Surat Jalan wajib memiliki item.")
 
-    line_po_id, line_po_no = _sales_order_from_items(raw_items)
-    accurate_po_id = (
-        as_text(payload.get("salesOrderId") or payload.get("accurate_po_id")) or line_po_id
-    )
-    if not accurate_po_id:
-        raise DeliveryNoteIdentityError("Surat Jalan wajib merujuk Accurate PO ID.")
+    accurate_po_id, po_no = _resolve_sales_order(raw_items, payload)
 
     sj_date = as_text(payload.get("transDate") or payload.get("sj_date"))
     # Accurate DO tidak punya tanggal kirim terpisah; tanggal transaksi dipakai
@@ -247,29 +312,46 @@ def normalize_delivery_note(payload: dict[str, Any]) -> dict[str, Any]:
     )
     ship_date = explicit_ship_date or sj_date
 
-    # charField3 diberi label "Zona Pengiriman" di halaman Accurate, tetapi
-    # isinya belum diverifikasi Owner — nilainya disalin apa adanya dan ditandai.
-    ship_zone = _first_label(payload, "charField3") or as_text(payload.get("ship_zone"))
+    # charField3 = field tambahan netral; semantik zona BELUM terverifikasi.
+    # Disalin ke ship_zone untuk tampilan UI, selalu ditandai unproven.
+    char_field3 = _first_label(payload, "charField3") or as_text(
+        payload.get("char_field3")
+    )
+    ship_zone = char_field3 or as_text(payload.get("ship_zone"))
 
     absent = [key for key in _HEADER_SOURCE_KEYS if payload.get(key) in (None, "")]
 
     source_meta: dict[str, Any] = {"absent_fields": absent}
-    if ship_zone:
+    if char_field3:
+        source_meta["char_field3_raw"] = char_field3
         source_meta["char_field3_zone_unproven"] = True
     if explicit_ship_date:
         source_meta["ship_date_source"] = "shipDate"
     elif sj_date:
         source_meta["ship_date_source"] = "transDate"
 
+    master_salesman_id = as_text(
+        payload.get("masterSalesmanId") or payload.get("master_salesman_id")
+    )
+    if not master_salesman_id:
+        salesman_obj = payload.get("masterSalesman")
+        if isinstance(salesman_obj, dict):
+            master_salesman_id = as_text(salesman_obj.get("id"))
+
+    created_by_id = as_text(payload.get("createdBy") or payload.get("created_by_id"))
+
+    customer_po_no = as_text(
+        payload.get("poNumber") or payload.get("customer_po_no")
+    ) or _customer_po_from_items(raw_items)
+
     return {
         "accurate_sj_id": accurate_sj_id,
         "sj_no": sj_no,
         "accurate_po_id": accurate_po_id,
         # Identitas PO V4 = nomor Sales Order Accurate, bukan DO.poNumber.
-        "po_no": as_text(payload.get("salesOrderNumber") or payload.get("po_no"))
-        or line_po_no,
-        # DO.poNumber adalah nomor PO milik pelanggan, disimpan terpisah.
-        "customer_po_no": as_text(payload.get("poNumber") or payload.get("customer_po_no")),
+        "po_no": po_no,
+        # DO.poNumber / salesOrderPoNumber = nomor PO pelanggan, terpisah.
+        "customer_po_no": customer_po_no,
         "sj_date": sj_date,
         "ship_date": ship_date,
         "customer_name": _first_label(payload, "customer", "customerName")
@@ -286,11 +368,15 @@ def normalize_delivery_note(payload: dict[str, Any]) -> dict[str, Any]:
         ),
         "salesman_name": _first_label(payload, "masterSalesman")
         or as_text(payload.get("salesman_name")),
+        "master_salesman_id": master_salesman_id,
+        "created_by_id": created_by_id,
         "created_by_user_name": as_text(
             payload.get("createdByUserName") or payload.get("created_by_user_name")
         ),
         "shipment": _first_label(payload, "shipment")
         or as_text(payload.get("shipmentName")),
+        "char_field3": char_field3,
+        # Tampilkan nilai mentah; jangan klaim sebagai zona terverifikasi.
         "ship_zone": ship_zone,
         "branch_name": _first_label(payload, "branch") or as_text(payload.get("branch_name")),
         "description": as_text(payload.get("description") or payload.get("notes")),

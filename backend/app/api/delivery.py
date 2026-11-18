@@ -10,9 +10,11 @@ from pydantic import BaseModel, Field
 from app.auth.deps import AuthContext, require_csrf, require_session
 from app.auth.permissions import PERM_OPERATIONS_FULL, has_permission
 from app.db import get_db
+from app.db_guard import UnsafeMongoTargetError
 from app.repositories import delivery_repository as deliveries
 from app.repositories.task_repository import TaskQuantityError
 from app.services import delivery_service
+from app.services import delivery_sync
 from app.services.task_engine import TaskPermissionError
 
 router = APIRouter(prefix="/api/delivery", tags=["delivery"])
@@ -23,6 +25,15 @@ ALLOWED_IMAGE_TYPES = {"image/png", "image/jpeg", "image/webp"}
 
 class IngestDeliveryNotesRequest(BaseModel):
     delivery_notes: list[dict[str, Any]] = Field(min_length=1)
+
+
+class AccurateDeliverySyncRequest(BaseModel):
+    """Sinkronisasi manual SJ Accurate — hanya DB test terisolasi."""
+
+    page_size: int = Field(default=20, ge=1, le=100)
+    max_pages: int = Field(default=50, ge=1, le=200)
+    max_rows: int = Field(default=500, ge=1, le=2000)
+    timeout_seconds: float = Field(default=120.0, ge=5, le=600)
 
 
 class LoadingConfirmRequest(BaseModel):
@@ -50,6 +61,13 @@ class EvidenceDeleteRequest(BaseModel):
 def _handle(exc: Exception) -> HTTPException:
     if isinstance(exc, TaskPermissionError):
         return HTTPException(status.HTTP_403_FORBIDDEN, str(exc))
+    if isinstance(exc, delivery_sync.DeliverySyncInProgressError):
+        return HTTPException(status.HTTP_409_CONFLICT, str(exc))
+    if isinstance(exc, UnsafeMongoTargetError):
+        return HTTPException(
+            status.HTTP_403_FORBIDDEN,
+            "Sinkronisasi SJ ditolak: target Mongo tidak aman untuk mutasi.",
+        )
     if isinstance(
         exc, (delivery_service.LoadingValidationError, delivery_service.LoadingCancelError)
     ):
@@ -79,12 +97,38 @@ def get_schedule(
     )
 
 
+@router.post("/sync/accurate")
+def post_accurate_delivery_sync(
+    body: AccurateDeliverySyncRequest,
+    auth: AuthContext = Depends(require_csrf),
+) -> dict[str, Any]:
+    """Sinkronisasi manual SJ Accurate → Mongo V4 test (operasi penuh saja).
+
+    Selalu memakai mongo_guard=test. Production ditolak fail-closed.
+    Tidak menulis Accurate. Tidak menghapus SJ yang absen dari listing.
+    """
+    if not has_permission(auth.user, PERM_OPERATIONS_FULL):
+        raise HTTPException(status.HTTP_403_FORBIDDEN, "Akses ditolak")
+    try:
+        return delivery_sync.sync_delivery_orders_from_accurate(
+            get_db(),
+            auth.user,
+            page_size=body.page_size,
+            max_pages=body.max_pages,
+            max_rows=body.max_rows,
+            timeout_seconds=body.timeout_seconds,
+            mongo_guard="test",
+        )
+    except Exception as exc:  # noqa: BLE001
+        raise _handle(exc) from exc
+
+
 @router.post("/notes")
 def post_delivery_notes(
     body: IngestDeliveryNotesRequest,
     auth: AuthContext = Depends(require_csrf),
 ) -> dict[str, Any]:
-    """Snapshot SJ Accurate (idempoten). Integrasi live Accurate masih BLOCKED."""
+    """Snapshot SJ Accurate (idempoten) dari payload yang disediakan caller."""
     if not has_permission(auth.user, PERM_OPERATIONS_FULL):
         raise HTTPException(status.HTTP_403_FORBIDDEN, "Akses ditolak")
     db = get_db()

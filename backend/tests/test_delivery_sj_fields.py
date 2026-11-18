@@ -70,7 +70,12 @@ def test_customer_po_number_is_separate_from_sales_order_number() -> None:
 
 def test_ship_zone_from_char_field3_is_flagged_unproven() -> None:
     note = deliveries.normalize_delivery_note(_payload())
+    assert note["char_field3"] == "ZONA-TEST"
+    assert note["source_meta"]["char_field3_raw"] == "ZONA-TEST"
     assert note["source_meta"]["char_field3_zone_unproven"] is True
+    # Bukan klaim zona terverifikasi — hanya salinan mentah untuk tampilan.
+    assert "verified_ship_zone" not in note
+    assert "verified_ship_zone" not in note["source_meta"]
 
 
 def test_absent_header_fields_stay_empty_and_are_recorded() -> None:
@@ -80,6 +85,7 @@ def test_absent_header_fields_stay_empty_and_are_recorded() -> None:
     note = deliveries.normalize_delivery_note(payload)
 
     assert note["ship_zone"] == ""
+    assert note["char_field3"] == ""
     assert note["salesman_name"] == ""
     assert note["packing_number"] == ""
     assert note["contact_info"] == ""
@@ -135,8 +141,10 @@ def test_sales_order_relation_read_from_item_when_header_has_none() -> None:
 def test_two_sales_orders_in_one_delivery_note_is_rejected() -> None:
     payload = _payload()
     payload["detailItem"][2]["salesOrder"] = {"id": 95999, "number": "TEST-PO/LAIN"}
-    with pytest.raises(deliveries.DeliveryNoteIdentityError):
+    with pytest.raises(deliveries.DeliveryNoteIdentityError) as exc:
         deliveries.normalize_delivery_note(payload)
+    assert exc.value.code == "MULTI_SO_NOT_SUPPORTED"
+    assert "MULTI_SO_NOT_SUPPORTED" in str(exc.value)
 
 
 def test_lookup_objects_never_leak_into_labels() -> None:
