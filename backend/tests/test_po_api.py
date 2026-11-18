@@ -71,11 +71,35 @@ def test_list_search_and_pagination(app_client: TestClient, db: Database) -> Non
     hit = app_client.get("/api/po", params={"q": "95106", "page": 1, "pageSize": 1})
     assert hit.status_code == 200
     assert hit.json()["total"] == 1
+    assert hit.json()["supportedFilters"] == ["q", "urgent"]
 
     miss = app_client.get("/api/po", params={"q": "TIDAK-ADA-PO"})
     assert miss.status_code == 200
     assert miss.json()["total"] == 0
     assert miss.json()["items"] == []
+
+
+def test_list_urgent_filter_affects_results(
+    app_client: TestClient, db: Database
+) -> None:
+    sync_sales_order_payload(db, SAMPLE_SALES_ORDER_STRUCTURE)
+    # Sample default tidak urgent — pastikan filter urgent=true mengosongkan.
+    _seed_user(db)
+    _login(app_client)
+
+    none_urgent = app_client.get("/api/po", params={"urgent": "true"})
+    assert none_urgent.status_code == 200
+    assert none_urgent.json()["total"] == 0
+
+    # Set flag urgent nyata di header Accurate.
+    db["accurate_sales_orders"].update_one(
+        {"accurate_id": "95106"},
+        {"$set": {"header.urgent": True}},
+    )
+    hit = app_client.get("/api/po", params={"urgent": "true"})
+    assert hit.status_code == 200
+    assert hit.json()["total"] == 1
+    assert hit.json()["items"][0]["accurate_id"] == "95106"
 
 
 def test_list_requires_session(app_client: TestClient) -> None:

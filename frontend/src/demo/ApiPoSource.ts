@@ -4,7 +4,10 @@
  */
 
 import { displayAccurateLabel, formatAccurateLabel } from "./formatAccurateLabel";
+import { buildInboxApiListParams } from "./inboxApiFilters";
 import type { PaginatedResult, PoDataSource, PoListQuery, PoRow } from "./types";
+
+export { buildInboxApiListParams, inboxFilterEnabled } from "./inboxApiFilters";
 
 export class PoApiError extends Error {
   readonly status: number;
@@ -137,15 +140,10 @@ export class ApiPoSource implements PoDataSource {
   constructor(private readonly baseUrl = "/api/po") {}
 
   async list(query: PoListQuery): Promise<PaginatedResult<PoRow>> {
-    const params = new URLSearchParams();
     const page = Math.max(1, query.page || 1);
     const pageSize = query.pageSize || 50;
-    params.set("page", String(page));
-    params.set("pageSize", String(pageSize));
-    if (query.q?.trim()) params.set("q", query.q.trim());
-    if (query.urgent) params.set("urgent", "true");
-    params.set("sortBy", "updated_at");
-    params.set("sortDir", "desc");
+    // Hanya q + urgent — branch/status/mesin tidak dikirim (belum didukung Accurate).
+    const params = buildInboxApiListParams(query);
 
     let res: Response;
     try {
@@ -243,16 +241,42 @@ export class ApiPoSource implements PoDataSource {
   }
 
   async metrics(): Promise<Record<string, number>> {
-    const listed = await this.list({ page: 1, pageSize: 500 });
-    const lineCount = listed.items.reduce((s, r) => s + (r.itemCount || 0), 0);
+    // Agregasi server-side — mencakup seluruh PO, bukan sample ≤500 list.
+    let res: Response;
+    try {
+      res = await fetch(`${this.baseUrl}/metrics`, {
+        credentials: "include",
+      });
+    } catch {
+      throw new PoApiError(
+        "Jaringan gagal memuat KPI Accurate dari server.",
+        0,
+        "network_error",
+      );
+    }
+    if (res.status === 401) {
+      throw new PoApiError(
+        "Sesi berakhir — login ulang untuk memuat KPI Accurate.",
+        401,
+        "unauthorized",
+      );
+    }
+    if (!res.ok) {
+      throw new PoApiError(
+        `Gagal memuat KPI Accurate (HTTP ${res.status})`,
+        res.status,
+      );
+    }
+    const body = (await readJson(res)) as Record<string, unknown> | null;
+    if (!body || typeof body.total !== "number") {
+      throw new PoApiError("Respons KPI PO tidak valid.", res.status, "bad_payload");
+    }
     return {
-      total: listed.total,
-      // Seluruh PO di Inbox = status awal; bukan klaim penjadwalan.
-      baru: listed.total,
-      qty: listed.items.reduce((s, r) => s + r.qty, 0),
-      lines: lineCount,
-      urgent: listed.items.filter((r) => r.urgent).length,
-      // Eksplisit 0 — modul cetak belum terhubung.
+      total: Number(body.total) || 0,
+      baru: Number(body.baru ?? body.total) || 0,
+      qty: Number(body.qty) || 0,
+      lines: Number(body.lines) || 0,
+      urgent: Number(body.urgent) || 0,
       printed: 0,
     };
   }

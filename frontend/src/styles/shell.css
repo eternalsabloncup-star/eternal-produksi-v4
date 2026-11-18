@@ -1096,6 +1096,12 @@
   min-width: 104px;
 }
 
+.ep-filterbar select:disabled,
+.ep-filterbar .ep-inlinecheck.is-disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
 .ep-tblscroll {
   overflow: auto;
   /* Sedikit lebih tinggi dari 57vh; sisa ruang setelah chrome halaman + footer pagination */

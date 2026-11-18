@@ -339,15 +339,24 @@ export function InboxPoTable({ tableId }: Props) {
           <ColumnFilter
             value={filters}
             onChange={(next) => {
-              setFilters({
-                ...next,
-                q: next.q?.trim() ? next.q : undefined,
-              });
+              const cleaned =
+                sourceMode === "api"
+                  ? {
+                      // API: jangan simpan filter yang dinonaktifkan di UI.
+                      q: next.q?.trim() ? next.q : undefined,
+                      urgent: next.urgent || undefined,
+                    }
+                  : {
+                      ...next,
+                      q: next.q?.trim() ? next.q : undefined,
+                    };
+              setFilters(cleaned);
               setPage(1);
             }}
             onReset={resetFilters}
             showUrgent
             compact
+            sourceMode={sourceMode}
             showDemoHint={sourceMode === "demo"}
             trailing={
               <>

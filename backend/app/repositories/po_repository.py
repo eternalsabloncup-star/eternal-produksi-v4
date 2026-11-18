@@ -174,3 +174,70 @@ def list_sales_orders(
         .limit(max(1, min(limit, 500)))
     )
     return list(cursor), int(total)
+
+
+def aggregate_inbox_metrics(
+    db: Database,
+    *,
+    origin: str = "accurate",
+) -> dict[str, int]:
+    """KPI Inbox Accurate via agregasi Mongo — tanpa fetch seluruh dokumen.
+
+    Tidak membuat indeks; memakai data nyata di ``header.items`` /
+    ``header.urgent``. Field operasional/produksi tidak dikarang.
+    """
+    pipeline: list[dict[str, Any]] = [
+        {"$match": {"origin": origin}},
+        {
+            "$project": {
+                "urgent_flag": {
+                    "$cond": [{"$eq": ["$header.urgent", True]}, 1, 0]
+                },
+                "line_count": {
+                    "$size": {"$ifNull": ["$header.items", []]},
+                },
+                "qty_sum": {
+                    "$reduce": {
+                        "input": {"$ifNull": ["$header.items", []]},
+                        "initialValue": 0,
+                        "in": {
+                            "$add": [
+                                "$$value",
+                                {
+                                    "$convert": {
+                                        "input": "$$this.qty",
+                                        "to": "double",
+                                        "onError": 0,
+                                        "onNull": 0,
+                                    }
+                                },
+                            ]
+                        },
+                    }
+                },
+            }
+        },
+        {
+            "$group": {
+                "_id": None,
+                "total": {"$sum": 1},
+                "qty": {"$sum": "$qty_sum"},
+                "lines": {"$sum": "$line_count"},
+                "urgent": {"$sum": "$urgent_flag"},
+            }
+        },
+    ]
+    rows = list(po_collection(db).aggregate(pipeline))
+    if not rows:
+        return {"total": 0, "qty": 0, "lines": 0, "urgent": 0, "baru": 0}
+    row = rows[0]
+    total = int(row.get("total") or 0)
+    return {
+        "total": total,
+        # Inbox Accurate: seluruh PO di inbox = status awal (bukan klaim jadwal).
+        "baru": total,
+        "qty": int(row.get("qty") or 0),
+        "lines": int(row.get("lines") or 0),
+        "urgent": int(row.get("urgent") or 0),
+        "printed": 0,
+    }

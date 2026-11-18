@@ -11,6 +11,7 @@ from app.auth.deps import AuthContext, require_csrf, require_session
 from app.config import get_settings
 from app.db import get_db
 from app.repositories.po_repository import (
+    aggregate_inbox_metrics,
     get_by_accurate_id,
     get_by_po_no,
     list_sales_orders,
@@ -132,6 +133,22 @@ def list_po(
         "total": total,
         "page": page,
         "pageSize": page_size,
+        "source": "mongodb",
+        "origin": "accurate",
+        # Filter cabang/status/mesin belum didukung di sumber Accurate.
+        "supportedFilters": ["q", "urgent"],
+    }
+
+
+@router.get("/metrics")
+def po_metrics(
+    auth: AuthContext = Depends(require_session),
+) -> dict[str, Any]:
+    """KPI Inbox Accurate — agregasi seluruh PO, bukan sample halaman list."""
+    del auth
+    metrics = aggregate_inbox_metrics(get_db(), origin="accurate")
+    return {
+        **metrics,
         "source": "mongodb",
         "origin": "accurate",
     }
