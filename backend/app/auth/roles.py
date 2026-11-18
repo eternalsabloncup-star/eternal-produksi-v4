@@ -1,0 +1,37 @@
+"""System roles — Eternal V4.
+
+``super_admin`` is the highest privilege. Legacy ``admin`` remains valid
+for compatibility with existing operators.
+"""
+
+from __future__ import annotations
+
+from typing import Final
+
+ROLE_SUPER_ADMIN: Final = "super_admin"
+ROLE_ADMIN: Final = "admin"
+ROLE_USER: Final = "user"
+
+# Roles that count as "bootstrap operator already exists".
+BOOTSTRAP_OPERATOR_ROLES: Final[frozenset[str]] = frozenset(
+    {ROLE_SUPER_ADMIN, ROLE_ADMIN}
+)
+
+ALL_ROLES: Final[frozenset[str]] = frozenset(
+    {ROLE_SUPER_ADMIN, ROLE_ADMIN, ROLE_USER}
+)
+
+
+def normalize_role(role: str | None) -> str:
+    raw = (role or "").strip().lower()
+    if raw in ALL_ROLES:
+        return raw
+    return ROLE_USER
+
+
+def is_super_admin(role: str | None) -> bool:
+    return normalize_role(role) == ROLE_SUPER_ADMIN
+
+
+def is_bootstrap_operator(role: str | None) -> bool:
+    return normalize_role(role) in BOOTSTRAP_OPERATOR_ROLES

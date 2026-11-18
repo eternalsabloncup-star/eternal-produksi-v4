@@ -25,9 +25,10 @@ def test_create_admin_secure_and_idempotent(db: Database) -> None:
         password="password-kuat-123",
     )
     assert user["email_normalized"] == "admin@example.com"
+    assert user["role"] == "super_admin"
     assert admin_exists(db) is True
 
-    with pytest.raises(RuntimeError, match="Admin sudah ada"):
+    with pytest.raises(RuntimeError, match="sudah ada"):
         create_admin_user(
             db,
             email="other@example.com",

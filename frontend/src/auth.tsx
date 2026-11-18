@@ -14,11 +14,14 @@ import {
   type MeResponse,
   type UserPublic,
 } from "./api";
+import { isSuperAdmin } from "./roles";
 
 type AuthState = {
   user: UserPublic | null;
   csrfToken: string | null;
   loading: boolean;
+  /** True when role is super_admin — full module access, no role-based menu hiding. */
+  isSuperAdmin: boolean;
   login: (email: string, password: string) => Promise<void>;
   logout: () => Promise<void>;
   refresh: () => Promise<void>;
@@ -83,7 +86,15 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, [applyMe]);
 
   const value = useMemo(
-    () => ({ user, csrfToken, loading, login, logout, refresh }),
+    () => ({
+      user,
+      csrfToken,
+      loading,
+      isSuperAdmin: isSuperAdmin(user?.role),
+      login,
+      logout,
+      refresh,
+    }),
     [user, csrfToken, loading, login, logout, refresh],
   );
 

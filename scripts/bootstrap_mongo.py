@@ -5,6 +5,8 @@ Usage examples:
   python scripts/bootstrap_mongo.py --ensure-indexes
   python scripts/bootstrap_mongo.py --create-admin
 
+Akun pertama dibuat sebagai role ``super_admin``.
+
 Never run from API startup, Docker app entrypoint, or deploy.
 """
 
@@ -21,6 +23,7 @@ BACKEND = ROOT / "backend"
 if str(BACKEND) not in sys.path:
     sys.path.insert(0, str(BACKEND))
 
+from app.auth.roles import ROLE_SUPER_ADMIN  # noqa: E402
 from app.bootstrap import admin_exists, create_admin_user, init_indexes  # noqa: E402
 from app.config import clear_settings_cache, get_settings  # noqa: E402
 from app.db import close_client, get_db  # noqa: E402
@@ -28,7 +31,9 @@ from app.db import close_client, get_db  # noqa: E402
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Bootstrap MongoDB indexes and/or first admin (manual only)."
+        description=(
+            "Bootstrap MongoDB indexes and/or first Super Admin (manual only)."
+        )
     )
     parser.add_argument(
         "--ensure-indexes",
@@ -38,17 +43,17 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--create-admin",
         action="store_true",
-        help="Create the first admin via secure interactive password input.",
+        help="Create the first Super Admin via secure interactive password input.",
     )
     parser.add_argument(
         "--email",
         default=None,
-        help="Admin email (optional; prompted if omitted).",
+        help="Super Admin email (optional; prompted if omitted).",
     )
     parser.add_argument(
         "--display-name",
         default=None,
-        help="Admin display name (optional; prompted if omitted).",
+        help="Display name (optional; prompted if omitted).",
     )
     return parser.parse_args()
 
@@ -56,7 +61,10 @@ def parse_args() -> argparse.Namespace:
 def main() -> int:
     args = parse_args()
     if not args.ensure_indexes and not args.create_admin:
-        print("Pilih minimal satu aksi: --ensure-indexes dan/atau --create-admin", file=sys.stderr)
+        print(
+            "Pilih minimal satu aksi: --ensure-indexes dan/atau --create-admin",
+            file=sys.stderr,
+        )
         return 2
 
     # Password must never come from argv.
@@ -77,21 +85,20 @@ def main() -> int:
     if args.create_admin:
         if admin_exists(db):
             print(
-                "Admin sudah tersedia. Operasi ditolak tanpa prosedur khusus Owner.",
+                "Operator bootstrap (super_admin/admin) sudah tersedia. "
+                "Operasi ditolak tanpa prosedur khusus Owner.",
                 file=sys.stderr,
             )
             return 1
 
-        email = args.email or input("Email admin: ").strip()
+        email = args.email or input("Email Super Admin: ").strip()
         display_name = args.display_name or input("Nama tampilan: ").strip()
-        password = getpass.getpass("Kata sandi admin (min 12 karakter): ")
+        password = getpass.getpass("Kata sandi Super Admin (min 12 karakter): ")
         confirm = getpass.getpass("Ulangi kata sandi: ")
         if password != confirm:
             print("Kata sandi tidak cocok.", file=sys.stderr)
             return 1
 
-        # Optional non-logging env fallback for automation in isolated test only.
-        # Production operators should use interactive getpass.
         if os.environ.get("BOOTSTRAP_ALLOW_ENV_PASSWORD") == "1" and not password:
             password = os.environ.get("BOOTSTRAP_ADMIN_PASSWORD", "")
 
@@ -101,13 +108,15 @@ def main() -> int:
                 email=email,
                 display_name=display_name,
                 password=password,
+                role=ROLE_SUPER_ADMIN,
             )
         except (ValueError, RuntimeError) as exc:
             print(str(exc), file=sys.stderr)
             return 1
 
         print(
-            f"Admin dibuat: {user['email_normalized']} ({user['display_name']}) id={user['id']}"
+            f"Super Admin dibuat: {user['email_normalized']} "
+            f"({user['display_name']}) role={user['role']} id={user['id']}"
         )
 
     close_client()
