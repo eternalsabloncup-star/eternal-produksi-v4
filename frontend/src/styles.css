@@ -9,7 +9,7 @@
   --danger: #e07a6a;
   --line: rgba(243, 240, 231, 0.14);
   --shadow: 0 24px 60px rgba(0, 0, 0, 0.35);
-  --font-display: "Instrument Serif", Georgia, serif;
+  --font-display: "DM Sans", "Segoe UI", sans-serif;
   --font-body: "DM Sans", "Segoe UI", sans-serif;
 }
 
@@ -37,9 +37,9 @@ body {
 h1 {
   margin: 0.2rem 0 0.4rem;
   font-family: var(--font-display);
-  font-weight: 400;
-  font-size: clamp(2rem, 4vw, 3rem);
-  letter-spacing: 0.01em;
+  font-weight: 700;
+  font-size: clamp(1.65rem, 3.2vw, 2.2rem);
+  letter-spacing: -0.02em;
 }
 
 .brand-mark {

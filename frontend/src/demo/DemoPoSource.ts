@@ -1,6 +1,16 @@
 import { getApiPoSource } from "./ApiPoSource";
 import { createDemoPoSeed } from "./fixtures";
+import { resolveInboxPoSourceMode } from "./resolveInboxMode";
 import type { PaginatedResult, PoDataSource, PoListQuery, PoRow } from "./types";
+
+export type { PoSourceMode, ShellDataMode } from "./resolveInboxMode";
+export {
+  resolveInboxPoSourceMode,
+  resolveShellDataMode,
+  shellModeBadgeLabel,
+  shellModeFooterHint,
+  shellSidefootCopy,
+} from "./resolveInboxMode";
 
 function cloneRow(row: PoRow): PoRow {
   return {
@@ -135,16 +145,9 @@ export function getDemoPoSource(): DemoPoSource {
 
 /**
  * Pemilih sumber Inbox.
- * Default DEMO. Aktifkan Accurate via VITE_INBOX_PO_SOURCE=api.
+ * Production (unset) → api. Development (unset) → demo.
  * Mode API tidak boleh fallback diam-diam ke DEMO saat error.
  */
-export type PoSourceMode = "demo" | "api";
-
-export function resolveInboxPoSourceMode(envValue?: string): PoSourceMode {
-  const raw = (envValue || "").trim().toLowerCase();
-  return raw === "api" || raw === "accurate" ? "api" : "demo";
-}
-
 export function getInboxPoSource(
   envValue: string | undefined = import.meta.env.VITE_INBOX_PO_SOURCE,
 ): PoDataSource {

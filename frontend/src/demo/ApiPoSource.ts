@@ -3,6 +3,7 @@
  * Hanya origin=accurate. Tidak fallback ke DEMO jika gagal.
  */
 
+import { displayAccurateLabel, formatAccurateLabel } from "./formatAccurateLabel";
 import type { PaginatedResult, PoDataSource, PoListQuery, PoRow } from "./types";
 
 export class PoApiError extends Error {
@@ -17,10 +18,27 @@ export class PoApiError extends Error {
   }
 }
 
-function mapHeaderToPoRow(doc: Record<string, unknown>): PoRow | null {
+function resolveInboxStatus(
+  doc: Record<string, unknown>,
+  header: Record<string, unknown>,
+): string {
+  const operational =
+    doc.operational && typeof doc.operational === "object" && !Array.isArray(doc.operational)
+      ? (doc.operational as Record<string, unknown>)
+      : {};
+  for (const key of ["status", "stage", "inbox_status"] as const) {
+    const raw = operational[key] ?? header[key];
+    const label = formatAccurateLabel(raw);
+    if (label) return label;
+  }
+  // Status awal jujur — bukan progres produksi/QC/jadwal.
+  return "PO Baru";
+}
+
+export function mapHeaderToPoRow(doc: Record<string, unknown>): PoRow | null {
   const header = (doc.header || doc) as Record<string, unknown>;
   if (!header || typeof header !== "object") return null;
-  const poNo = String(header.po_no || header.poNo || doc.po_no || "");
+  const poNo = formatAccurateLabel(header.po_no || header.poNo || doc.po_no);
   if (!poNo) return null;
   const itemsRaw = Array.isArray(header.items) ? header.items : [];
   const items = itemsRaw.map((raw) => {
@@ -29,7 +47,9 @@ function mapHeaderToPoRow(doc: Record<string, unknown>): PoRow | null {
       | "Cetak"
       | "Non-Cetak"
       | null;
-    const processRaw = String(it.process_raw || it.processRaw || "");
+    const processRaw = formatAccurateLabel(it.process_raw || it.processRaw);
+    const unit = formatAccurateLabel(it.unit) || "PCS";
+    const qtyNum = Number(it.qty || 0);
     return {
       lineId: String(it.line_id || it.lineId || ""),
       accurateLineId: it.accurate_line_id
@@ -37,14 +57,14 @@ function mapHeaderToPoRow(doc: Record<string, unknown>): PoRow | null {
         : it.accurateLineId
           ? String(it.accurateLineId)
           : null,
-      code: String(it.item_code || it.code || ""),
-      name: String(it.item_name || it.name || ""),
-      qty: Number(it.qty || 0),
-      unit: String(it.unit || "PCS"),
+      code: formatAccurateLabel(it.item_code || it.code),
+      name: formatAccurateLabel(it.item_name || it.name),
+      qty: Number.isFinite(qtyNum) ? qtyNum : 0,
+      unit,
       processRaw,
       processKind,
       process: processKind || processRaw || "—",
-      color: String(it.color || ""),
+      color: formatAccurateLabel(it.color),
     };
   });
   const accurateId = doc.accurate_id
@@ -52,6 +72,10 @@ function mapHeaderToPoRow(doc: Record<string, unknown>): PoRow | null {
     : header.accurate_id
       ? String(header.accurate_id)
       : null;
+  const customer = formatAccurateLabel(header.customer || doc.customer);
+  const paymentTerms = formatAccurateLabel(header.payment_terms || header.paymentTerms);
+  const expedition = formatAccurateLabel(header.expedition || header.shipment);
+  const poDate = formatAccurateLabel(header.po_date || header.poDate);
   return {
     id: poNo,
     poNo,
@@ -62,30 +86,31 @@ function mapHeaderToPoRow(doc: Record<string, unknown>): PoRow | null {
     ),
     accurateId,
     origin: "accurate",
-    customer: String(header.customer || doc.customer || ""),
+    customer,
     product: items[0]?.name || "",
     qty: items.reduce((s, i) => s + (Number.isFinite(i.qty) ? i.qty : 0), 0),
+    // Modul cetak/QC belum terhubung — jangan mengarang progres.
     printed: 0,
     qc: 0,
     branch: "",
-    status: "PO Baru",
+    status: resolveInboxStatus(doc, header),
     machine: "",
     deadline: "",
     urgent: Boolean(header.urgent),
-    owner: String(header.seller || ""),
+    owner: formatAccurateLabel(header.seller),
     sample: false,
     activity: ["PO dari Accurate (Mongo V4)"],
-    poDate: String(header.po_date || header.poDate || ""),
-    paymentTerms: String(header.payment_terms || ""),
-    etaShip: String(header.eta_ship || ""),
-    seller: String(header.seller || ""),
-    expedition: String(header.expedition || ""),
-    shipZone: String(header.ship_zone || ""),
-    recipient: String(header.recipient || ""),
-    address: String(header.address || ""),
-    userName: String(header.user_name || ""),
-    bufferLabel: String(header.buffer_label || ""),
-    notes: String(header.notes || ""),
+    poDate,
+    paymentTerms,
+    etaShip: formatAccurateLabel(header.eta_ship || header.etaShip),
+    seller: formatAccurateLabel(header.seller),
+    expedition,
+    shipZone: formatAccurateLabel(header.ship_zone || header.shipZone),
+    recipient: formatAccurateLabel(header.recipient),
+    address: formatAccurateLabel(header.address),
+    userName: formatAccurateLabel(header.user_name || header.userName),
+    bufferLabel: formatAccurateLabel(header.buffer_label || header.bufferLabel),
+    notes: formatAccurateLabel(header.notes),
     totalQtyDisplay: items
       .map((i) => `${i.qty.toLocaleString("id-ID")} ${i.unit}`)
       .join(" + "),
@@ -219,13 +244,16 @@ export class ApiPoSource implements PoDataSource {
 
   async metrics(): Promise<Record<string, number>> {
     const listed = await this.list({ page: 1, pageSize: 500 });
+    const lineCount = listed.items.reduce((s, r) => s + (r.itemCount || 0), 0);
     return {
       total: listed.total,
+      // Seluruh PO di Inbox = status awal; bukan klaim penjadwalan.
       baru: listed.total,
-      unsched: listed.total,
       qty: listed.items.reduce((s, r) => s + r.qty, 0),
-      printed: 0,
+      lines: lineCount,
       urgent: listed.items.filter((r) => r.urgent).length,
+      // Eksplisit 0 — modul cetak belum terhubung.
+      printed: 0,
     };
   }
 }
@@ -235,4 +263,9 @@ let apiSingleton: ApiPoSource | null = null;
 export function getApiPoSource(): ApiPoSource {
   if (!apiSingleton) apiSingleton = new ApiPoSource();
   return apiSingleton;
+}
+
+/** Dipakai tes/unit — pastikan label tidak [object Object]. */
+export function formatPoFieldForDisplay(value: unknown): string {
+  return displayAccurateLabel(value);
 }

@@ -1,20 +1,94 @@
 :root {
-  --ep-bg: #f3f6fa;
-  --ep-paper: #fff;
-  --ep-ink: #152238;
-  --ep-muted: #697b91;
-  --ep-line: #e2e9f1;
-  --ep-blue: #175ce5;
-  --ep-blue-soft: #ecf3ff;
+  /* Latar netral terang — keterbacaan data */
+  --ep-bg: #eef4f0;
+  --ep-paper: #ffffff;
+  --ep-ink: #14241c;
+  --ep-muted: #5f7268;
+  --ep-line: #c9dbd0;
+
+  /* Primer hijau tua Eternal */
+  --ep-primary: #1a4d3e;
+  --ep-primary-soft: #e7f2ec;
+  --ep-accent: #2f7a5c;
+
+  /* Permukaan card / panel — gradasi keluarga hijau Eternal */
+  --ep-surface-gradient: linear-gradient(
+    152deg,
+    #f7fbf8 0%,
+    #eaf4ee 46%,
+    #ddece4 100%
+  );
+  --ep-kpi-gradient: linear-gradient(
+    148deg,
+    #f8fcfa 0%,
+    #e8f3ec 52%,
+    #d9ebe2 100%
+  );
+  --ep-panel-gradient: linear-gradient(
+    165deg,
+    #f6faf7 0%,
+    #e7f1eb 50%,
+    #d8e9e0 100%
+  );
+  --ep-chip-gradient: linear-gradient(145deg, #f5faf7 0%, #e4f0e9 100%);
+  --ep-placeholder-gradient: linear-gradient(
+    160deg,
+    #f5faf7 0%,
+    #e8f2ec 100%
+  );
+
+  /* Spreadsheet DataTable — header & garis */
+  --ep-table-header-bg: #123d30;
+  --ep-table-header-fg: #ffffff;
+  --ep-table-header-muted: rgba(255, 255, 255, 0.72);
+  --ep-table-filter-active: #f0d48a;
+  --ep-table-border: #8aa697;
+  --ep-table-border-strong: #5f7f70;
+  --ep-table-cell-fg: #1a2e24;
+  --ep-table-row-hover: #e4f1ea;
+  --ep-table-sticky-bg: #f3f9f5;
+  --ep-table-body-bg: rgba(255, 255, 255, 0.72);
+
+  /* Tipografi card KPI (batas bawah tetap terbaca) */
+  --ep-kpi-label-size: 13px;
+  --ep-kpi-label-min: 12px;
+  --ep-kpi-label-weight: 700;
+  --ep-kpi-label-color: #123d30;
+  /* Default kompak agar 6 card + nilai panjang muat; container query menaikkan di layar sangat lebar */
+  --ep-kpi-value-size: 18px;
+  --ep-kpi-value-min: 16px;
+  --ep-kpi-value-weight: 800;
+  --ep-kpi-foot-size: 11px;
+  --ep-kpi-foot-weight: 600;
+  --ep-kpi-foot-color: #5a7268;
+  --ep-kpi-card-h: 52px;
+  --ep-kpi-gap: 4px;
+
+  /* Alias kompatibilitas (sebelumnya biru) → hijau primer */
+  --ep-blue: var(--ep-primary);
+  --ep-blue-soft: var(--ep-primary-soft);
+
   --ep-green: #15835d;
   --ep-amber: #a76d13;
   --ep-red: #bd4254;
-  --ep-nav: #0f2139;
-  --ep-navmuted: #aab9cc;
-  --ep-shadow: 0 4px 20px rgba(19, 41, 73, 0.035);
-  --ep-font: Inter, "Segoe UI", Arial, sans-serif;
-  --ep-sidebar-w: 224px;
-  --ep-sidebar-compact-w: 62px;
+
+  /* Sidebar / chrome gelap hijau */
+  --ep-nav: #102d24;
+  --ep-nav-hover: #1a3f33;
+  --ep-nav-active: #245a45;
+  --ep-navmuted: #a8bfb4;
+  --ep-brandmark: #2f7a5c;
+  --ep-nav-ibox: 42px;
+  --ep-nav-ibox-radius: 10px;
+  --ep-nav-ibox-sm: 24px;
+  --ep-nav-icon: 20px;
+
+  --ep-shadow: 0 4px 20px rgba(15, 42, 34, 0.05);
+  --ep-font: "DM Sans", "Segoe UI", sans-serif;
+  --ep-font-display: "DM Sans", "Segoe UI", sans-serif;
+  /* Rail icon-only (Accurate-style); lebar penuh lama tidak dipakai. */
+  --ep-sidebar-w: 64px;
+  --ep-sidebar-compact-w: 64px;
   --ep-topbar-h: 61px;
   --ep-radius: 7px;
   --ep-sticky-po: 95px;

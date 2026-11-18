@@ -3,13 +3,13 @@ import { Outlet, useLocation } from "react-router-dom";
 import {
   getInboxPoSource,
   resolveInboxPoSourceMode,
+  resolveShellDataMode,
+  shellModeFooterHint,
 } from "../demo/DemoPoSource";
 import { Header } from "./Header";
 import { navByPath } from "./nav";
 import { Sidebar } from "./Sidebar";
 import "../styles/shell.css";
-
-const COLLAPSE_KEY = "epv4.sidebar.collapsed";
 
 export function AppShell() {
   const location = useLocation();
@@ -17,22 +17,8 @@ export function AppShell() {
   const sourceMode = resolveInboxPoSourceMode(
     import.meta.env.VITE_INBOX_PO_SOURCE,
   );
-  const [collapsed, setCollapsed] = useState(() => {
-    try {
-      return localStorage.getItem(COLLAPSE_KEY) === "1";
-    } catch {
-      return false;
-    }
-  });
+  const dataMode = resolveShellDataMode(location.pathname, sourceMode);
   const [inboxBadge, setInboxBadge] = useState(0);
-
-  useEffect(() => {
-    try {
-      localStorage.setItem(COLLAPSE_KEY, collapsed ? "1" : "0");
-    } catch {
-      // ignore
-    }
-  }, [collapsed]);
 
   useEffect(() => {
     let cancelled = false;
@@ -51,19 +37,17 @@ export function AppShell() {
 
   return (
     <div className="ep-app">
-      <Sidebar
-        collapsed={collapsed}
-        onToggle={() => setCollapsed((v) => !v)}
-        inboxBadge={inboxBadge}
-      />
+      <Sidebar inboxBadge={inboxBadge} dataMode={dataMode} />
       <div className="ep-main">
-        <Header current={current} />
+        <Header current={current} dataMode={dataMode} />
         <main className="ep-container">
           <Outlet />
-          <p className="ep-footerhint">
-            {sourceMode === "api"
-              ? "Eternal Production V4 · Inbox Accurate read-only dari Mongo V4 (bukan DEMO)."
-              : "Eternal Production V4 · UI shell · Data bertanda DEMO bersifat simulasi browser dan tidak menulis MongoDB."}
+          <p
+            className="ep-footerhint"
+            data-testid="shell-footer"
+            data-mode={dataMode}
+          >
+            {shellModeFooterHint(dataMode)}
           </p>
         </main>
       </div>

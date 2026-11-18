@@ -1,20 +1,23 @@
 import type { ReactNode } from "react";
 
 type Props = {
-  title: string;
-  subtitle: string;
+  /** Diabaikan — judul halaman hanya di topbar. */
+  title?: string;
+  /** Tidak dipakai untuk judul; diabaikan agar tidak menambah blok teks di bawah topbar. */
+  subtitle?: string;
   actions?: ReactNode;
 };
 
-export function PageHeading({ title, subtitle, actions }: Props) {
+/**
+ * Hanya merender baris aksi halaman bila ada.
+ * Judul halaman tidak diulang di konten (sudah di topbar).
+ */
+export function PageHeading({ actions }: Props) {
+  if (!actions) return null;
+
   return (
-    <div className="ep-pageheading">
-      <div>
-        <div className="ep-eyebrow">Eternal Production / V4</div>
-        <h2>{title}</h2>
-        <div className="ep-sub">{subtitle}</div>
-      </div>
-      {actions ? <div className="ep-tools">{actions}</div> : null}
+    <div className="ep-pageheading ep-pageheading-tools">
+      <div className="ep-tools">{actions}</div>
     </div>
   );
 }

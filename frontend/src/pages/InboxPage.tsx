@@ -28,31 +28,60 @@ export function InboxPage() {
       try {
         const m = await getInboxPoSource().metrics();
         if (cancelled) return;
-        const footTotal =
-          sourceMode === "api" ? "Accurate · Mongo V4" : "Semua status (DEMO)";
-        const footQty = sourceMode === "api" ? "dari item Accurate" : "pcs (DEMO)";
-        setKpis([
-          { label: "Total PO", value: m.total, foot: footTotal },
-          { label: "PO Baru", value: m.baru, foot: "Belum diproses" },
-          {
-            label: "Belum Terjadwal",
-            value: m.unsched,
-            foot: "Termasuk PO baru",
-            kind: "warn",
-          },
-          { label: "Total Qty", value: formatQty(m.qty), foot: footQty },
-          {
-            label: "Sudah Dicetak",
-            value: formatQty(m.printed),
-            foot: sourceMode === "api" ? "belum dari Accurate" : "pcs (DEMO)",
-          },
-          {
-            label: "Urgent",
-            value: m.urgent,
-            foot: "Periksa prioritas",
-            kind: "danger",
-          },
-        ]);
+        if (sourceMode === "api") {
+          // KPI jujur: tanpa klaim cetak / penjadwalan.
+          setKpis([
+            {
+              label: "Total PO",
+              value: m.total,
+              foot: "Accurate · MongoDB V4",
+            },
+            {
+              label: "PO di Inbox",
+              value: m.baru ?? m.total,
+              foot: "Status awal · belum dialirkan modul lain",
+            },
+            {
+              label: "Total Qty",
+              value: formatQty(m.qty),
+              foot: "dari baris item Accurate",
+            },
+            {
+              label: "Baris Item",
+              value: m.lines ?? 0,
+              foot: "jumlah line Accurate",
+            },
+            {
+              label: "Urgent",
+              value: m.urgent,
+              foot: "flag header (jika ada)",
+              kind: "danger",
+            },
+          ]);
+        } else {
+          setKpis([
+            { label: "Total PO", value: m.total, foot: "Semua status (DEMO)" },
+            { label: "PO Baru", value: m.baru, foot: "Belum diproses" },
+            {
+              label: "Belum Terjadwal",
+              value: m.unsched,
+              foot: "Termasuk PO baru",
+              kind: "warn",
+            },
+            { label: "Total Qty", value: formatQty(m.qty), foot: "pcs (DEMO)" },
+            {
+              label: "Sudah Dicetak",
+              value: formatQty(m.printed),
+              foot: "pcs (DEMO)",
+            },
+            {
+              label: "Urgent",
+              value: m.urgent,
+              foot: "Periksa prioritas",
+              kind: "danger",
+            },
+          ]);
+        }
       } catch (err) {
         if (cancelled) return;
         setKpis([]);
@@ -72,7 +101,7 @@ export function InboxPage() {
         title="Inbox PO"
         subtitle={
           sourceMode === "api"
-            ? "PO Accurate dari Mongo V4 — read-only, dipantau sebelum penjadwalan."
+            ? "PO Accurate dari MongoDB V4 — read-only, dipantau sebelum penjadwalan."
             : "PO masuk dipantau sebelum dialokasikan ke penjadwalan (DEMO)."
         }
       />
@@ -85,7 +114,8 @@ export function InboxPage() {
       ) : (
         <div className="ep-visualnotice">
           Sumber Accurate · Inbox tidak menulis Accurate Online. Sync hanya lewat
-          prosedur manual Owner.
+          prosedur manual Owner. Progres cetak/QC/jadwal belum terhubung di modul
+          ini.
         </div>
       )}
       {kpiError ? (
