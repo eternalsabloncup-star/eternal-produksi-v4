@@ -2,13 +2,17 @@
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Literal
 
 from pymongo.database import Database
 from pymongo.errors import PyMongoError, ServerSelectionTimeoutError
 
 from app.config import get_settings
-from app.db_guard import UnsafeMongoTargetError, assert_safe_mongo_sync_target
+from app.db_guard import (
+    UnsafeMongoTargetError,
+    assert_safe_mongo_production_sync_target,
+    assert_safe_mongo_sync_target,
+)
 from app.domain.po import PoHeaderModel
 from app.integrations.accurate.auth import AccurateAuthError
 from app.integrations.accurate.client import AccurateReadClient
@@ -18,6 +22,8 @@ from app.repositories.po_repository import (
     get_by_accurate_id,
     upsert_sales_order,
 )
+
+MongoGuardMode = Literal["test", "production"]
 
 
 def _line_fingerprint(item: dict[str, Any]) -> tuple[Any, ...]:
@@ -67,7 +73,7 @@ def diff_synced_lines(
     }
 
 
-def _guard_db(db: Database) -> None:
+def _guard_db(db: Database, *, mongo_guard: MongoGuardMode = "test") -> None:
     import os
 
     settings = get_settings()
@@ -76,6 +82,14 @@ def _guard_db(db: Database) -> None:
         or os.environ.get("MONGO_AUTH_SOURCE")
         or ""
     ).strip() or None
+    if mongo_guard == "production":
+        assert_safe_mongo_production_sync_target(
+            uri=settings.mongodb_uri,
+            db_name=db.name,
+            app_env=settings.app_env,
+            expected_auth_source=expected_auth or "eternal_v4",
+        )
+        return
     assert_safe_mongo_sync_target(
         uri=settings.mongodb_uri,
         db_name=db.name,
@@ -87,9 +101,11 @@ def _guard_db(db: Database) -> None:
 def sync_sales_order_payload(
     db: Database,
     payload: dict[str, Any],
+    *,
+    mongo_guard: MongoGuardMode = "test",
 ) -> dict[str, Any]:
     """Normalisasi + upsert. Aman dijalankan berulang tanpa duplikasi header."""
-    _guard_db(db)
+    _guard_db(db, mongo_guard=mongo_guard)
     po: PoHeaderModel = normalize_sales_order(payload)
     try:
         before_doc = get_by_accurate_id(db, po.accurate_id or "")
@@ -125,12 +141,14 @@ def sync_one_sales_order_from_accurate(
     accurate_id: str | int,
     *,
     client: AccurateReadClient | None = None,
+    mongo_guard: MongoGuardMode = "test",
 ) -> dict[str, Any]:
     """Manual sync satu SO: Accurate read → normalisasi → upsert Mongo V4.
 
     Tidak ada scheduler. Tidak menulis ke Accurate. Fail-closed pada target Mongo.
+    ``mongo_guard="production"`` memakai jalur guard ops terpisah.
     """
-    _guard_db(db)
+    _guard_db(db, mongo_guard=mongo_guard)
     reader = client or AccurateReadClient.from_settings()
     try:
         payload = reader.fetch_sales_order_detail(accurate_id)
@@ -141,7 +159,7 @@ def sync_one_sales_order_from_accurate(
     except ConnectionError:
         raise
 
-    result = sync_sales_order_payload(db, payload)
+    result = sync_sales_order_payload(db, payload, mongo_guard=mongo_guard)
     result["fetch_ok"] = True
     # Jangan sertakan payload mentah / pelanggan di return untuk caller log-safe.
     safe = {

@@ -56,6 +56,6 @@ def test_mongo_connection_error_is_explicit(monkeypatch: pytest.MonkeyPatch) -> 
 
     clear_settings_cache()
     monkeypatch.setattr(po_sync, "get_by_accurate_id", boom)
-    monkeypatch.setattr(po_sync, "_guard_db", lambda _db: None)
+    monkeypatch.setattr(po_sync, "_guard_db", lambda _db, **_kw: None)
     with pytest.raises(ConnectionError, match="MongoDB tidak terjangkau"):
         sync_sales_order_payload(bad_db, SAMPLE_SALES_ORDER_STRUCTURE)
