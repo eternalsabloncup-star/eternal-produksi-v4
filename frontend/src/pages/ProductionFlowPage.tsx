@@ -4,15 +4,29 @@ import {
   buildProductionFlowSteps,
   type ProductionFlowStep,
 } from "../components/ProductionFlowTrack";
+import { ProductionFlowApiPanel } from "../components/ProductionFlowApiPanel";
 import { ProductionFlowStageTable } from "../components/ProductionFlowStageTable";
+import { resolveInboxPoSourceMode } from "../demo/resolveInboxMode";
 
-/**
- * Halaman Alur Produksi — navigasi tahap + tabel PO (frontend DEMO).
- * Tanpa aturan bisnis, approval, atau write MongoDB.
- */
+/** Alur Produksi: state backend nyata di mode API, DEMO lokal di mode demo. */
 export function ProductionFlowPage() {
+  const apiMode =
+    resolveInboxPoSourceMode(import.meta.env.VITE_INBOX_PO_SOURCE) === "api";
   const steps = useMemo(() => buildProductionFlowSteps(), []);
   const [selected, setSelected] = useState<ProductionFlowStep>(steps[0]);
+
+  if (apiMode) {
+    return (
+      <div className="ep-flow-page">
+        <ProductionFlowTrack
+          steps={steps}
+          selectedId={selected.id}
+          onSelect={setSelected}
+        />
+        <ProductionFlowApiPanel />
+      </div>
+    );
+  }
 
   return (
     <div className="ep-flow-page">

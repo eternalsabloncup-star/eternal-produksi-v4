@@ -1,15 +1,21 @@
 import { useMemo } from "react";
+import { BufferStockApiPanel } from "../components/BufferStockApiPanel";
 import { BufferStockTable } from "../components/BufferStockTable";
 import { KpiSummary, type KpiItem } from "../components/KpiSummary";
 import { getBufferStockMetrics } from "../demo/bufferStockDemo";
+import { resolveInboxPoSourceMode } from "../demo/resolveInboxMode";
 
 function formatQty(n: number): string {
   return n.toLocaleString("id-ID");
 }
 
-/** Halaman Buffer Stock — frontend DEMO saja. */
+/** Buffer Stock: atribut Accurate nyata di mode API, DEMO lokal di mode demo. */
 export function BufferStockPage() {
+  const apiMode =
+    resolveInboxPoSourceMode(import.meta.env.VITE_INBOX_PO_SOURCE) === "api";
+
   const kpis = useMemo((): KpiItem[] => {
+    if (apiMode) return [];
     const m = getBufferStockMetrics();
     return [
       {
@@ -33,7 +39,11 @@ export function BufferStockPage() {
         foot: "Keluar gudang (DEMO)",
       },
     ];
-  }, []);
+  }, [apiMode]);
+
+  if (apiMode) {
+    return <BufferStockApiPanel />;
+  }
 
   return (
     <div>

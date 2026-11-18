@@ -35,21 +35,23 @@ export function resolveShellDataMode(
   if (pathname.startsWith("/app/settings")) {
     return "api";
   }
-  // Tugas Tim, Jadwal Produksi, dan Jadwal Pengiriman memakai backend nyata.
-  if (
-    pathname.startsWith("/app/tasks") ||
-    pathname.startsWith("/app/schedule") ||
-    pathname.startsWith("/app/delivery")
-  ) {
+  // Dashboard dan Laporan membaca read model MongoDB V4 pada kedua mode.
+  if (pathname.startsWith("/app/dashboard") || pathname.startsWith("/app/reports")) {
+    return "api";
+  }
+  // Modul operasional mengikuti mode Inbox: API nyata atau DEMO lokal.
+  const operationalPrefixes = [
+    "/app/tasks",
+    "/app/schedule",
+    "/app/delivery",
+    "/app/production-flow",
+    "/app/buffer-stock",
+  ];
+  if (operationalPrefixes.some((p) => pathname === p || pathname.startsWith(`${p}/`))) {
     return inboxMode === "api" ? "api" : "demo";
   }
   // Modul workflow lokal Cursor — simulasi frontend, bukan Accurate/Mongo.
-  const demoPrefixes = [
-    "/app/control",
-    "/app/production-flow",
-    "/app/buffer-stock",
-    "/app/samples",
-  ];
+  const demoPrefixes = ["/app/control", "/app/samples"];
   if (demoPrefixes.some((p) => pathname === p || pathname.startsWith(`${p}/`))) {
     return "demo";
   }

@@ -45,15 +45,18 @@ describe("resolveInboxPoSourceMode", () => {
     expect(resolveShellDataMode("/app/control", "api")).toBe("demo");
     expect(resolveShellDataMode("/app/schedule", "api")).toBe("api");
     expect(resolveShellDataMode("/app/schedule", "demo")).toBe("demo");
-    expect(resolveShellDataMode("/app/production-flow", "api")).toBe("demo");
+    expect(resolveShellDataMode("/app/production-flow", "api")).toBe("api");
+    expect(resolveShellDataMode("/app/production-flow", "demo")).toBe("demo");
     expect(resolveShellDataMode("/app/tasks/operator", "api")).toBe("api");
     expect(resolveShellDataMode("/app/tasks/operator", "demo")).toBe("demo");
     expect(resolveShellDataMode("/app/settings", "demo")).toBe("api");
-    expect(resolveShellDataMode("/app/buffer-stock", "api")).toBe("demo");
+    expect(resolveShellDataMode("/app/buffer-stock", "api")).toBe("api");
+    expect(resolveShellDataMode("/app/buffer-stock", "demo")).toBe("demo");
     expect(resolveShellDataMode("/app/delivery", "api")).toBe("api");
     expect(resolveShellDataMode("/app/delivery", "demo")).toBe("demo");
-    expect(resolveShellDataMode("/app/dashboard", "api")).toBe("shell");
-    expect(resolveShellDataMode("/app/reports", "api")).toBe("shell");
+    expect(resolveShellDataMode("/app/dashboard", "api")).toBe("api");
+    expect(resolveShellDataMode("/app/dashboard", "demo")).toBe("api");
+    expect(resolveShellDataMode("/app/reports", "api")).toBe("api");
   });
 });
 

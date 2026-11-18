@@ -3,7 +3,9 @@ import { AppShell } from "./app/AppShell";
 import { TEAM_TASK_ROLES } from "./app/nav";
 import { useAuth } from "./auth";
 import { ControlPage } from "./pages/ControlPage";
+import { DashboardPage } from "./pages/DashboardPage";
 import { DesignApprovalPage } from "./pages/DesignApprovalPage";
+import { ReportsPage } from "./pages/ReportsPage";
 import { InboxPage } from "./pages/InboxPage";
 import { LoginPage } from "./pages/LoginPage";
 import { BufferStockPage } from "./pages/BufferStockPage";
@@ -70,16 +72,7 @@ export default function App() {
         <Route path="schedule" element={<ControlPage />} />
         <Route path="control" element={<Navigate to="/app/schedule" replace />} />
         <Route path="inbox" element={<InboxPage />} />
-        <Route
-          path="dashboard"
-          element={
-            <PlaceholderModulePage
-              title="Dashboard"
-              subtitle="Ringkasan operasional — kerangka navigasi Task #004."
-              nextHint="KPI agregat lintas cabang dan antrean perhatian berbasis API."
-            />
-          }
-        />
+        <Route path="dashboard" element={<DashboardPage />} />
         <Route path="production-flow" element={<ProductionFlowPage />} />
         <Route path="tasks" element={<TeamTasksSummaryPage />} />
         {TEAM_TASK_ROLES.map((role) => (
@@ -105,16 +98,7 @@ export default function App() {
           }
         />
         <Route path="delivery" element={<DeliveryPage />} />
-        <Route
-          path="reports"
-          element={
-            <PlaceholderModulePage
-              title="Laporan"
-              subtitle="Laporan operasional — kerangka saja."
-              nextHint="Laporan berbasis data API, bukan fixture DEMO."
-            />
-          }
-        />
+        <Route path="reports" element={<ReportsPage />} />
         <Route path="settings" element={<SettingsMasterPage />} />
       </Route>
       <Route path="*" element={<Navigate to="/app/schedule" replace />} />
