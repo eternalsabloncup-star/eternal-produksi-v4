@@ -9,7 +9,7 @@ Topologi VPS Owner (terbukti):
 from __future__ import annotations
 
 import re
-from urllib.parse import parse_qs, urlparse
+from urllib.parse import parse_qs, unquote, urlparse
 
 # Nama DB yang tidak boleh ditarget sync Accurate → V4.
 _LEGACY_OR_OPS_DB_NAMES = frozenset(
@@ -77,6 +77,31 @@ def extract_mongo_auth_source(uri: str) -> str | None:
     parsed = urlparse(text)
     query = parse_qs(parsed.query)
     values = query.get("authSource") or query.get("authsource") or []
+    if not values:
+        return None
+    value = str(values[0]).strip()
+    return value or None
+
+
+def extract_mongo_username(uri: str) -> str | None:
+    """Username dari URI (tanpa password)."""
+    text = (uri or "").strip()
+    if not text or "://" not in text:
+        return None
+    parsed = urlparse(text)
+    if not parsed.username:
+        return None
+    return unquote(parsed.username)
+
+
+def extract_mongo_replica_set(uri: str) -> str | None:
+    """replicaSet dari query URI."""
+    text = (uri or "").strip()
+    if not text or "://" not in text:
+        return None
+    parsed = urlparse(text)
+    query = parse_qs(parsed.query)
+    values = query.get("replicaSet") or query.get("replicaset") or []
     if not values:
         return None
     value = str(values[0]).strip()
