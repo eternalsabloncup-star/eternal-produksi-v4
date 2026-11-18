@@ -7,6 +7,9 @@ export default defineConfig(({ mode }) => {
 
   return {
     plugins: [react()],
+    optimizeDeps: {
+      include: ["pdfjs-dist/build/pdf.mjs"],
+    },
     server: {
       host: true,
       port: 5173,

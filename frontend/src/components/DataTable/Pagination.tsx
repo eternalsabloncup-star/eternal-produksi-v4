@@ -1,8 +1,12 @@
+/** Standar global ukuran halaman tabel V4. */
+export const TABLE_PAGE_SIZE_OPTIONS = [100, 200, 500] as const;
+export const DEFAULT_TABLE_PAGE_SIZE = 100;
+
 type Props = {
   page: number;
   pageSize: number;
   total: number;
-  pageSizeOptions?: number[];
+  pageSizeOptions?: readonly number[] | number[];
   onPageChange: (page: number) => void;
   onPageSizeChange: (pageSize: number) => void;
 };
@@ -11,7 +15,7 @@ export function Pagination({
   page,
   pageSize,
   total,
-  pageSizeOptions = [15, 25, 50],
+  pageSizeOptions = TABLE_PAGE_SIZE_OPTIONS,
   onPageChange,
   onPageSizeChange,
 }: Props) {

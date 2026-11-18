@@ -1,6 +1,9 @@
 import { useEffect, useState } from "react";
 import { Outlet, useLocation } from "react-router-dom";
-import { getDemoPoSource } from "../demo/DemoPoSource";
+import {
+  getInboxPoSource,
+  resolveInboxPoSourceMode,
+} from "../demo/DemoPoSource";
 import { Header } from "./Header";
 import { navByPath } from "./nav";
 import { Sidebar } from "./Sidebar";
@@ -11,6 +14,9 @@ const COLLAPSE_KEY = "epv4.sidebar.collapsed";
 export function AppShell() {
   const location = useLocation();
   const current = navByPath(location.pathname);
+  const sourceMode = resolveInboxPoSourceMode(
+    import.meta.env.VITE_INBOX_PO_SOURCE,
+  );
   const [collapsed, setCollapsed] = useState(() => {
     try {
       return localStorage.getItem(COLLAPSE_KEY) === "1";
@@ -31,13 +37,17 @@ export function AppShell() {
   useEffect(() => {
     let cancelled = false;
     (async () => {
-      const m = await getDemoPoSource().metrics();
-      if (!cancelled) setInboxBadge(m.unsched ?? 0);
+      try {
+        const m = await getInboxPoSource().metrics();
+        if (!cancelled) setInboxBadge(Number(m.total) || 0);
+      } catch {
+        if (!cancelled) setInboxBadge(0);
+      }
     })();
     return () => {
       cancelled = true;
     };
-  }, [location.pathname]);
+  }, [location.pathname, sourceMode]);
 
   return (
     <div className="ep-app">
@@ -51,8 +61,9 @@ export function AppShell() {
         <main className="ep-container">
           <Outlet />
           <p className="ep-footerhint">
-            Eternal Production V4 · UI shell · Data bertanda DEMO bersifat simulasi
-            browser dan tidak menulis MongoDB.
+            {sourceMode === "api"
+              ? "Eternal Production V4 · Inbox Accurate read-only dari Mongo V4 (bukan DEMO)."
+              : "Eternal Production V4 · UI shell · Data bertanda DEMO bersifat simulasi browser dan tidak menulis MongoDB."}
           </p>
         </main>
       </div>

@@ -8,6 +8,8 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.api.health import router as health_router
+from app.api.po import router as po_router
+from app.api.table_preferences import router as table_preferences_router
 from app.auth.routes import router as auth_router
 from app.config import get_settings
 from app.db import close_client
@@ -35,12 +37,14 @@ def create_app() -> FastAPI:
             CORSMiddleware,
             allow_origins=origins,
             allow_credentials=True,
-            allow_methods=["GET", "POST", "OPTIONS"],
+            allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
             allow_headers=["Content-Type", "X-CSRF-Token"],
         )
 
     application.include_router(health_router)
     application.include_router(auth_router)
+    application.include_router(table_preferences_router)
+    application.include_router(po_router)
     return application
 
 

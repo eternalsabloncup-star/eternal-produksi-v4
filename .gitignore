@@ -110,3 +110,13 @@ logs/
 tempCodeRunnerFile.py
 tmp/
 temp/
+
+# Local probe/smoke packages & pin files (never commit)
+scripts/*.tar.gz
+scripts/*.tar.gz.sha256
+scripts/eternal-v4-*.tar.gz
+scripts/eternal-v4-*.sha256
+scripts/*app-running.webp
+**/V4_ACCURATE_DB_ID
+**/V4_ACCURATE_DB_ID.*
+**/*accurate*db*pin*.txt

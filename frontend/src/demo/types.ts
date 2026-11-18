@@ -1,9 +1,49 @@
-/** Shared contracts for demo now / API later. No permanent business enum lock-in. */
+/** Shared contracts for demo now / Accurate later. */
+
+import type { PoDataOrigin, ProcessKind } from "../domain/poIdentity";
 
 export type DemoPoStatus = string;
 
+/** Baris item PO — identitas line terpisah dari kode barang. */
+export type PoLineItem = {
+  /** Identitas teknis baris (stabil). */
+  lineId: string;
+  /** ID baris Accurate (null untuk DEMO). */
+  accurateLineId?: string | null;
+  /** Kode barang Accurate/DEMO — bukan pengganti lineId. */
+  code: string;
+  name: string;
+  qty: number;
+  unit: string;
+  /**
+   * Nilai proses mentah dari sumber.
+   * Mapping Cetak/Non-Cetak hanya via allowlist terverifikasi.
+   */
+  processRaw: string;
+  /** Hasil mapping; null jika sumber belum terverifikasi. */
+  processKind: ProcessKind | null;
+  /**
+   * Label tampilan Proses (kompatibilitas kolom existing).
+   * Diisi dari processKind bila ada, selain itu processRaw.
+   */
+  process: string;
+  color: string;
+};
+
 export type PoRow = {
+  /**
+   * Nomor PO tampilan (No. PO Accurate / DEMO).
+   * Dipertahankan sebagai kunci tampilan Inbox existing (`id`).
+   */
   id: string;
+  /** Alias eksplisit nomor PO — sama dengan id. */
+  poNo: string;
+  /** Identitas teknis sumber — untuk modul berikutnya. */
+  sourcePoId: string;
+  /** ID header Accurate (null untuk DEMO). */
+  accurateId?: string | null;
+  /** Asal record: demo | accurate. Jangan dicampur dalam satu list tanpa filter. */
+  origin: PoDataOrigin;
   customer: string;
   product: string;
   qty: number;
@@ -17,6 +57,22 @@ export type PoRow = {
   owner: string;
   sample: boolean;
   activity: string[];
+  /** Master Accurate-style (header Inbox). */
+  poDate: string;
+  paymentTerms: string;
+  etaShip: string;
+  seller: string;
+  expedition: string;
+  shipZone: string;
+  recipient: string;
+  address: string;
+  userName: string;
+  bufferLabel: string;
+  notes: string;
+  /** Teks total kuantitas dari dokumen sumber (tanpa konversi satuan). */
+  totalQtyDisplay: string;
+  itemCount: number;
+  items: PoLineItem[];
 };
 
 export type PoFilters = {

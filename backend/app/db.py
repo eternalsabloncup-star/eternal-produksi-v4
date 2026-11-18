@@ -40,6 +40,16 @@ def sessions_collection(db: Database | None = None) -> Collection:
     return database["sessions"]
 
 
+def table_preferences_collection(db: Database | None = None) -> Collection:
+    database = get_db() if db is None else db
+    return database["ui_table_preferences"]
+
+
+def accurate_sales_orders_collection(db: Database | None = None) -> Collection:
+    database = get_db() if db is None else db
+    return database["accurate_sales_orders"]
+
+
 USERS_INDEXES: list[dict[str, Any]] = [
     {
         "keys": [("email_normalized", ASCENDING)],
@@ -65,11 +75,26 @@ SESSIONS_INDEXES: list[dict[str, Any]] = [
     },
 ]
 
+TABLE_PREFERENCES_INDEXES: list[dict[str, Any]] = [
+    {
+        "keys": [("user_id", ASCENDING), ("table_id", ASCENDING)],
+        "name": "uniq_user_table_prefs",
+        "unique": True,
+    },
+]
+
 
 def ensure_indexes(db: Database | None = None) -> dict[str, list[str]]:
     """Create required indexes idempotently. Safe to re-run."""
+    from app.repositories.po_repository import ensure_po_indexes
+
     database = get_db() if db is None else db
-    created: dict[str, list[str]] = {"users": [], "sessions": []}
+    created: dict[str, list[str]] = {
+        "users": [],
+        "sessions": [],
+        "ui_table_preferences": [],
+        "accurate_sales_orders": [],
+    }
 
     users = database["users"]
     for spec in USERS_INDEXES:
@@ -87,6 +112,17 @@ def ensure_indexes(db: Database | None = None) -> dict[str, list[str]]:
             kwargs["expireAfterSeconds"] = spec["expireAfterSeconds"]
         name = sessions.create_index(spec["keys"], **kwargs)
         created["sessions"].append(name)
+
+    prefs = database["ui_table_preferences"]
+    for spec in TABLE_PREFERENCES_INDEXES:
+        name = prefs.create_index(
+            spec["keys"],
+            name=spec["name"],
+            unique=spec.get("unique", False),
+        )
+        created["ui_table_preferences"].append(name)
+
+    created["accurate_sales_orders"] = ensure_po_indexes(database)
 
     return created
 

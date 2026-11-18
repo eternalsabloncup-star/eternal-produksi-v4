@@ -1,0 +1,35 @@
+/* Inbox PO — sumber DEMO vs Accurate + state error (Tahap 01). */
+
+.ep-inbox-source-banner {
+  font-size: 12px;
+  margin: 0 0 10px;
+  padding: 8px 12px;
+  border-radius: 6px;
+  border: 1px solid #d5deea;
+  background: #f4f7fb;
+  color: #3a4a63;
+}
+
+.ep-inbox-source-banner.is-api {
+  border-color: #b7d4c4;
+  background: #eef8f1;
+  color: #1f5a3a;
+}
+
+.ep-inbox-source-banner code {
+  font-size: 11px;
+}
+
+.ep-inbox-error {
+  margin: 0 0 10px;
+  padding: 10px 12px;
+  border-radius: 6px;
+  border: 1px solid #e7b6b4;
+  background: #fdf2f1;
+  color: #8a2f2c;
+  font-size: 13px;
+}
+
+.ep-inbox-error-hint {
+  color: #6a4543;
+}

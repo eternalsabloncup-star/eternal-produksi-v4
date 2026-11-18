@@ -39,6 +39,9 @@ services:
     restart: unless-stopped
     environment:
       APP_ENV: development
+      # Alias Owner: MONGO_URL / DB_NAME (tetap kompatibel MONGODB_*).
+      MONGO_URL: mongodb://${MONGO_ROOT_USERNAME:-eternal}:${MONGO_ROOT_PASSWORD:-eternal_dev_password}@mongo:27017/${MONGO_INITDB_DATABASE:-eternal_produksi_v4}?authSource=admin&replicaSet=rs0
+      DB_NAME: ${MONGO_INITDB_DATABASE:-eternal_produksi_v4}
       MONGODB_URI: mongodb://${MONGO_ROOT_USERNAME:-eternal}:${MONGO_ROOT_PASSWORD:-eternal_dev_password}@mongo:27017/${MONGO_INITDB_DATABASE:-eternal_produksi_v4}?authSource=admin&replicaSet=rs0
       MONGODB_DB: ${MONGO_INITDB_DATABASE:-eternal_produksi_v4}
       COOKIE_SECURE: "false"
@@ -61,7 +64,7 @@ services:
       [
         "bash",
         "-lc",
-        "if [ ! -d node_modules/vite ]; then npm install; fi && npm run dev -- --host 0.0.0.0 --port 5173",
+        "npm install --prefer-offline --no-audit --no-fund && npm run dev -- --host 0.0.0.0 --port 5173",
       ]
     volumes:
       - ./frontend:/app

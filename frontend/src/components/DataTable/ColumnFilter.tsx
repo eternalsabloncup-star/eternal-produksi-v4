@@ -1,3 +1,4 @@
+import type { ReactNode } from "react";
 import type { PoFilters } from "../../demo/types";
 import { DEMO_BRANCHES, DEMO_MACHINES, DEMO_STATUSES } from "../../demo/fixtures";
 
@@ -8,6 +9,12 @@ type Props = {
   showStatus?: boolean;
   showMachine?: boolean;
   showUrgent?: boolean;
+  /** Konten tambahan di ujung kanan baris (mis. Kolom Tabel / Reset tampilan). */
+  trailing?: ReactNode;
+  /** Teks bantuan DEMO di kanan; default true untuk halaman lama. */
+  showDemoHint?: boolean;
+  /** Satu baris + scroll horizontal khusus toolbar. */
+  compact?: boolean;
 };
 
 export function ColumnFilter({
@@ -17,9 +24,12 @@ export function ColumnFilter({
   showStatus = true,
   showMachine = false,
   showUrgent = false,
+  trailing,
+  showDemoHint = true,
+  compact = false,
 }: Props) {
   return (
-    <div className="ep-filterbar">
+    <div className={`ep-filterbar${compact ? " is-compact" : ""}`}>
       <div className="ep-search">
         <span style={{ fontSize: 14, color: "#97a8bc" }} aria-hidden>
           ⌕
@@ -87,9 +97,12 @@ export function ColumnFilter({
       <button type="button" className="ep-btn sm" onClick={onReset}>
         Reset filter
       </button>
-      <span className="ep-sub" style={{ marginLeft: "auto" }}>
-        Filter berlaku ke halaman tabel (DEMO)
-      </span>
+      {trailing}
+      {showDemoHint ? (
+        <span className="ep-sub ep-filterbar-hint">
+          Filter berlaku ke halaman tabel (DEMO)
+        </span>
+      ) : null}
     </div>
   );
 }

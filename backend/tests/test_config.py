@@ -8,6 +8,7 @@ from pydantic import ValidationError
 
 def test_missing_mongodb_uri_fails(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("MONGODB_URI", raising=False)
+    monkeypatch.delenv("MONGO_URL", raising=False)
     monkeypatch.setenv("MONGODB_DB", "eternal_produksi_v4_test")
     from app.config import Settings, clear_settings_cache
 
