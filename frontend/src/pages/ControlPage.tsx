@@ -1,15 +1,13 @@
 import { useEffect, useState } from "react";
-import { Link } from "react-router-dom";
-import { DemoBanner } from "../components/DemoBanner";
 import { KpiSummary, type KpiItem } from "../components/KpiSummary";
-import { PageHeading } from "../components/PageHeading";
-import { PoDemoTable } from "../components/PoDemoTable";
+import { ScheduleProductionTable } from "../components/ScheduleProductionTable";
 import { getDemoPoSource } from "../demo/DemoPoSource";
 
 function formatQty(n: number): string {
   return n.toLocaleString("id-ID");
 }
 
+/** Halaman Jadwal Produksi (konten eks-Kontrol Produksi). */
 export function ControlPage() {
   const [kpis, setKpis] = useState<KpiItem[]>([]);
 
@@ -59,20 +57,8 @@ export function ControlPage() {
 
   return (
     <div>
-      <PageHeading
-        actions={
-          <Link className="ep-btn primary" to="/app/schedule">
-            Jadwal Produksi
-          </Link>
-        }
-      />
-      <DemoBanner />
       <KpiSummary items={kpis} />
-      <PoDemoTable
-        title="Monitoring Seluruh PO"
-        showMachineFilter
-        showUrgentFilter
-      />
+      <ScheduleProductionTable />
     </div>
   );
 }

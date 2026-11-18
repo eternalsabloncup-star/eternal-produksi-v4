@@ -31,7 +31,17 @@ export function resolveShellDataMode(
   if (pathname.startsWith("/app/inbox")) {
     return inboxMode === "api" ? "api" : "demo";
   }
-  if (pathname.startsWith("/app/control")) {
+  // Modul workflow lokal Cursor — simulasi frontend, bukan Accurate/Mongo.
+  const demoPrefixes = [
+    "/app/control",
+    "/app/schedule",
+    "/app/production-flow",
+    "/app/tasks",
+    "/app/buffer-stock",
+    "/app/delivery",
+    "/app/samples",
+  ];
+  if (demoPrefixes.some((p) => pathname === p || pathname.startsWith(`${p}/`))) {
     return "demo";
   }
   return "shell";
