@@ -86,6 +86,64 @@ sumber yang terverifikasi. Yang tersedia adalah adapter yang diuji beserta
 endpoint ingest untuk data test. Status ini tidak boleh dinyatakan selesai
 sebelum payload dan sinkronisasi nyata diverifikasi Owner.
 
+---
+
+## PEMETAAN FIELD SURAT JALAN ACCURATE → MODEL V4
+
+Sumber struktur: halaman Accurate `DeliveryOrder` (module `DO`) yang diberikan
+Owner — `columnDef` untuk header dan `memorizeFieldDef.detailField.detailItem`
+untuk item. HTML halaman **bukan** respons REST API: nama field dipakai sebagai
+schema, nilainya tidak pernah diasumsikan ada.
+
+### Header
+
+| Field Accurate | Model Mongo | Catatan |
+| --- | --- | --- |
+| `id` | `accurate_sj_id` | Wajib; fail-closed |
+| `number` | `sj_no` | Wajib; fail-closed |
+| `salesOrderId` / `detailItem[].salesOrder.id` | `accurate_po_id` | Wajib; dua Sales Order dalam satu SJ ditolak |
+| `salesOrderNumber` / `detailItem[].salesOrder.number` | `po_no` | Identitas PO V4 |
+| `poNumber` | `customer_po_no` | Nomor PO milik pelanggan, **bukan** `po_no` |
+| `transDate` | `sj_date` | Juga menjadi `ship_date` selama Accurate tidak mengirim tanggal kirim terpisah (`source_meta.ship_date_source`) |
+| `customer.name` | `customer_name` | |
+| `customerNo` | `customer_no` | |
+| `toAddress` | `destination` | |
+| `contactInfo` | `contact_info` | Nama kontak; nomor telepon belum terbukti dikirim |
+| `masterSalesman.name` | `salesman_name` | |
+| `createdByUserName` | `created_by_user_name` | |
+| `shipment.name` | `shipment` | |
+| `charField3` | `ship_zone` | Label halaman "Zona Pengiriman"; nilai **belum diverifikasi** → ditandai `source_meta.char_field3_zone_unproven` |
+| `branch.name` | `branch_name` | |
+| `description` | `description` | |
+| `printedByUser` | `printed_by_user` | **Bukan** pembuat data |
+| `deliveryPrintedTime` | `printed_time` | |
+| `deliveryPackingNumber` | `packing_number` | |
+| `statusName` | `accurate_status_name` | Status Accurate, terpisah dari status operasional V4 |
+| `attachmentExist` | `attachment_exist` | Tri-state: `true`/`false`/tidak dikirim |
+
+### Item line
+
+| Field Accurate | Model Mongo | Catatan |
+| --- | --- | --- |
+| `detailItem[].id` | `sj_line_id` | Wajib; duplikat ditolak |
+| `detailItem[].salesOrderDetailId` | `accurate_line_id` | Wajib; relasi item line PO |
+| `detailItem[].item.no` | `item_code` | |
+| `detailItem[].detailName` | `item_name` | |
+| `detailItem[].quantity` | `qty` | |
+| `detailItem[].itemUnit.name` | `unit` | Satuan berbeda tidak pernah dijumlahkan |
+| `detailItem[].warehouse.name` | `warehouse_name` | Gudang/outlet |
+| `detailItem[].detailNotes` | `detail_notes` | |
+
+### Aturan isi
+
+- Field yang tidak dikirim Accurate disimpan kosong dan dicatat di
+  `source_meta.absent_fields`; UI menampilkannya sebagai kosong.
+- Nomor telepon kontak belum terbukti ada pada payload SJ → selalu kosong
+  sampai Owner memverifikasi sumbernya.
+- Perubahan header saja dicatat sebagai `changed_header_fields` dan **tidak**
+  menaikkan versi SJ; aturan Opsi B tetap hanya dipicu perubahan item line atau
+  tanggal kirim.
+
 ## Blocker aturan bisnis (belum diputuskan)
 
 - Rumus Ready Gudang, mutasi, dan Status Buffer final.

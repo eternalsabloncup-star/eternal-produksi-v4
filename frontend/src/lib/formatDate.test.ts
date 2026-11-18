@@ -1,5 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { formatDateDisplay, isIsoDateString } from "./formatDate";
+import {
+  formatDateDisplay,
+  formatDateTimeDisplay,
+  isIsoDateString,
+  toIsoDateString,
+} from "./formatDate";
 
 describe("formatDateDisplay", () => {
   it("formats YYYY-MM-DD to DD/MM/YYYY", () => {
@@ -40,5 +45,31 @@ describe("isIsoDateString", () => {
   it("detects ISO calendar prefix", () => {
     expect(isIsoDateString("2026-11-18")).toBe(true);
     expect(isIsoDateString("18/11/2026")).toBe(false);
+  });
+});
+
+describe("toIsoDateString", () => {
+  it("normalises both source formats for comparison", () => {
+    expect(toIsoDateString("18/11/2026")).toBe("2026-11-18");
+    expect(toIsoDateString("2026-11-18")).toBe("2026-11-18");
+    expect(toIsoDateString("18/11/2026 10:05:00")).toBe("2026-11-18");
+  });
+
+  it("returns empty for missing or invalid values", () => {
+    expect(toIsoDateString("")).toBe("");
+    expect(toIsoDateString(null)).toBe("");
+    expect(toIsoDateString("PO/18/11/2026/000010")).toBe("");
+  });
+});
+
+describe("formatDateTimeDisplay", () => {
+  it("keeps the printing time when the source has one", () => {
+    expect(formatDateTimeDisplay("18/11/2026 10:05:00")).toBe("18/11/2026 10:05");
+    expect(formatDateTimeDisplay("2026-11-18T09:07:00Z")).toBe("18/11/2026 09:07");
+  });
+
+  it("falls back to the date when no time is sent", () => {
+    expect(formatDateTimeDisplay("18/11/2026")).toBe("18/11/2026");
+    expect(formatDateTimeDisplay("")).toBe("—");
   });
 });

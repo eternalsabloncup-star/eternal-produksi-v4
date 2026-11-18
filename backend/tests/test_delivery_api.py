@@ -513,3 +513,117 @@ def test_schedule_endpoint_with_date_filter(app_client: TestClient, db: Database
     )
     assert window.json()["summary"]["sj_count"] == 1
     assert window.json()["items"][0]["accurate_sj_id"] == "SJ-API-7002"
+
+
+def _do_payload(**overrides) -> dict:
+    """Payload TEST bergaya Accurate Delivery Order (objek lookup bersarang)."""
+    payload = {
+        "id": SJ_ID,
+        "number": "SJ/API/0001",
+        "salesOrderId": PO_ID,
+        "salesOrderNumber": "PO/18/11/2026/000010",
+        "transDate": "2026-11-21",
+        "toAddress": "ALAMAT-API-TEST",
+        "customer": {"id": 5501, "name": "PELANGGAN-API-TEST"},
+        "customerNo": "C-API-001",
+        "poNumber": "PO-PELANGGAN-API-7",
+        "shipment": {"name": "EKSPEDISI-API-TEST"},
+        "branch": {"name": "CABANG-API-TEST"},
+        "masterSalesman": {"name": "PENJUAL-API-TEST"},
+        "charField3": "ZONA-API-TEST",
+        "printedByUser": "user.cetak.api",
+        "deliveryPrintedTime": "21/11/2026 08:00:00",
+        "deliveryPackingNumber": "PACK-API-0001",
+        "createdByUserName": "user.pembuat.api",
+        "statusName": "Belum Terkirim",
+        "attachmentExist": False,
+        "description": "KETERANGAN-API-TEST",
+        "detailItem": [
+            {
+                "id": "SJL-API-1",
+                "salesOrderDetailId": LINE_PRINT,
+                "item": {"no": "BRG-SIM-001", "name": "Item Cetak API"},
+                "detailName": "Item Cetak API",
+                "quantity": 200,
+                "itemUnit": {"name": "PCS"},
+                "warehouse": {"name": "GUDANG-API-TEST"},
+                "detailNotes": "CATATAN-API-TEST",
+            }
+        ],
+    }
+    payload.update(overrides)
+    return payload
+
+
+def test_schedule_endpoint_exposes_full_sj_header(
+    app_client: TestClient, db: Database
+) -> None:
+    _seed_users(db)
+    _seed_packed(db, qty=200)
+    csrf = _login(app_client, "owner@eternal.local")
+    app_client.post(
+        "/api/delivery/notes",
+        json={"delivery_notes": [_do_payload()]},
+        headers={"X-CSRF-Token": csrf},
+    )
+
+    row = app_client.get("/api/delivery/schedule").json()["items"][0]
+    assert row["customer_name"] == "PELANGGAN-API-TEST"
+    assert row["customer_no"] == "C-API-001"
+    assert row["customer_po_no"] == "PO-PELANGGAN-API-7"
+    assert row["shipment"] == "EKSPEDISI-API-TEST"
+    assert row["branch_name"] == "CABANG-API-TEST"
+    assert row["salesman_name"] == "PENJUAL-API-TEST"
+    assert row["ship_zone"] == "ZONA-API-TEST"
+    assert row["printed_by_user"] == "user.cetak.api"
+    assert row["printed_time"] == "21/11/2026 08:00:00"
+    assert row["packing_number"] == "PACK-API-0001"
+    assert row["created_by_user_name"] == "user.pembuat.api"
+    assert row["accurate_status_name"] == "Belum Terkirim"
+    assert row["description"] == "KETERANGAN-API-TEST"
+    assert row["attachment_exist"] is False
+    assert row["contact_info"] == ""
+    assert row["item_count"] == 1
+    assert row["qty_by_unit"] == {"PCS": 200.0}
+
+
+def test_detail_endpoint_matches_schedule_row_values(
+    app_client: TestClient, db: Database
+) -> None:
+    _seed_users(db)
+    _seed_packed(db, qty=200)
+    csrf = _login(app_client, "owner@eternal.local")
+    app_client.post(
+        "/api/delivery/notes",
+        json={"delivery_notes": [_do_payload()]},
+        headers={"X-CSRF-Token": csrf},
+    )
+
+    row = app_client.get("/api/delivery/schedule").json()["items"][0]
+    note = app_client.get(f"/api/delivery/{SJ_ID}").json()["delivery_note"]
+
+    for field in (
+        "sj_no",
+        "po_no",
+        "customer_po_no",
+        "customer_name",
+        "customer_no",
+        "destination",
+        "contact_info",
+        "salesman_name",
+        "created_by_user_name",
+        "shipment",
+        "ship_zone",
+        "branch_name",
+        "description",
+        "printed_by_user",
+        "printed_time",
+        "packing_number",
+        "accurate_status_name",
+        "sj_date",
+        "ship_date",
+    ):
+        assert row[field] == note[field], field
+    assert row["items"] == note["items"]
+    assert note["items"][0]["warehouse_name"] == "GUDANG-API-TEST"
+    assert note["items"][0]["detail_notes"] == "CATATAN-API-TEST"

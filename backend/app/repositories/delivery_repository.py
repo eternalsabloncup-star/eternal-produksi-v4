@@ -15,6 +15,8 @@ from pymongo.collection import Collection
 from pymongo.database import Database
 from pymongo.errors import DuplicateKeyError
 
+from app.integrations.accurate.fields import as_text, business_label, nested_label
+
 DELIVERY_NOTES_COLLECTION = "accurate_delivery_notes"
 LOADING_EVENTS_COLLECTION = "loading_events"
 DELIVERY_EVENTS_COLLECTION = "delivery_events"
@@ -103,65 +105,272 @@ def _as_float(value: Any) -> float:
         return 0.0
 
 
+def _as_bool(value: Any) -> bool | None:
+    """Tri-state: None berarti Accurate tidak mengirim field tersebut."""
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        return value
+    text = as_text(value).lower()
+    if text in {"true", "1", "ya", "yes"}:
+        return True
+    if text in {"false", "0", "tidak", "no"}:
+        return False
+    return None
+
+
+def _first_label(payload: dict[str, Any], *keys: str) -> str:
+    """Label pertama yang terisi, menerima bentuk lookup maupun string."""
+    for key in keys:
+        label = business_label(payload.get(key))
+        if label:
+            return label
+    return ""
+
+
+# Header SJ yang dibaca dari payload Accurate. Field yang tidak dikirim tetap
+# kosong dan dicatat di ``source_meta.absent_fields`` — tidak pernah ditebak.
+_HEADER_SOURCE_KEYS = (
+    "number",
+    "transDate",
+    "customer",
+    "customerNo",
+    "toAddress",
+    "poNumber",
+    "shipment",
+    "description",
+    "branch",
+    "masterSalesman",
+    "charField3",
+    "printedByUser",
+    "deliveryPrintedTime",
+    "deliveryPackingNumber",
+    "createdByUserName",
+    "statusName",
+    "attachmentExist",
+    "contactInfo",
+)
+
+
+def _normalize_item(raw: dict[str, Any], seen: set[str]) -> dict[str, Any]:
+    sj_line_id = as_text(raw.get("id") or raw.get("sj_line_id"))
+    if not sj_line_id:
+        raise DeliveryNoteIdentityError("Setiap item SJ wajib memiliki ID baris.")
+    if sj_line_id in seen:
+        raise DeliveryNoteIdentityError(f"ID baris SJ duplikat: {sj_line_id}")
+    seen.add(sj_line_id)
+
+    po_line_id = as_text(raw.get("salesOrderDetailId") or raw.get("accurate_line_id"))
+    if not po_line_id:
+        raise DeliveryNoteIdentityError(
+            f"Item SJ {sj_line_id} tidak memiliki referensi item line PO "
+            "(accurate_line_id) — relasi tidak boleh ditebak dari nama barang."
+        )
+
+    item_obj = raw.get("item") if isinstance(raw.get("item"), dict) else {}
+    return {
+        "sj_line_id": sj_line_id,
+        "accurate_line_id": po_line_id,
+        "item_code": nested_label(item_obj, "no", "itemNo", "code")
+        or as_text(raw.get("itemNo") or raw.get("item_code")),
+        "item_name": as_text(raw.get("detailName") or raw.get("item_name"))
+        or nested_label(item_obj, "name"),
+        "qty": _as_float(raw.get("quantity", raw.get("qty"))),
+        "unit": _first_label(raw, "itemUnit", "unit")
+        or as_text(raw.get("itemUnitName")),
+        "warehouse_name": _first_label(raw, "warehouse")
+        or as_text(raw.get("warehouse_name")),
+        "detail_notes": as_text(raw.get("detailNotes") or raw.get("detail_notes")),
+    }
+
+
+def _sales_order_from_items(raw_items: list[Any]) -> tuple[str, str]:
+    """Relasi Sales Order dari ``detailItem[].salesOrder`` bila header tak punya.
+
+    Dua Sales Order berbeda dalam satu SJ membuat identitas PO ambigu →
+    fail-closed, bukan memilih salah satu.
+    """
+    pairs: dict[str, str] = {}
+    for raw in raw_items:
+        if not isinstance(raw, dict):
+            continue
+        so = raw.get("salesOrder")
+        if not isinstance(so, dict):
+            continue
+        so_id = as_text(so.get("id"))
+        if so_id:
+            pairs[so_id] = as_text(so.get("number"))
+    if not pairs:
+        return "", ""
+    if len(pairs) > 1:
+        raise DeliveryNoteIdentityError(
+            "Item Surat Jalan merujuk lebih dari satu Sales Order: "
+            f"{', '.join(sorted(pairs))} — relasi PO tidak boleh ditebak."
+        )
+    so_id, so_no = next(iter(pairs.items()))
+    return so_id, so_no
+
+
 def normalize_delivery_note(payload: dict[str, Any]) -> dict[str, Any]:
-    """Snapshot SJ Accurate → model internal. Fail-closed pada identitas."""
-    accurate_sj_id = str(payload.get("id") or payload.get("accurate_sj_id") or "").strip()
+    """Snapshot SJ Accurate (Delivery Order) → model internal.
+
+    Identitas (SJ ID, nomor SJ, PO, item line) fail-closed. Field header lain
+    bersifat opsional: yang tidak dikirim Accurate disimpan kosong dan dicatat
+    pada ``source_meta.absent_fields`` agar UI menampilkannya sebagai kosong,
+    bukan nilai karangan.
+    """
+    accurate_sj_id = as_text(payload.get("id") or payload.get("accurate_sj_id"))
     if not accurate_sj_id:
         raise DeliveryNoteIdentityError("Surat Jalan wajib memiliki Accurate SJ ID.")
-    sj_no = str(payload.get("number") or payload.get("sj_no") or "").strip()
+    sj_no = as_text(payload.get("number") or payload.get("sj_no"))
     if not sj_no:
         raise DeliveryNoteIdentityError("Surat Jalan wajib memiliki nomor SJ asli.")
-    accurate_po_id = str(
-        payload.get("salesOrderId") or payload.get("accurate_po_id") or ""
-    ).strip()
-    if not accurate_po_id:
-        raise DeliveryNoteIdentityError("Surat Jalan wajib merujuk Accurate PO ID.")
-
     raw_items = payload.get("detailItem") or payload.get("items") or []
     if not isinstance(raw_items, list) or not raw_items:
         raise DeliveryNoteIdentityError("Surat Jalan wajib memiliki item.")
 
-    items: list[dict[str, Any]] = []
     seen: set[str] = set()
-    for raw in raw_items:
-        if not isinstance(raw, dict):
-            continue
-        sj_line_id = str(raw.get("id") or raw.get("sj_line_id") or "").strip()
-        if not sj_line_id:
-            raise DeliveryNoteIdentityError("Setiap item SJ wajib memiliki ID baris.")
-        if sj_line_id in seen:
-            raise DeliveryNoteIdentityError(f"ID baris SJ duplikat: {sj_line_id}")
-        seen.add(sj_line_id)
-        po_line_id = str(
-            raw.get("salesOrderDetailId") or raw.get("accurate_line_id") or ""
-        ).strip()
-        if not po_line_id:
-            raise DeliveryNoteIdentityError(
-                f"Item SJ {sj_line_id} tidak memiliki referensi item line PO "
-                "(accurate_line_id) — relasi tidak boleh ditebak dari nama barang."
-            )
-        items.append(
-            {
-                "sj_line_id": sj_line_id,
-                "accurate_line_id": po_line_id,
-                "item_code": str(raw.get("itemNo") or raw.get("item_code") or ""),
-                "item_name": str(raw.get("detailName") or raw.get("item_name") or ""),
-                "qty": _as_float(raw.get("quantity", raw.get("qty"))),
-                "unit": str(raw.get("itemUnitName") or raw.get("unit") or ""),
-            }
-        )
+    items = [_normalize_item(raw, seen) for raw in raw_items if isinstance(raw, dict)]
+
+    line_po_id, line_po_no = _sales_order_from_items(raw_items)
+    accurate_po_id = (
+        as_text(payload.get("salesOrderId") or payload.get("accurate_po_id")) or line_po_id
+    )
+    if not accurate_po_id:
+        raise DeliveryNoteIdentityError("Surat Jalan wajib merujuk Accurate PO ID.")
+
+    sj_date = as_text(payload.get("transDate") or payload.get("sj_date"))
+    # Accurate DO tidak punya tanggal kirim terpisah; tanggal transaksi dipakai
+    # sebagai tanggal kirim kecuali sumber benar-benar mengirim shipDate.
+    explicit_ship_date = as_text(
+        payload.get("shipDate") or payload.get("deliveryDate") or payload.get("ship_date")
+    )
+    ship_date = explicit_ship_date or sj_date
+
+    # charField3 diberi label "Zona Pengiriman" di halaman Accurate, tetapi
+    # isinya belum diverifikasi Owner — nilainya disalin apa adanya dan ditandai.
+    ship_zone = _first_label(payload, "charField3") or as_text(payload.get("ship_zone"))
+
+    absent = [key for key in _HEADER_SOURCE_KEYS if payload.get(key) in (None, "")]
+
+    source_meta: dict[str, Any] = {"absent_fields": absent}
+    if ship_zone:
+        source_meta["char_field3_zone_unproven"] = True
+    if explicit_ship_date:
+        source_meta["ship_date_source"] = "shipDate"
+    elif sj_date:
+        source_meta["ship_date_source"] = "transDate"
 
     return {
         "accurate_sj_id": accurate_sj_id,
         "sj_no": sj_no,
         "accurate_po_id": accurate_po_id,
-        "po_no": str(payload.get("salesOrderNumber") or payload.get("po_no") or ""),
-        "ship_date": str(payload.get("transDate") or payload.get("ship_date") or ""),
-        "destination": str(payload.get("toAddress") or payload.get("destination") or ""),
-        "shipment": str(payload.get("shipmentName") or payload.get("shipment") or ""),
+        # Identitas PO V4 = nomor Sales Order Accurate, bukan DO.poNumber.
+        "po_no": as_text(payload.get("salesOrderNumber") or payload.get("po_no"))
+        or line_po_no,
+        # DO.poNumber adalah nomor PO milik pelanggan, disimpan terpisah.
+        "customer_po_no": as_text(payload.get("poNumber") or payload.get("customer_po_no")),
+        "sj_date": sj_date,
+        "ship_date": ship_date,
+        "customer_name": _first_label(payload, "customer", "customerName")
+        or as_text(payload.get("customer_name")),
+        "customer_no": as_text(payload.get("customerNo") or payload.get("customer_no")),
+        "destination": business_label(payload.get("toAddress"))
+        or as_text(payload.get("destination")),
+        "contact_info": _first_label(payload, "contactInfo")
+        or as_text(payload.get("contact_info")),
+        "contact_phone": as_text(
+            payload.get("contactPhone")
+            or payload.get("mobilePhone")
+            or payload.get("contact_phone")
+        ),
+        "salesman_name": _first_label(payload, "masterSalesman")
+        or as_text(payload.get("salesman_name")),
+        "created_by_user_name": as_text(
+            payload.get("createdByUserName") or payload.get("created_by_user_name")
+        ),
+        "shipment": _first_label(payload, "shipment")
+        or as_text(payload.get("shipmentName")),
+        "ship_zone": ship_zone,
+        "branch_name": _first_label(payload, "branch") or as_text(payload.get("branch_name")),
+        "description": as_text(payload.get("description") or payload.get("notes")),
+        # printedByUser ≠ pembuat data; keduanya disimpan terpisah.
+        "printed_by_user": _first_label(payload, "printedByUser", "printUserName", "userPrinted")
+        or as_text(payload.get("printed_by_user")),
+        "printed_time": as_text(
+            payload.get("deliveryPrintedTime")
+            or payload.get("printedTime")
+            or payload.get("printed_time")
+        ),
+        "packing_number": as_text(
+            payload.get("deliveryPackingNumber") or payload.get("packing_number")
+        ),
+        "accurate_status_name": as_text(
+            payload.get("statusName") or payload.get("accurate_status_name")
+        ),
+        "attachment_exist": _as_bool(
+            payload.get("attachmentExist", payload.get("attachment_exist"))
+        ),
         "items": items,
-        "superseded_by": str(payload.get("superseded_by") or "") or None,
+        "source_meta": source_meta,
+        "superseded_by": as_text(payload.get("superseded_by")) or None,
     }
+
+
+_ITEM_SIGNATURE_FIELDS = (
+    "accurate_line_id",
+    "item_code",
+    "item_name",
+    "qty",
+    "unit",
+    "warehouse_name",
+    "detail_notes",
+)
+
+# Field header yang perubahannya dicatat pada riwayat revisi. Perubahan header
+# saja tidak menaikkan versi SJ: aturan Opsi B hanya berlaku untuk item line.
+_HEADER_DIFF_FIELDS = (
+    "po_no",
+    "customer_po_no",
+    "customer_name",
+    "customer_no",
+    "destination",
+    "contact_info",
+    "contact_phone",
+    "salesman_name",
+    "created_by_user_name",
+    "shipment",
+    "ship_zone",
+    "branch_name",
+    "description",
+    "printed_by_user",
+    "printed_time",
+    "packing_number",
+    "accurate_status_name",
+    "attachment_exist",
+    "sj_date",
+)
+
+
+def _item_signature(item: dict[str, Any]) -> tuple[Any, ...]:
+    """Field bisnis item; key baru yang belum ada di snapshot lama = kosong."""
+    return tuple(item.get(field) or "" for field in _ITEM_SIGNATURE_FIELDS)
+
+
+def diff_note_header(
+    before: dict[str, Any] | None, after: dict[str, Any]
+) -> list[dict[str, Any]]:
+    """Field header SJ yang berubah antara dua snapshot."""
+    if before is None:
+        return []
+    changes: list[dict[str, Any]] = []
+    for field in _HEADER_DIFF_FIELDS:
+        prev = before.get(field)
+        curr = after.get(field)
+        if (prev or "") == (curr or ""):
+            continue
+        changes.append({"field": field, "before": prev, "after": curr})
+    return changes
 
 
 def diff_note_items(
@@ -176,7 +385,7 @@ def diff_note_items(
     for line_id in sorted(set(old) | set(new)):
         prev = old.get(line_id)
         curr = new.get(line_id)
-        if prev == curr:
+        if prev is not None and curr is not None and _item_signature(prev) == _item_signature(curr):
             continue
         changes.append(
             {
@@ -204,6 +413,7 @@ def upsert_delivery_note(db: Database, payload: dict[str, Any]) -> dict[str, Any
     )
 
     changes = diff_note_items(before, doc)
+    header_changes = diff_note_header(before, doc)
     ship_date_changed = before is not None and before.get("ship_date") != doc.get(
         "ship_date"
     )
@@ -231,6 +441,7 @@ def upsert_delivery_note(db: Database, payload: dict[str, Any]) -> dict[str, Any
                 "snapshot_before": before,
                 "snapshot_after": doc,
                 "changed_items": changes,
+                "changed_header_fields": header_changes,
                 "ship_date_changed": ship_date_changed,
                 "created_at": now,
             }
@@ -244,6 +455,7 @@ def upsert_delivery_note(db: Database, payload: dict[str, Any]) -> dict[str, Any
         "was_insert": before is None,
         "source_changed": changed,
         "changed_items": changes,
+        "changed_header_fields": header_changes,
         "sj_version": version,
     }
 

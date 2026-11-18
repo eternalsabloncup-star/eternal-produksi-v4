@@ -9,21 +9,59 @@ export type DeliveryNoteItem = {
   item_name: string;
   qty: number;
   unit: string;
+  warehouse_name?: string;
+  detail_notes?: string;
 };
 
-export type DeliveryScheduleRow = {
+/** Snapshot header Surat Jalan Accurate (Delivery Order) apa adanya. */
+export type DeliveryNote = {
   accurate_sj_id: string;
   sj_no: string;
   accurate_po_id: string;
+  /** Nomor Sales Order Accurate = identitas PO di V4. */
   po_no: string;
+  /** DO.poNumber = nomor PO milik pelanggan. */
+  customer_po_no?: string;
+  sj_date?: string;
   ship_date: string;
+  customer_name?: string;
+  customer_no?: string;
   destination: string;
+  contact_info?: string;
+  contact_phone?: string;
+  salesman_name?: string;
+  created_by_user_name?: string;
   shipment: string;
+  ship_zone?: string;
+  branch_name?: string;
+  description?: string;
+  printed_by_user?: string;
+  printed_time?: string;
+  packing_number?: string;
+  accurate_status_name?: string;
+  attachment_exist?: boolean | null;
+  sj_version?: number;
+  revision_status?: string;
   items: DeliveryNoteItem[];
+  source_meta?: {
+    absent_fields?: string[];
+    char_field3_zone_unproven?: boolean;
+    ship_date_source?: string;
+  };
+  superseded_by?: string | null;
+};
+
+export type DeliveryScheduleRow = DeliveryNote & {
+  item_count: number;
+  qty_by_unit: Record<string, number>;
   loaded: boolean;
+  loaded_at?: string | null;
+  loading_id?: string | null;
+  needs_reloading: boolean;
   delivery_status: string;
   attempts: number;
-  superseded_by?: string | null;
+  driver_email: string;
+  recipient_name: string;
 };
 
 export type DeliverySchedule = {
@@ -135,6 +173,7 @@ export type LoadingEvent = {
   sj_version: number;
   status: string;
   actor_email: string;
+  created_at?: string;
   cancelled_by?: string | null;
   cancel_reason?: string | null;
   items: { accurate_line_id: string; qty: number; process_kind: string | null }[];
@@ -149,7 +188,37 @@ export type NoteRevision = {
     qty_after: number | null;
     change: string;
   }[];
+  changed_header_fields?: {
+    field: string;
+    before: unknown;
+    after: unknown;
+  }[];
   created_at: string;
+};
+
+export type DeliveryEvent = {
+  attempt: number;
+  status: string;
+  courier_email: string;
+  recipient_name: string | null;
+  failure_reason: string | null;
+  photo_evidence_ids: string[];
+  signature_evidence_id?: string | null;
+  created_at?: string;
+};
+
+export type DeliveryEvidence = {
+  photos: { evidence_id: string; filename?: string }[];
+  signatures: { evidence_id: string; filename?: string }[];
+};
+
+export type DeliveryDetail = {
+  delivery_note: DeliveryNote;
+  loading: LoadingEvent | null;
+  loadings: LoadingEvent[];
+  revisions: NoteRevision[];
+  events: DeliveryEvent[];
+  evidence: DeliveryEvidence;
 };
 
 export async function cancelLoading(
@@ -210,18 +279,8 @@ export async function confirmDeliveryFailed(
   });
 }
 
-export async function fetchDeliveryDetail(sjId: string): Promise<{
-  delivery_note: DeliveryScheduleRow;
-  loading: { actor_email: string; created_at: string } | null;
-  events: {
-    attempt: number;
-    status: string;
-    courier_email: string;
-    recipient_name: string | null;
-    failure_reason: string | null;
-    photo_evidence_ids: string[];
-  }[];
-  evidence: { photos: { evidence_id: string }[]; signatures: { evidence_id: string }[] };
-}> {
+export async function fetchDeliveryDetail(
+  sjId: string,
+): Promise<DeliveryDetail> {
   return request(`/api/delivery/${encodeURIComponent(sjId)}`);
 }

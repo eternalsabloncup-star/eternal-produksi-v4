@@ -738,18 +738,32 @@ def delivery_schedule(
     for note in notes:
         loading = deliveries.get_loading_event(db, note["accurate_sj_id"])
         events = deliveries.list_delivery_events(db, note["accurate_sj_id"])
+        last_event = events[-1] if events else None
+        row_qty: dict[str, float] = {}
         for item in note["items"]:
             unit = str(item.get("unit") or "-")
             qty_by_unit[unit] = qty_by_unit.get(unit, 0) + float(item["qty"])
+            row_qty[unit] = row_qty.get(unit, 0) + float(item["qty"])
         if note.get("destination"):
             destinations.add(str(note["destination"]))
+        revision_status = note.get("revision_status") or deliveries.REVISION_ACTIVE
         rows.append(
             {
                 **note,
+                "item_count": len(note.get("items") or []),
+                "qty_by_unit": row_qty,
                 "loaded": loading is not None,
                 "loaded_at": (loading or {}).get("created_at"),
-                "delivery_status": events[-1]["status"] if events else deliveries.DELIVERY_PENDING,
+                "loading_id": (loading or {}).get("loading_id"),
+                "revision_status": revision_status,
+                "needs_reloading": revision_status
+                == deliveries.REVISION_NEEDS_RELOADING,
+                "delivery_status": last_event["status"]
+                if last_event
+                else deliveries.DELIVERY_PENDING,
                 "attempts": len(events),
+                "driver_email": (last_event or {}).get("courier_email") or "",
+                "recipient_name": (last_event or {}).get("recipient_name") or "",
             }
         )
     return {

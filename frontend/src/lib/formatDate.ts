@@ -79,3 +79,53 @@ export function formatDateDisplay(
 export function isIsoDateString(value: string): boolean {
   return ISO_DATE.test(value.trim());
 }
+
+/**
+ * Tanggal kalender → `YYYY-MM-DD` untuk perbandingan filter dan sorting.
+ * Kosong/invalid → "" agar baris tanpa tanggal tidak ikut rentang apa pun.
+ */
+export function toIsoDateString(value: string | null | undefined): string {
+  if (!value) return "";
+  const trimmed = value.trim();
+  if (!trimmed) return "";
+
+  const iso = trimmed.match(ISO_DATETIME) || trimmed.match(ISO_DATE);
+  if (iso) {
+    const y = Number(iso[1]);
+    const mo = Number(iso[2]);
+    const d = Number(iso[3]);
+    return isValidYmd(y, mo, d) ? `${y}-${pad2(mo)}-${pad2(d)}` : "";
+  }
+
+  const dmy = trimmed.match(DMY_DATETIME) || trimmed.match(DMY_DATE);
+  if (dmy) {
+    const d = Number(dmy[1]);
+    const mo = Number(dmy[2]);
+    const y = Number(dmy[3]);
+    return isValidYmd(y, mo, d) ? `${y}-${pad2(mo)}-${pad2(d)}` : "";
+  }
+
+  return "";
+}
+
+/**
+ * Tanggal + jam sumber Accurate → `DD/MM/YYYY HH:mm`.
+ * Nilai tanpa jam tetap tampil sebagai tanggal saja.
+ */
+export function formatDateTimeDisplay(
+  value: string | null | undefined,
+  emptyLabel = "—",
+): string {
+  if (!value) return emptyLabel;
+  const trimmed = value.trim();
+  if (!trimmed) return emptyLabel;
+
+  const date = formatDateDisplay(trimmed, emptyLabel);
+  if (date === emptyLabel) return emptyLabel;
+
+  const match = trimmed.match(ISO_DATETIME) || trimmed.match(DMY_DATETIME);
+  const hour = match?.[4];
+  const minute = match?.[5];
+  if (hour == null || minute == null) return date;
+  return `${date} ${pad2(Number(hour))}:${minute}`;
+}

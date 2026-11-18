@@ -2,42 +2,72 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   cancelLoading,
   confirmLoading,
+  fetchDeliveryDetail,
   fetchDeliverySchedule,
   fetchLoadingValidation,
-  fetchRevisions,
   raiseDiscrepancy,
-  type DeliverySchedule,
+  type DeliveryDetail,
   type DeliveryScheduleRow,
-  type LoadingEvent,
   type LoadingValidation,
-  type NoteRevision,
 } from "../api/delivery";
 import { newIdempotencyKey } from "../api/operational";
+import type { ShipDateFilterValue } from "../demo/deliverySjDemo";
+import {
+  deliveryStatusLabel,
+  display,
+  displayBoolean,
+  filterDeliveryRows,
+  formatQtyByUnit,
+  loadingStatusLabel,
+  rowTotalQtyDisplay,
+  scheduleMetrics,
+} from "../lib/deliverySj";
+import {
+  formatDateDisplay,
+  formatDateTimeDisplay,
+  toIsoDateString,
+} from "../lib/formatDate";
+import { DataTable } from "./DataTable/DataTable";
+import { DEFAULT_TABLE_PAGE_SIZE } from "./DataTable/Pagination";
+import type { ColumnDef } from "./DataTable/types";
+import { DeliveryPeriodModal } from "./DeliveryPeriodModal";
+import { DeliverySjDetailModal } from "./DeliverySjDetailModal";
 import { KpiSummary, type KpiItem } from "./KpiSummary";
+import { ShipDateFilter } from "./ShipDateFilter";
+import { SjApiLineItems } from "./SjApiLineItems";
 
-function qty(n: number): string {
-  return n.toLocaleString("id-ID");
-}
+/** Kolom utama tetap ringkas; sisanya lewat Pengaturan Kolom. */
+const DEFAULT_HIDDEN = [
+  "customerNo",
+  "customerPoNo",
+  "destination",
+  "contact",
+  "branch",
+  "createdBy",
+  "description",
+  "shipment",
+  "packingNumber",
+  "printedBy",
+  "printedTime",
+  "accurateStatus",
+  "attachment",
+  "sjDate",
+  "driver",
+];
 
-function statusLabel(status: string): string {
-  if (status === "berhasil") return "Berhasil";
-  if (status === "gagal") return "Gagal";
-  return "Menunggu Pengiriman";
-}
-
-/** Jadwal Pengiriman — satu baris per Surat Jalan Accurate nyata. */
 export function DeliveryApiPanel() {
-  const [schedule, setSchedule] = useState<DeliverySchedule | null>(null);
-  const [from, setFrom] = useState("");
-  const [to, setTo] = useState("");
+  const [rows, setRows] = useState<DeliveryScheduleRow[]>([]);
+  const [dateFilter, setDateFilter] = useState<ShipDateFilterValue>({ kind: "all" });
+  const [q, setQ] = useState("");
+  const [page, setPage] = useState(1);
+  const [pageSize, setPageSize] = useState(DEFAULT_TABLE_PAGE_SIZE);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
-  const [expanded, setExpanded] = useState<string | null>(null);
+  const [periodOpen, setPeriodOpen] = useState(false);
   const [selected, setSelected] = useState<DeliveryScheduleRow | null>(null);
+  const [detail, setDetail] = useState<DeliveryDetail | null>(null);
   const [validation, setValidation] = useState<LoadingValidation | null>(null);
-  const [revisions, setRevisions] = useState<NoteRevision[]>([]);
-  const [loadings, setLoadings] = useState<LoadingEvent[]>([]);
   const [cancelReason, setCancelReason] = useState("");
   const [busy, setBusy] = useState(false);
 
@@ -45,64 +75,113 @@ export function DeliveryApiPanel() {
     setLoading(true);
     setError(null);
     try {
-      setSchedule(await fetchDeliverySchedule({ from: from || undefined, to: to || undefined }));
+      const schedule = await fetchDeliverySchedule({});
+      setRows(schedule.items);
+      return schedule.items;
     } catch (err) {
-      setSchedule(null);
+      setRows([]);
       setError(err instanceof Error ? err.message : "Gagal memuat jadwal pengiriman.");
+      return [];
     } finally {
       setLoading(false);
     }
-  }, [from, to]);
+  }, []);
 
   useEffect(() => {
     void load();
   }, [load]);
 
-  const kpis = useMemo((): KpiItem[] => {
-    const summary = schedule?.summary;
-    const units = Object.entries(summary?.qty_by_unit || {});
-    return [
+  const filtered = useMemo(
+    () => filterDeliveryRows(rows, dateFilter, q),
+    [rows, dateFilter, q],
+  );
+
+  const pageRows = useMemo(() => {
+    const start = (page - 1) * pageSize;
+    return filtered.slice(start, start + pageSize);
+  }, [filtered, page, pageSize]);
+
+  const metrics = useMemo(() => scheduleMetrics(filtered), [filtered]);
+
+  const kpis = useMemo(
+    (): KpiItem[] => [
       {
         label: "Jumlah SJ",
-        value: summary?.sj_count ?? 0,
+        value: metrics.sjCount,
         foot: "Surat Jalan Accurate",
       },
       {
         label: "Total Qty",
-        value: units.map(([unit, v]) => `${qty(v)} ${unit}`).join(" + ") || "—",
+        value: formatQtyByUnit(metrics.qtyByUnit),
         foot: "per satuan, tanpa konversi",
       },
       {
         label: "Tujuan Unik",
-        value: summary?.destination_count ?? 0,
+        value: metrics.destinationCount,
         foot: "alamat berbeda",
       },
       {
         label: "Sudah Loading",
-        value: (schedule?.items || []).filter((r) => r.loaded).length,
-        foot: "SJ siap dikirim",
+        value: metrics.loadedCount,
+        foot:
+          metrics.needsReloadingCount > 0
+            ? `${metrics.needsReloadingCount} perlu Loading ulang`
+            : "SJ siap dikirim",
       },
-    ];
-  }, [schedule]);
+    ],
+    [metrics],
+  );
 
-  async function openLoading(row: DeliveryScheduleRow, keepNotice = false) {
-    setSelected(row);
-    setValidation(null);
+  const openDetail = useCallback(
+    async (row: DeliveryScheduleRow, keepNotice = false) => {
+      setSelected(row);
+      setValidation(null);
+      setDetail(null);
+      setError(null);
+      if (!keepNotice) setNotice(null);
+      try {
+        const [note, check] = await Promise.all([
+          fetchDeliveryDetail(row.accurate_sj_id),
+          fetchLoadingValidation(row.accurate_sj_id),
+        ]);
+        setDetail(note);
+        setValidation(check);
+      } catch (err) {
+        setError(err instanceof Error ? err.message : "Gagal memuat detail Surat Jalan.");
+      }
+    },
+    [],
+  );
+
+  const reopenAfterAction = useCallback(
+    async (sjId: string, message: string) => {
+      const next = await load();
+      const fresh = next.find((r) => r.accurate_sj_id === sjId);
+      if (fresh) await openDetail(fresh, true);
+      setNotice(message);
+    },
+    [load, openDetail],
+  );
+
+  async function onConfirmLoading() {
+    if (!selected) return;
+    setBusy(true);
     setError(null);
-    if (!keepNotice) setNotice(null);
     try {
-      const [v, history] = await Promise.all([
-        fetchLoadingValidation(row.accurate_sj_id),
-        fetchRevisions(row.accurate_sj_id).catch(() => ({
-          revisions: [] as NoteRevision[],
-          loadings: [] as LoadingEvent[],
-        })),
-      ]);
-      setValidation(v);
-      setRevisions(history.revisions);
-      setLoadings(history.loadings);
+      const res = await confirmLoading(
+        selected.accurate_sj_id,
+        newIdempotencyKey(`loading:${selected.accurate_sj_id}`),
+      );
+      await reopenAfterAction(
+        selected.accurate_sj_id,
+        res.duplicate
+          ? "Loading SJ ini sudah dikonfirmasi sebelumnya."
+          : "Loading dikonfirmasi; tugas Driver dibuat.",
+      );
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Validasi Loading gagal.");
+      setError(err instanceof Error ? err.message : "Konfirmasi Loading gagal.");
+    } finally {
+      setBusy(false);
     }
   }
 
@@ -116,37 +195,15 @@ export function DeliveryApiPanel() {
     setError(null);
     try {
       const res = await cancelLoading(selected.accurate_sj_id, cancelReason.trim());
-      const message = res.cancelled
-        ? "Loading dibatalkan; Qty QC dikembalikan dan menunggu Loading ulang."
-        : "Tidak ada Loading aktif untuk dibatalkan.";
       setCancelReason("");
-      await load();
-      await openLoading(selected, true);
-      setNotice(message);
+      await reopenAfterAction(
+        selected.accurate_sj_id,
+        res.cancelled
+          ? "Loading dibatalkan; Qty QC dikembalikan dan menunggu Loading ulang."
+          : "Tidak ada Loading aktif untuk dibatalkan.",
+      );
     } catch (err) {
       setError(err instanceof Error ? err.message : "Pembatalan Loading gagal.");
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  async function onConfirmLoading() {
-    if (!selected) return;
-    setBusy(true);
-    setError(null);
-    try {
-      const res = await confirmLoading(
-        selected.accurate_sj_id,
-        newIdempotencyKey(`loading:${selected.accurate_sj_id}`),
-      );
-      const message = res.duplicate
-        ? "Loading SJ ini sudah dikonfirmasi sebelumnya."
-        : "Loading dikonfirmasi; tugas Driver dibuat.";
-      await load();
-      await openLoading(selected, true);
-      setNotice(message);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Konfirmasi Loading gagal.");
     } finally {
       setBusy(false);
     }
@@ -158,9 +215,7 @@ export function DeliveryApiPanel() {
     setError(null);
     try {
       await raiseDiscrepancy(selected.accurate_sj_id);
-      setNotice(
-        "Tugas Kepala Produksi “Qty Loading dan SJ Berbeda” dibuat.",
-      );
+      setNotice("Tugas Kepala Produksi “Qty Loading dan SJ Berbeda” dibuat.");
     } catch (err) {
       setError(err instanceof Error ? err.message : "Gagal membuat tugas koordinasi.");
     } finally {
@@ -168,325 +223,385 @@ export function DeliveryApiPanel() {
     }
   }
 
-  const rows = schedule?.items || [];
+  const columns: ColumnDef<DeliveryScheduleRow>[] = useMemo(
+    () => [
+      {
+        id: "sjNo",
+        label: "No. SJ",
+        sticky: "po",
+        hideable: true,
+        filterType: "text",
+        defaultWidth: 150,
+        getFilterValue: (r) => r.sj_no,
+        render: (r) => (
+          <button
+            type="button"
+            className="key"
+            onClick={(e) => {
+              e.stopPropagation();
+              void openDetail(r);
+            }}
+          >
+            {r.sj_no}
+          </button>
+        ),
+      },
+      {
+        id: "shipDate",
+        label: "Tanggal Kirim",
+        hideable: true,
+        filterType: "date",
+        defaultWidth: 116,
+        getFilterValue: (r) => toIsoDateString(r.ship_date),
+        getSortValue: (r) => toIsoDateString(r.ship_date),
+        render: (r) => formatDateDisplay(r.ship_date),
+      },
+      {
+        id: "sjDate",
+        label: "Tanggal SJ",
+        hideable: true,
+        filterType: "date",
+        defaultWidth: 116,
+        getFilterValue: (r) => toIsoDateString(r.sj_date),
+        getSortValue: (r) => toIsoDateString(r.sj_date),
+        render: (r) => formatDateDisplay(r.sj_date),
+      },
+      {
+        id: "customer",
+        label: "Outlet / Pelanggan",
+        sticky: "customer",
+        hideable: true,
+        filterType: "text",
+        defaultWidth: 180,
+        getFilterValue: (r) => r.customer_name || "",
+        render: (r) => display(r.customer_name),
+      },
+      {
+        id: "customerNo",
+        label: "ID Pelanggan",
+        hideable: true,
+        filterType: "text",
+        defaultWidth: 110,
+        getFilterValue: (r) => r.customer_no || "",
+        render: (r) => display(r.customer_no),
+      },
+      {
+        id: "poNo",
+        label: "No. PO",
+        hideable: true,
+        filterType: "text",
+        defaultWidth: 150,
+        getFilterValue: (r) => r.po_no,
+        render: (r) => display(r.po_no),
+      },
+      {
+        id: "customerPoNo",
+        label: "No. PO Pelanggan",
+        hideable: true,
+        filterType: "text",
+        defaultWidth: 140,
+        getFilterValue: (r) => r.customer_po_no || "",
+        render: (r) => display(r.customer_po_no),
+      },
+      {
+        id: "salesman",
+        label: "Nama Penjual",
+        hideable: true,
+        filterType: "text",
+        defaultWidth: 120,
+        getFilterValue: (r) => r.salesman_name || "",
+        render: (r) => display(r.salesman_name),
+      },
+      {
+        id: "shipZone",
+        label: "Zona Kirim",
+        hideable: true,
+        filterType: "text",
+        defaultWidth: 110,
+        getFilterValue: (r) => r.ship_zone || "",
+        render: (r) => display(r.ship_zone),
+      },
+      {
+        id: "destination",
+        label: "Alamat",
+        hideable: true,
+        filterType: "text",
+        defaultWidth: 200,
+        getFilterValue: (r) => r.destination || "",
+        render: (r) => display(r.destination),
+      },
+      {
+        id: "contact",
+        label: "Kontak",
+        hideable: true,
+        filterType: "text",
+        defaultWidth: 120,
+        getFilterValue: (r) => r.contact_info || "",
+        render: (r) => display(r.contact_info),
+      },
+      {
+        id: "shipment",
+        label: "Ekspedisi",
+        hideable: true,
+        filterType: "text",
+        defaultWidth: 120,
+        getFilterValue: (r) => r.shipment || "",
+        render: (r) => display(r.shipment),
+      },
+      {
+        id: "branch",
+        label: "Cabang",
+        hideable: true,
+        filterType: "text",
+        defaultWidth: 120,
+        getFilterValue: (r) => r.branch_name || "",
+        render: (r) => display(r.branch_name),
+      },
+      {
+        id: "createdBy",
+        label: "Pembuat Data",
+        hideable: true,
+        filterType: "text",
+        defaultWidth: 130,
+        getFilterValue: (r) => r.created_by_user_name || "",
+        render: (r) => display(r.created_by_user_name),
+      },
+      {
+        id: "printedBy",
+        label: "Dicetak/Email",
+        hideable: true,
+        filterType: "text",
+        defaultWidth: 130,
+        getFilterValue: (r) => r.printed_by_user || "",
+        render: (r) => display(r.printed_by_user),
+      },
+      {
+        id: "printedTime",
+        label: "Waktu Cetak/Email",
+        hideable: true,
+        filterType: "text",
+        defaultWidth: 140,
+        getFilterValue: (r) => r.printed_time || "",
+        render: (r) => formatDateTimeDisplay(r.printed_time),
+      },
+      {
+        id: "packingNumber",
+        label: "No. Pengepakan",
+        hideable: true,
+        filterType: "text",
+        defaultWidth: 130,
+        getFilterValue: (r) => r.packing_number || "",
+        render: (r) => display(r.packing_number),
+      },
+      {
+        id: "description",
+        label: "Keterangan",
+        hideable: true,
+        filterType: "text",
+        defaultWidth: 170,
+        getFilterValue: (r) => r.description || "",
+        render: (r) => display(r.description),
+      },
+      {
+        id: "attachment",
+        label: "Memiliki Dokumen",
+        hideable: true,
+        filterType: "text",
+        defaultWidth: 120,
+        getFilterValue: (r) => displayBoolean(r.attachment_exist),
+        render: (r) => displayBoolean(r.attachment_exist),
+      },
+      {
+        id: "accurateStatus",
+        label: "Status Accurate",
+        hideable: true,
+        filterType: "text",
+        defaultWidth: 140,
+        getFilterValue: (r) => r.accurate_status_name || "",
+        render: (r) => display(r.accurate_status_name),
+      },
+      {
+        id: "itemCount",
+        label: "Jumlah Barang",
+        hideable: true,
+        filterType: "number",
+        defaultWidth: 110,
+        getFilterValue: (r) => String(r.item_count ?? r.items.length),
+        getSortValue: (r) => r.item_count ?? r.items.length,
+        render: (r) => r.item_count ?? r.items.length,
+      },
+      {
+        id: "totalQty",
+        label: "Total Qty",
+        hideable: true,
+        filterType: "text",
+        defaultWidth: 150,
+        getFilterValue: (r) => rowTotalQtyDisplay(r),
+        render: (r) => <b>{rowTotalQtyDisplay(r)}</b>,
+      },
+      {
+        id: "loadingStatus",
+        label: "Status Loading",
+        hideable: true,
+        filterType: "text",
+        defaultWidth: 140,
+        getFilterValue: (r) => loadingStatusLabel(r),
+        render: (r) => (
+          <span className={r.needs_reloading ? "ep-row-danger" : undefined}>
+            {loadingStatusLabel(r)}
+          </span>
+        ),
+      },
+      {
+        id: "deliveryStatus",
+        label: "Status Pengiriman",
+        hideable: true,
+        filterType: "text",
+        defaultWidth: 150,
+        getFilterValue: (r) => deliveryStatusLabel(r.delivery_status),
+        render: (r) => deliveryStatusLabel(r.delivery_status),
+      },
+      {
+        id: "driver",
+        label: "Driver",
+        hideable: true,
+        filterType: "text",
+        defaultWidth: 150,
+        getFilterValue: (r) => r.driver_email || "",
+        render: (r) => display(r.driver_email),
+      },
+    ],
+    [openDetail],
+  );
+
+  function resetFilters() {
+    setDateFilter({ kind: "all" });
+    setQ("");
+    setPage(1);
+  }
 
   return (
     <div data-testid="delivery-api-panel">
       <KpiSummary items={kpis} />
 
-      <div className="ep-filterbar">
-        <label htmlFor="ship-from">Tanggal kirim</label>
-        <input
-          id="ship-from"
-          type="date"
-          value={from}
-          onChange={(e) => setFrom(e.target.value)}
-        />
-        <label htmlFor="ship-to">s/d</label>
-        <input id="ship-to" type="date" value={to} onChange={(e) => setTo(e.target.value)} />
-        <button type="button" className="ep-btn" onClick={() => void load()}>
-          Terapkan
-        </button>
-        <button
-          type="button"
-          className="ep-btn"
-          onClick={() => {
-            setFrom("");
-            setTo("");
-          }}
-        >
-          Reset filter
-        </button>
-      </div>
+      {error && !selected ? <p className="ep-error">{error}</p> : null}
+      {notice && !selected ? <p className="ep-notice">{notice}</p> : null}
 
-      {error ? <p className="ep-error">{error}</p> : null}
-      {notice ? <p className="ep-notice">{notice}</p> : null}
+      <DataTable
+        tableId="delivery:sj-accurate-v1"
+        columns={columns}
+        rows={loading ? [] : pageRows}
+        filterSourceRows={filtered}
+        rowKey={(r) => r.accurate_sj_id}
+        enableColumnManager
+        inlineColumnTools
+        defaultHiddenColumns={DEFAULT_HIDDEN}
+        page={page}
+        pageSize={pageSize}
+        total={filtered.length}
+        onPageChange={setPage}
+        onPageSizeChange={(size) => {
+          setPageSize(size);
+          setPage(1);
+        }}
+        onRowActivate={(row) => void openDetail(row)}
+        isRowExpandable={(row) => (row.items?.length ?? 0) > 0}
+        renderExpandedRow={(row) => <SjApiLineItems items={row.items} />}
+        emptyMessage={
+          loading
+            ? "Memuat Surat Jalan dari MongoDB V4…"
+            : rows.length === 0
+              ? "Belum ada Surat Jalan Accurate di MongoDB V4."
+              : "Tidak ada Surat Jalan pada filter aktif."
+        }
+        filterSlot={(tools) => (
+          <div className="ep-filterbar is-compact">
+            <div className="ep-search">
+              <span style={{ fontSize: 14, color: "#97a8bc" }} aria-hidden>
+                ⌕
+              </span>
+              <input
+                placeholder="Cari No. SJ, PO, outlet, penjual, barang…"
+                value={q}
+                onChange={(e) => {
+                  setQ(e.target.value);
+                  setPage(1);
+                }}
+                aria-label="Cari Surat Jalan"
+              />
+            </div>
+            <ShipDateFilter
+              value={dateFilter}
+              onChange={(next) => {
+                setDateFilter(next);
+                setPage(1);
+              }}
+            />
+            <button type="button" className="ep-btn sm" onClick={resetFilters}>
+              Reset filter
+            </button>
+            <button
+              type="button"
+              className="ep-btn sm primary"
+              onClick={() => setPeriodOpen(true)}
+            >
+              Rincian Pengiriman
+            </button>
+            <button
+              type="button"
+              className="ep-btn sm"
+              onClick={(e) => tools.openColumns(e.currentTarget)}
+            >
+              ▥ Kolom Tabel
+            </button>
+            <button
+              type="button"
+              className="ep-btn sm"
+              onClick={() => void tools.resetPrefs()}
+            >
+              Reset tampilan
+            </button>
+            <button type="button" className="ep-btn sm" onClick={() => void load()}>
+              Muat ulang
+            </button>
+            {tools.prefsHint ? (
+              <span
+                className={`ep-prefs-hint${tools.saveState === "error" ? " is-error" : ""}`}
+                role={tools.saveState === "error" ? "alert" : undefined}
+              >
+                {tools.prefsHint}
+              </span>
+            ) : null}
+          </div>
+        )}
+      />
 
-      <div className="ep-tblscroll">
-        <table className="ep-table">
-          <thead>
-            <tr>
-              <th>No. SJ</th>
-              <th>No. PO</th>
-              <th>Tanggal Kirim</th>
-              <th>Tujuan</th>
-              <th>Ekspedisi</th>
-              <th>Item</th>
-              <th>Loading</th>
-              <th>Status Pengiriman</th>
-              <th>Aksi</th>
-            </tr>
-          </thead>
-          <tbody>
-            {loading ? (
-              <tr>
-                <td colSpan={9}>Memuat Surat Jalan dari MongoDB V4…</td>
-              </tr>
-            ) : rows.length === 0 ? (
-              <tr>
-                <td colSpan={9} className="ep-empty">
-                  Belum ada Surat Jalan Accurate di MongoDB V4.
-                </td>
-              </tr>
-            ) : (
-              rows.flatMap((row) => {
-                const main = (
-                  <tr
-                    key={row.accurate_sj_id}
-                    onClick={() =>
-                      setExpanded(expanded === row.accurate_sj_id ? null : row.accurate_sj_id)
-                    }
-                  >
-                    <td>{row.sj_no}</td>
-                    <td>{row.po_no}</td>
-                    <td>{row.ship_date}</td>
-                    <td>{row.destination}</td>
-                    <td>{row.shipment || "—"}</td>
-                    <td>{row.items.length}</td>
-                    <td>{row.loaded ? "Sudah" : "Belum"}</td>
-                    <td>{statusLabel(row.delivery_status)}</td>
-                    <td>
-                      <button
-                        type="button"
-                        className="ep-btn"
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          void openLoading(row);
-                        }}
-                      >
-                        Loading
-                      </button>
-                    </td>
-                  </tr>
-                );
-                if (expanded !== row.accurate_sj_id) return [main];
-                return [
-                  main,
-                  <tr key={`${row.accurate_sj_id}-items`}>
-                    <td colSpan={9}>
-                      <table className="ep-table">
-                        <thead>
-                          <tr>
-                            <th>Baris SJ</th>
-                            <th>Item Line PO</th>
-                            <th>Kode</th>
-                            <th>Nama Barang</th>
-                            <th>Qty</th>
-                            <th>Satuan</th>
-                          </tr>
-                        </thead>
-                        <tbody>
-                          {row.items.map((item) => (
-                            <tr key={item.sj_line_id}>
-                              <td>{item.sj_line_id}</td>
-                              <td>{item.accurate_line_id}</td>
-                              <td>{item.item_code}</td>
-                              <td>{item.item_name}</td>
-                              <td>{qty(item.qty)}</td>
-                              <td>{item.unit}</td>
-                            </tr>
-                          ))}
-                        </tbody>
-                      </table>
-                    </td>
-                  </tr>,
-                ];
-              })
-            )}
-          </tbody>
-        </table>
-      </div>
+      <DeliveryPeriodModal
+        open={periodOpen}
+        rows={filtered}
+        dateFilter={dateFilter}
+        onClose={() => setPeriodOpen(false)}
+      />
 
       {selected ? (
-        <div
-          className="ep-modalshade ep-modalshade-center"
-          onClick={(e) => {
-            if (e.target === e.currentTarget) setSelected(null);
+        <DeliverySjDetailModal
+          row={selected}
+          detail={detail}
+          validation={validation}
+          busy={busy}
+          error={error}
+          notice={notice}
+          cancelReason={cancelReason}
+          onCancelReasonChange={setCancelReason}
+          onConfirmLoading={() => void onConfirmLoading()}
+          onCancelLoading={() => void onCancelLoading()}
+          onDiscrepancy={() => void onDiscrepancy()}
+          onClose={() => {
+            setSelected(null);
+            setDetail(null);
+            setValidation(null);
           }}
-        >
-          <div className="ep-modal" role="dialog" aria-modal="true">
-            <header className="ep-modalhead">
-              <strong>Rincian Pengiriman · {selected.sj_no}</strong>
-              <button type="button" className="ep-btn" onClick={() => setSelected(null)}>
-                Tutup
-              </button>
-            </header>
-            <div className="ep-modalbody">
-              <dl className="ep-kv">
-                <dt>No. PO</dt>
-                <dd>{selected.po_no}</dd>
-                <dt>Tujuan</dt>
-                <dd>{selected.destination}</dd>
-                <dt>Tanggal Kirim</dt>
-                <dd>{selected.ship_date}</dd>
-                <dt>Status Loading</dt>
-                <dd>{selected.loaded ? "Sudah dikonfirmasi" : "Belum"}</dd>
-                <dt>Versi SJ</dt>
-                <dd>{validation?.sj_version ?? "—"}</dd>
-                <dt>Status Revisi</dt>
-                <dd data-testid="revision-status">
-                  {validation?.needs_reloading
-                    ? "Perlu Loading Ulang"
-                    : validation?.revision_status || "—"}
-                </dd>
-              </dl>
-
-              {validation?.needs_reloading ? (
-                <p className="ep-error" data-testid="needs-reloading">
-                  Surat Jalan direvisi setelah Loading. Batalkan Loading lama agar
-                  Qty QC kembali, lalu konfirmasi Loading ulang.
-                </p>
-              ) : null}
-
-              {revisions.length > 1 ? (
-                <>
-                  <p className="ep-sectionlabel">Riwayat Revisi SJ</p>
-                  <table className="ep-table">
-                    <thead>
-                      <tr>
-                        <th>Versi</th>
-                        <th>Item Line</th>
-                        <th>Qty Sebelum</th>
-                        <th>Qty Sesudah</th>
-                        <th>Perubahan</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {revisions
-                        .filter((r) => r.changed_items.length > 0)
-                        .flatMap((r) =>
-                          r.changed_items.map((c) => (
-                            <tr key={`${r.version}-${c.sj_line_id}`}>
-                              <td>{r.version}</td>
-                              <td>{c.accurate_line_id}</td>
-                              <td>{c.qty_before ?? "—"}</td>
-                              <td>{c.qty_after ?? "—"}</td>
-                              <td>{c.change}</td>
-                            </tr>
-                          )),
-                        )}
-                    </tbody>
-                  </table>
-                </>
-              ) : null}
-
-              {loadings.length > 0 ? (
-                <>
-                  <p className="ep-sectionlabel">Riwayat Loading</p>
-                  <table className="ep-table">
-                    <thead>
-                      <tr>
-                        <th>Loading</th>
-                        <th>Versi SJ</th>
-                        <th>Status</th>
-                        <th>Petugas</th>
-                        <th>Dibatalkan oleh</th>
-                        <th>Alasan</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {loadings.map((l) => (
-                        <tr
-                          key={l.loading_id}
-                          className={l.status === "dibatalkan" ? "ep-row-muted" : undefined}
-                        >
-                          <td>{l.sequence}</td>
-                          <td>{l.sj_version}</td>
-                          <td>{l.status}</td>
-                          <td>{l.actor_email}</td>
-                          <td>{l.cancelled_by || "—"}</td>
-                          <td>{l.cancel_reason || "—"}</td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </>
-              ) : null}
-
-              <p className="ep-sectionlabel">Validasi Qty Loading</p>
-              {validation === null ? (
-                <p className="ep-empty">Memuat validasi…</p>
-              ) : (
-                <table className="ep-table">
-                  <thead>
-                    <tr>
-                      <th>Item Line</th>
-                      <th>Proses</th>
-                      <th>Qty SJ</th>
-                      <th>Qty Tersedia</th>
-                      <th>Cocok</th>
-                      <th>Keterangan</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {validation.items.map((item) => (
-                      <tr
-                        key={item.sj_line_id}
-                        className={item.matched ? undefined : "ep-row-danger"}
-                      >
-                        <td>{item.accurate_line_id}</td>
-                        <td>{item.process_kind || "—"}</td>
-                        <td>{qty(item.qty)}</td>
-                        <td>{qty(item.qty_available)}</td>
-                        <td>{item.matched ? "Ya" : "Tidak"}</td>
-                        <td>{item.reason || "—"}</td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              )}
-
-              <div className="ep-filterbar">
-                <button
-                  type="button"
-                  className="ep-btn primary"
-                  disabled={busy || !validation?.all_matched || selected.loaded}
-                  title={
-                    selected.loaded
-                      ? "SJ ini sudah di-Loading"
-                      : validation?.all_matched
-                        ? "Konfirmasi Loading untuk seluruh item SJ"
-                        : "Qty item belum cocok dengan SJ"
-                  }
-                  onClick={() => void onConfirmLoading()}
-                >
-                  Konfirmasi Loading
-                </button>
-                {validation && !validation.all_matched ? (
-                  <button
-                    type="button"
-                    className="ep-btn"
-                    disabled={busy}
-                    onClick={() => void onDiscrepancy()}
-                  >
-                    Perbedaan Qty
-                  </button>
-                ) : null}
-              </div>
-
-              {validation?.already_loaded && !validation.delivered ? (
-                <div className="ep-filterbar" data-testid="cancel-loading-block">
-                  <label htmlFor="cancel-reason">Alasan pembatalan</label>
-                  <input
-                    id="cancel-reason"
-                    value={cancelReason}
-                    onChange={(e) => setCancelReason(e.target.value)}
-                  />
-                  <button
-                    type="button"
-                    className="ep-btn"
-                    disabled={busy}
-                    onClick={() => void onCancelLoading()}
-                  >
-                    Batalkan Loading
-                  </button>
-                </div>
-              ) : null}
-              {error ? <p className="ep-error">{error}</p> : null}
-              {notice ? <p className="ep-notice">{notice}</p> : null}
-            </div>
-          </div>
-        </div>
+        />
       ) : null}
     </div>
   );
