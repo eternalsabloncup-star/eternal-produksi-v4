@@ -14,7 +14,7 @@ from typing import Any
 from pymongo import ASCENDING, DESCENDING, ReturnDocument
 from pymongo.collection import Collection
 from pymongo.database import Database
-from pymongo.errors import DuplicateKeyError
+from pymongo.errors import ConnectionFailure, DuplicateKeyError, OperationFailure
 
 from app.domain.operational import TaskRef, build_task_key, task_ref_to_document
 
@@ -134,17 +134,21 @@ def upsert_task(
     if context is not None:
         always_set["context"] = context
 
-    doc = tasks_collection(db).find_one_and_update(
+    return tasks_collection(db).find_one_and_update(
         {"task_key": task_key},
         {"$setOnInsert": on_insert, "$set": always_set},
         upsert=True,
+        projection={"_id": 0},
         return_document=ReturnDocument.AFTER,
     )
-    return doc
 
 
-def get_task(db: Database, task_key: str) -> dict[str, Any] | None:
-    return tasks_collection(db).find_one({"task_key": task_key}, {"_id": 0})
+def get_task(
+    db: Database, task_key: str, *, session: Any | None = None
+) -> dict[str, Any] | None:
+    return tasks_collection(db).find_one(
+        {"task_key": task_key}, {"_id": 0}, session=session
+    )
 
 
 def list_tasks(
@@ -190,11 +194,16 @@ def confirm_task_qty(
     idempotency_key: str,
     note: str | None = None,
     extra: dict[str, Any] | None = None,
+    session: Any | None = None,
+    extra_reservation: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Konfirmasi Qty parsial secara atomik.
 
     - ``idempotency_key`` sama → tidak menambah Qty (retry/double-click aman).
     - Qty melebihi target → ditolak, tidak ada penambahan parsial.
+    - ``extra_reservation`` memesan kuota pada dokumen tugas lain di dalam
+      transaksi yang sama, sehingga proses yang mati tidak meninggalkan kuota
+      terpakai tanpa konfirmasi.
     """
     if qty <= 0:
         raise TaskQuantityError("Qty konfirmasi harus lebih besar dari nol.")
@@ -202,7 +211,7 @@ def confirm_task_qty(
         raise ValueError("idempotency_key wajib diisi.")
 
     _ensure_task_indexes_once(db)
-    task = get_task(db, task_key)
+    task = get_task(db, task_key, session=session)
     if task is None:
         raise LookupError(f"Tugas tidak ditemukan: {task_key}")
 
@@ -222,16 +231,31 @@ def confirm_task_qty(
 
     # Ledger sebagai penjaga idempotency: insert gagal → konfirmasi sudah tercatat.
     try:
-        confirmations_collection(db).insert_one(dict(ledger_doc))
+        confirmations_collection(db).insert_one(dict(ledger_doc), session=session)
     except DuplicateKeyError:
         existing = confirmations_collection(db).find_one(
-            {"idempotency_key": idempotency_key.strip()}, {"_id": 0}
+            {"idempotency_key": idempotency_key.strip()}, {"_id": 0}, session=session
         )
         return {
-            "task": get_task(db, task_key),
+            "task": get_task(db, task_key, session=session),
             "confirmation": existing,
             "duplicate": True,
         }
+
+    if extra_reservation is not None:
+        reserved = reserve_quota(
+            db,
+            task_key=str(extra_reservation["task_key"]),
+            qty=float(extra_reservation.get("qty", qty)),
+            session=session,
+        )
+        if not reserved:
+            raise TaskQuantityError(
+                str(
+                    extra_reservation.get("error")
+                    or "Kuota sumber tidak mencukupi untuk konfirmasi ini."
+                )
+            )
 
     qty_target = task.get("qty_target")
     update_filter: dict[str, Any] = {"task_key": task_key}
@@ -245,12 +269,14 @@ def confirm_task_qty(
         update_filter,
         {"$inc": {"qty_confirmed": qty}, "$set": {"updated_at": now}},
         return_document=ReturnDocument.AFTER,
+        session=session,
     )
     if updated is None:
-        # Rollback entri ledger agar Qty dan riwayat tetap konsisten.
-        confirmations_collection(db).delete_one(
-            {"idempotency_key": idempotency_key.strip()}
-        )
+        if session is None:
+            # Tanpa transaksi: bersihkan entri ledger agar Qty tetap konsisten.
+            confirmations_collection(db).delete_one(
+                {"idempotency_key": idempotency_key.strip()}
+            )
         raise TaskQuantityError(
             "Qty konfirmasi melebihi Qty target tugas yang tersedia."
         )
@@ -261,8 +287,60 @@ def confirm_task_qty(
         {"$set": {"status": status, "updated_at": now}},
         projection={"_id": 0},
         return_document=ReturnDocument.AFTER,
+        session=session,
     )
     return {"task": final, "confirmation": ledger_doc, "duplicate": False}
+
+
+def find_confirmation(db: Database, idempotency_key: str) -> dict[str, Any] | None:
+    _ensure_task_indexes_once(db)
+    return confirmations_collection(db).find_one(
+        {"idempotency_key": idempotency_key.strip()}, {"_id": 0}
+    )
+
+
+def run_in_transaction(db: Database, operation: Any, *, attempts: int = 5) -> Any:
+    """Jalankan operasi dalam transaksi replica set dengan retry transien.
+
+    Transaksi memastikan pemesanan kuota dan penulisan ledger commit bersama,
+    sehingga proses yang mati tidak meninggalkan kuota terpakai.
+    """
+    last_error: Exception | None = None
+    for _ in range(max(1, attempts)):
+        try:
+            with db.client.start_session() as session:
+                with session.start_transaction():
+                    return operation(session)
+        except (ConnectionFailure, OperationFailure) as exc:
+            if exc.has_error_label("TransientTransactionError"):
+                last_error = exc
+                continue
+            raise
+    raise last_error if last_error else RuntimeError("Transaksi gagal tanpa detail.")
+
+
+def reserve_quota(
+    db: Database,
+    *,
+    task_key: str,
+    qty: float,
+    session: Any | None = None,
+) -> bool:
+    """Pesan kuota pada satu tugas sumber; False bila kuota tidak mencukupi."""
+    updated = tasks_collection(db).find_one_and_update(
+        {
+            "task_key": task_key,
+            "$expr": {
+                "$lte": [
+                    {"$add": [{"$ifNull": ["$qty_consumed", 0]}, qty]},
+                    "$qty_confirmed",
+                ]
+            },
+        },
+        {"$inc": {"qty_consumed": qty}},
+        session=session,
+    )
+    return updated is not None
 
 
 def total_confirmed_qty(db: Database, task_key: str) -> float:

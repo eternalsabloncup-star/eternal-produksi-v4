@@ -1,5 +1,10 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
+  confirmCoordination,
+  confirmDelivered,
+  confirmDeliveryFailed,
+} from "../api/delivery";
+import {
   confirmProductionQty,
   decideSample,
   fetchSamples,
@@ -40,6 +45,16 @@ function shortfallLabel(taskType: string): string {
 
 const SAMPLE_UPLOAD_TASK = "konfirmasi-sample";
 const SAMPLE_APPROVAL_TASK = "approval-sampel";
+const DRIVER_TASK = "pengiriman";
+const COORDINATION_TASKS = new Set([
+  "qty-loading-sj-berbeda",
+  "pengiriman-gagal-koordinasi",
+]);
+
+/** Kanvas tanda tangan penerima → PNG blob. */
+function signatureBlob(canvas: HTMLCanvasElement): Promise<Blob | null> {
+  return new Promise((resolve) => canvas.toBlob(resolve, "image/png"));
+}
 
 /** Tugas peran dari task engine MongoDB V4 — tanpa fixture DEMO. */
 export function TeamTaskApiPanel({ role, roleLabel }: Props) {
@@ -56,6 +71,11 @@ export function TeamTaskApiPanel({ role, roleLabel }: Props) {
   const [sampleRows, setSampleRows] = useState<ProductionSample[]>([]);
   const [rejectReason, setRejectReason] = useState("");
   const fileRef = useRef<HTMLInputElement | null>(null);
+  const photosRef = useRef<HTMLInputElement | null>(null);
+  const signatureRef = useRef<HTMLCanvasElement | null>(null);
+  const drawingRef = useRef(false);
+  const [recipientName, setRecipientName] = useState("");
+  const [failureReason, setFailureReason] = useState("");
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -146,6 +166,116 @@ export function TeamTaskApiPanel({ role, roleLabel }: Props) {
       await reloadAfterAction(selected);
     } catch (err) {
       setActionError(err instanceof Error ? err.message : "Upload sampel gagal.");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  function signaturePos(e: React.PointerEvent<HTMLCanvasElement>) {
+    const rect = signatureRef.current?.getBoundingClientRect();
+    if (!rect) return { x: 0, y: 0 };
+    return { x: e.clientX - rect.left, y: e.clientY - rect.top };
+  }
+
+  function startSignature(e: React.PointerEvent<HTMLCanvasElement>) {
+    const ctx = signatureRef.current?.getContext("2d");
+    if (!ctx) return;
+    drawingRef.current = true;
+    const { x, y } = signaturePos(e);
+    ctx.beginPath();
+    ctx.moveTo(x, y);
+  }
+
+  function moveSignature(e: React.PointerEvent<HTMLCanvasElement>) {
+    if (!drawingRef.current) return;
+    const ctx = signatureRef.current?.getContext("2d");
+    if (!ctx) return;
+    const { x, y } = signaturePos(e);
+    ctx.lineWidth = 2;
+    ctx.lineCap = "round";
+    ctx.strokeStyle = "#17341f";
+    ctx.lineTo(x, y);
+    ctx.stroke();
+  }
+
+  function endSignature() {
+    drawingRef.current = false;
+  }
+
+  async function onDeliverySuccess() {
+    const sjId = selected?.ref.accurate_delivery_note_id;
+    const files = Array.from(photosRef.current?.files || []);
+    const canvas = signatureRef.current;
+    if (!sjId || !canvas) return;
+    if (files.length < 2) {
+      setActionError("Konfirmasi pengiriman memerlukan minimal 2 foto.");
+      return;
+    }
+    if (!recipientName.trim()) {
+      setActionError("Nama penerima wajib diisi.");
+      return;
+    }
+    const signature = await signatureBlob(canvas);
+    if (!signature) {
+      setActionError("Tanda tangan penerima wajib diisi.");
+      return;
+    }
+    setBusy(true);
+    setActionError(null);
+    setActionNotice(null);
+    try {
+      const res = await confirmDelivered(sjId, recipientName.trim(), files, signature);
+      setActionNotice(
+        `Pengiriman ${res.status} · ${res.photo_evidence_ids.length} foto tersimpan.`,
+      );
+      if (photosRef.current) photosRef.current.value = "";
+      setRecipientName("");
+      await reloadAfterAction(selected!);
+    } catch (err) {
+      setActionError(err instanceof Error ? err.message : "Konfirmasi pengiriman gagal.");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function onDeliveryFailed() {
+    const sjId = selected?.ref.accurate_delivery_note_id;
+    if (!sjId) return;
+    if (!failureReason.trim()) {
+      setActionError("Alasan pengiriman gagal wajib diisi.");
+      return;
+    }
+    setBusy(true);
+    setActionError(null);
+    setActionNotice(null);
+    try {
+      await confirmDeliveryFailed(sjId, failureReason.trim());
+      setActionNotice(
+        "Pengiriman ditandai gagal; tugas koordinasi Kepala Produksi dibuat.",
+      );
+      setFailureReason("");
+      await reloadAfterAction(selected!);
+    } catch (err) {
+      setActionError(err instanceof Error ? err.message : "Gagal menyimpan kegagalan.");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function onConfirmCoordination() {
+    if (!selected) return;
+    setBusy(true);
+    setActionError(null);
+    setActionNotice(null);
+    try {
+      await confirmCoordination(
+        selected.task_key,
+        newIdempotencyKey(`coord:${selected.task_key}`),
+      );
+      setActionNotice("Koordinasi administrasi ditandai selesai.");
+      await reloadAfterAction(selected);
+    } catch (err) {
+      setActionError(err instanceof Error ? err.message : "Konfirmasi koordinasi gagal.");
     } finally {
       setBusy(false);
     }
@@ -451,7 +581,116 @@ export function TeamTaskApiPanel({ role, roleLabel }: Props) {
                 </ul>
               )}
 
-              {selected.qty_target !== undefined || selected.task_type === "screen" ? (
+              {COORDINATION_TASKS.has(selected.task_type) ? (
+                <div className="ep-coordination" data-testid="coordination-block">
+                  <p className="ep-coordination-message">
+                    {String(
+                      selected.context?.message ||
+                        "Mohon konfirmasi ke administrasi karena qty loading dan SJ berbeda",
+                    )}
+                  </p>
+                  {selected.context?.failure_reason ? (
+                    <p>Alasan gagal: {String(selected.context.failure_reason)}</p>
+                  ) : null}
+                  {Array.isArray(selected.context?.mismatched_items) ? (
+                    <table className="ep-table">
+                      <thead>
+                        <tr>
+                          <th>Item Line</th>
+                          <th>Qty SJ</th>
+                          <th>Qty Tersedia</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {(
+                          selected.context.mismatched_items as {
+                            accurate_line_id: string;
+                            qty_sj: number;
+                            qty_available: number;
+                          }[]
+                        ).map((m) => (
+                          <tr key={m.accurate_line_id} className="ep-row-danger">
+                            <td>{m.accurate_line_id}</td>
+                            <td>{formatQty(m.qty_sj)}</td>
+                            <td>{formatQty(m.qty_available)}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  ) : null}
+                  <button
+                    type="button"
+                    className="ep-btn primary"
+                    disabled={busy || selected.status === "selesai"}
+                    onClick={() => void onConfirmCoordination()}
+                  >
+                    Konfirmasi
+                  </button>
+                </div>
+              ) : null}
+
+              {selected.task_type === DRIVER_TASK ? (
+                <div data-testid="driver-block">
+                  <p className="ep-sectionlabel">Pengiriman Berhasil</p>
+                  <div className="ep-filterbar">
+                    <label htmlFor="recipient-name">Nama penerima</label>
+                    <input
+                      id="recipient-name"
+                      value={recipientName}
+                      onChange={(e) => setRecipientName(e.target.value)}
+                    />
+                    <input
+                      ref={photosRef}
+                      type="file"
+                      multiple
+                      aria-label="Foto bukti pengiriman"
+                      accept="image/png,image/jpeg,image/webp"
+                    />
+                  </div>
+                  <canvas
+                    ref={signatureRef}
+                    width={360}
+                    height={140}
+                    className="ep-signature"
+                    data-testid="delivery-signature"
+                    onPointerDown={startSignature}
+                    onPointerMove={moveSignature}
+                    onPointerUp={endSignature}
+                    onPointerLeave={endSignature}
+                  />
+                  <div className="ep-filterbar">
+                    <button
+                      type="button"
+                      className="ep-btn primary"
+                      disabled={busy}
+                      onClick={() => void onDeliverySuccess()}
+                    >
+                      Konfirmasi Pengiriman Berhasil
+                    </button>
+                  </div>
+
+                  <p className="ep-sectionlabel">Pengiriman Gagal</p>
+                  <div className="ep-filterbar">
+                    <label htmlFor="failure-reason">Alasan</label>
+                    <input
+                      id="failure-reason"
+                      value={failureReason}
+                      onChange={(e) => setFailureReason(e.target.value)}
+                    />
+                    <button
+                      type="button"
+                      className="ep-btn"
+                      disabled={busy}
+                      onClick={() => void onDeliveryFailed()}
+                    >
+                      Pengiriman Gagal
+                    </button>
+                  </div>
+                </div>
+              ) : null}
+
+              {selected.qty_target !== undefined && selected.task_type !== DRIVER_TASK &&
+              !COORDINATION_TASKS.has(selected.task_type) ? (
                 <div className="ep-filterbar">
                   <label htmlFor="qty-confirm">Qty</label>
                   <input

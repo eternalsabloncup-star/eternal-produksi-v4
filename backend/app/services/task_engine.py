@@ -61,8 +61,10 @@ def confirm_task(
     idempotency_key: str,
     note: str | None = None,
     extra: dict[str, Any] | None = None,
+    session: Any | None = None,
+    extra_reservation: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    task = tasks.get_task(db, task_key)
+    task = tasks.get_task(db, task_key, session=session)
     if task is None:
         raise LookupError(f"Tugas tidak ditemukan: {task_key}")
 
@@ -78,6 +80,8 @@ def confirm_task(
         idempotency_key=idempotency_key,
         note=note,
         extra=extra,
+        session=session,
+        extra_reservation=extra_reservation,
     )
 
     if not result.get("duplicate"):

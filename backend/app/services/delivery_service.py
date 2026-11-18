@@ -1,0 +1,551 @@
+"""Checkpoint E — Loading per Surat Jalan, tugas Driver, dan bukti pengiriman."""
+
+from __future__ import annotations
+
+from typing import Any
+
+from pymongo.database import Database
+
+from app.domain.operational import TaskRef, build_task_key
+from app.repositories import delivery_repository as deliveries
+from app.repositories import evidence_repository as evidence
+from app.repositories import master_repository as master
+from app.repositories import task_repository as tasks
+from app.repositories.po_repository import get_by_accurate_id
+from app.services import production_service as production
+from app.services.audit_log import append_audit_event
+from app.services.task_engine import require_action
+
+LOADING_TASK = "qty-loading-sj-berbeda"
+DRIVER_TASK = "pengiriman"
+DELIVERY_FAILURE_TASK = "pengiriman-gagal-koordinasi"
+
+DELIVERY_PHOTO_SCOPE = "delivery-photo"
+DELIVERY_SIGNATURE_SCOPE = "delivery-signature"
+
+MIN_DELIVERY_PHOTOS = 2
+
+DISCREPANCY_MESSAGE = (
+    "Mohon konfirmasi ke administrasi karena qty loading dan SJ berbeda"
+)
+
+
+class LoadingValidationError(RuntimeError):
+    """Loading terkunci karena Qty/identitas tidak cocok."""
+
+
+class DeliveryEvidenceError(ValueError):
+    """Bukti pengiriman belum memenuhi syarat."""
+
+
+def _sj_ref(note: dict[str, Any]) -> TaskRef:
+    return TaskRef(
+        accurate_po_id=str(note["accurate_po_id"]),
+        po_no=str(note.get("po_no") or ""),
+        accurate_delivery_note_id=str(note["accurate_sj_id"]),
+        sj_no=str(note.get("sj_no") or ""),
+    )
+
+
+def _po_line_index(po_doc: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    header = po_doc.get("header") if isinstance(po_doc.get("header"), dict) else {}
+    return {
+        str(i.get("accurate_line_id")): i
+        for i in (header.get("items") or [])
+        if isinstance(i, dict) and i.get("accurate_line_id")
+    }
+
+
+def validate_loading(db: Database, accurate_sj_id: str) -> dict[str, Any]:
+    """Cek setiap item SJ terhadap Qty QC (Cetak) atau SJ itu sendiri (Non-Cetak)."""
+    note = deliveries.get_delivery_note(db, accurate_sj_id)
+    if note is None:
+        raise LookupError(f"Surat Jalan tidak ditemukan: {accurate_sj_id}")
+    if note.get("superseded_by"):
+        raise LoadingValidationError(
+            f"Surat Jalan {note['sj_no']} sudah digantikan oleh "
+            f"{note['superseded_by']} — tidak berlaku untuk Loading."
+        )
+
+    po_doc = get_by_accurate_id(db, str(note["accurate_po_id"]))
+    if po_doc is None:
+        raise LookupError(f"PO Accurate tidak ditemukan: {note['accurate_po_id']}")
+    lines = _po_line_index(po_doc)
+
+    checks: list[dict[str, Any]] = []
+    for item in note["items"]:
+        line_id = str(item["accurate_line_id"])
+        po_line = lines.get(line_id)
+        if po_line is None:
+            checks.append(
+                {
+                    **item,
+                    "process_kind": None,
+                    "qty_available": 0.0,
+                    "matched": False,
+                    "reason": (
+                        f"Item line {line_id} tidak ditemukan pada PO — identitas ambigu."
+                    ),
+                }
+            )
+            continue
+
+        process_kind = str(po_line.get("process_kind") or "")
+        if process_kind == "Cetak":
+            qc_task = (
+                tasks.get_task(
+                    db,
+                    production.qc_task_key(str(note["accurate_po_id"]), line_id),
+                )
+                or {}
+            )
+            packed = float(qc_task.get("qty_confirmed") or 0)
+            used = float(qc_task.get("qty_consumed") or 0)
+            available = max(packed - used, 0)
+            matched = available >= float(item["qty"]) > 0
+            reason = (
+                None
+                if matched
+                else (
+                    f"Qty QC & Packing tersedia {available:g}, "
+                    f"Qty SJ {float(item['qty']):g}."
+                )
+            )
+        else:
+            # Non-Cetak mengikuti SJ Accurate tanpa ledger produksi.
+            available = float(item["qty"])
+            matched = float(item["qty"]) > 0
+            reason = None if matched else "Qty SJ tidak valid."
+
+        checks.append(
+            {
+                **item,
+                "process_kind": process_kind,
+                "qty_available": available,
+                "matched": matched,
+                "reason": reason,
+            }
+        )
+
+    return {
+        "accurate_sj_id": accurate_sj_id,
+        "sj_no": note["sj_no"],
+        "accurate_po_id": note["accurate_po_id"],
+        "items": checks,
+        "all_matched": all(c["matched"] for c in checks),
+        "already_loaded": deliveries.get_loading_event(db, accurate_sj_id) is not None,
+    }
+
+
+def confirm_loading(
+    db: Database,
+    user: dict[str, Any],
+    *,
+    accurate_sj_id: str,
+    idempotency_key: str,
+) -> dict[str, Any]:
+    """Satu aksi Loading untuk seluruh item SJ, konsumsi Qty QC atomik."""
+    require_action(db, user, task_type=DRIVER_TASK, action="confirm")
+
+    existing = deliveries.get_loading_event(db, accurate_sj_id)
+    if existing is not None:
+        return {"loading": existing, "duplicate": True}
+
+    validation = validate_loading(db, accurate_sj_id)
+    if not validation["all_matched"]:
+        raise LoadingValidationError(
+            "Loading terkunci: Qty item tidak cocok dengan Surat Jalan."
+        )
+
+    note = deliveries.get_delivery_note(db, accurate_sj_id)
+    actor = str(user.get("email_normalized") or "")
+
+    def _operation(session: Any) -> dict[str, Any]:
+        for check in validation["items"]:
+            if check["process_kind"] != "Cetak":
+                continue
+            reserved = tasks.reserve_quota(
+                db,
+                task_key=production.qc_task_key(
+                    str(note["accurate_po_id"]), str(check["accurate_line_id"])
+                ),
+                qty=float(check["qty"]),
+                session=session,
+            )
+            if not reserved:
+                raise LoadingValidationError(
+                    f"Qty QC & Packing untuk item line {check['accurate_line_id']} "
+                    "tidak lagi mencukupi."
+                )
+        return deliveries.insert_loading_event(
+            db,
+            accurate_sj_id=str(note["accurate_sj_id"]),
+            accurate_po_id=str(note["accurate_po_id"]),
+            sj_no=str(note["sj_no"]),
+            items=[
+                {
+                    "sj_line_id": c["sj_line_id"],
+                    "accurate_line_id": c["accurate_line_id"],
+                    "item_code": c["item_code"],
+                    "qty": c["qty"],
+                    "unit": c["unit"],
+                    "process_kind": c["process_kind"],
+                }
+                for c in validation["items"]
+            ],
+            actor_email=actor,
+            idempotency_key=idempotency_key,
+            session=session,
+        )
+
+    loading = tasks.run_in_transaction(db, _operation)
+    driver_task = _ensure_driver_task(db, note)
+
+    append_audit_event(
+        db,
+        action="delivery.loading.confirm",
+        actor_email=actor,
+        target_email=None,
+        detail={
+            "accurate_sj_id": accurate_sj_id,
+            "sj_no": note["sj_no"],
+            "item_count": len(loading["items"]),
+        },
+    )
+    return {"loading": loading, "driver_task_key": driver_task["task_key"], "duplicate": False}
+
+
+def _ensure_driver_task(db: Database, note: dict[str, Any]) -> dict[str, Any]:
+    """Satu tugas Driver per SJ — bukan per item."""
+    master.seed_master_defaults(db)
+    return tasks.upsert_task(
+        db,
+        task_type=DRIVER_TASK,
+        scope="delivery_note",
+        assigned_role=master.assigned_role_for(db, DRIVER_TASK) or "driver",
+        ref=_sj_ref(note),
+        label="Pengiriman",
+        context={
+            "destination": note.get("destination"),
+            "shipment": note.get("shipment"),
+            "ship_date": note.get("ship_date"),
+            "item_count": len(note.get("items") or []),
+        },
+    )
+
+
+def raise_quantity_discrepancy(
+    db: Database,
+    user: dict[str, Any],
+    *,
+    accurate_sj_id: str,
+) -> dict[str, Any]:
+    """Tombol Perbedaan Qty → tugas koordinasi Kepala Produksi (baris merah)."""
+    validation = validate_loading(db, accurate_sj_id)
+    if validation["all_matched"]:
+        raise LoadingValidationError(
+            "Qty Loading sudah cocok dengan Surat Jalan — tugas koordinasi tidak dibuat."
+        )
+    note = deliveries.get_delivery_note(db, accurate_sj_id)
+    master.seed_master_defaults(db)
+    mismatched = [c for c in validation["items"] if not c["matched"]]
+    task = tasks.upsert_task(
+        db,
+        task_type=LOADING_TASK,
+        scope="delivery_note",
+        assigned_role=master.assigned_role_for(db, LOADING_TASK) or "production-head",
+        ref=_sj_ref(note),
+        label="Qty Loading dan SJ Berbeda",
+        coordination=True,
+        context={
+            "message": DISCREPANCY_MESSAGE,
+            "sj_no": note["sj_no"],
+            "mismatched_items": [
+                {
+                    "accurate_line_id": c["accurate_line_id"],
+                    "item_code": c["item_code"],
+                    "qty_sj": c["qty"],
+                    "qty_available": c["qty_available"],
+                    "reason": c["reason"],
+                }
+                for c in mismatched
+            ],
+        },
+    )
+    append_audit_event(
+        db,
+        action="delivery.loading.discrepancy",
+        actor_email=str(user.get("email_normalized") or ""),
+        target_email=None,
+        detail={"accurate_sj_id": accurate_sj_id, "mismatch_count": len(mismatched)},
+    )
+    return task
+
+
+def confirm_coordination(
+    db: Database,
+    user: dict[str, Any],
+    *,
+    task_key: str,
+    idempotency_key: str,
+) -> dict[str, Any]:
+    """Konfirmasi koordinasi: menandai tugas selesai, tidak membuka Loading."""
+    task = tasks.get_task(db, task_key)
+    if task is None:
+        raise LookupError(f"Tugas koordinasi tidak ditemukan: {task_key}")
+    task_type = str(task.get("task_type") or "")
+    if task_type not in {LOADING_TASK, DELIVERY_FAILURE_TASK}:
+        raise ValueError("Tugas ini bukan tugas koordinasi.")
+    require_action(db, user, task_type=task_type, action="confirm")
+
+    if tasks.find_confirmation(db, idempotency_key) is not None:
+        return {"task": tasks.get_task(db, task_key), "duplicate": True}
+
+    result = tasks.confirm_task_qty(
+        db,
+        task_key=task_key,
+        qty=1,
+        actor_email=str(user.get("email_normalized") or ""),
+        actor_role="production-head",
+        idempotency_key=idempotency_key,
+        note="Koordinasi administrasi telah dilakukan.",
+    )
+    append_audit_event(
+        db,
+        action=f"delivery.coordination.{task_type}",
+        actor_email=str(user.get("email_normalized") or ""),
+        target_email=None,
+        detail={"task_key": task_key, "ref": task.get("ref") or {}},
+    )
+    return result
+
+
+def confirm_delivery_success(
+    db: Database,
+    user: dict[str, Any],
+    *,
+    accurate_sj_id: str,
+    recipient_name: str,
+    photos: list[tuple[str, str, bytes]],
+    signature: tuple[str, str, bytes],
+) -> dict[str, Any]:
+    """Minimal dua foto + satu tanda tangan + nama penerima; kurir dari sesi."""
+    require_action(db, user, task_type=DRIVER_TASK, action="confirm")
+
+    note = deliveries.get_delivery_note(db, accurate_sj_id)
+    if note is None:
+        raise LookupError(f"Surat Jalan tidak ditemukan: {accurate_sj_id}")
+    if deliveries.get_loading_event(db, accurate_sj_id) is None:
+        raise LoadingValidationError("Loading untuk SJ ini belum dikonfirmasi.")
+    if len(photos) < MIN_DELIVERY_PHOTOS:
+        raise DeliveryEvidenceError(
+            f"Konfirmasi pengiriman memerlukan minimal {MIN_DELIVERY_PHOTOS} foto."
+        )
+    if not signature or not signature[2]:
+        raise DeliveryEvidenceError("Tanda tangan penerima wajib diisi.")
+    if not recipient_name.strip():
+        raise DeliveryEvidenceError("Nama penerima wajib diisi.")
+
+    courier = str(user.get("email_normalized") or "")
+    photo_ids: list[str] = []
+    for filename, content_type, content in photos:
+        stored = evidence.store_evidence(
+            db,
+            scope=DELIVERY_PHOTO_SCOPE,
+            scope_id=str(accurate_sj_id),
+            filename=filename,
+            content_type=content_type,
+            content=content,
+            uploaded_by=courier,
+            kind="delivery-photo",
+            context={"accurate_po_id": note["accurate_po_id"]},
+        )
+        photo_ids.append(stored["evidence_id"])
+
+    sig_stored = evidence.store_evidence(
+        db,
+        scope=DELIVERY_SIGNATURE_SCOPE,
+        scope_id=str(accurate_sj_id),
+        filename=signature[0],
+        content_type=signature[1],
+        content=signature[2],
+        uploaded_by=courier,
+        kind="delivery-signature",
+        context={"recipient_name": recipient_name.strip()},
+    )
+
+    event = deliveries.insert_delivery_event(
+        db,
+        accurate_sj_id=str(accurate_sj_id),
+        accurate_po_id=str(note["accurate_po_id"]),
+        attempt=deliveries.next_delivery_attempt(db, accurate_sj_id),
+        status=deliveries.DELIVERY_SUCCESS,
+        courier_email=courier,
+        recipient_name=recipient_name.strip(),
+        photo_evidence_ids=photo_ids,
+        signature_evidence_id=sig_stored["evidence_id"],
+        failure_reason=None,
+    )
+
+    driver_key = build_task_key(DRIVER_TASK, "delivery_note", _sj_ref(note))
+    tasks.tasks_collection(db).update_one(
+        {"task_key": driver_key},
+        {
+            "$set": {
+                "status": tasks.TASK_STATUS_DONE,
+                "context.last_delivery_status": deliveries.DELIVERY_SUCCESS,
+            }
+        },
+    )
+    append_audit_event(
+        db,
+        action="delivery.confirm.success",
+        actor_email=courier,
+        target_email=None,
+        detail={
+            "accurate_sj_id": accurate_sj_id,
+            "attempt": event["attempt"],
+            "photo_count": len(photo_ids),
+            "recipient_name": recipient_name.strip(),
+        },
+    )
+    return event
+
+
+def confirm_delivery_failure(
+    db: Database,
+    user: dict[str, Any],
+    *,
+    accurate_sj_id: str,
+    reason: str,
+) -> dict[str, Any]:
+    """Pengiriman gagal → tugas koordinasi Kepala Produksi, tanpa reschedule."""
+    require_action(db, user, task_type=DRIVER_TASK, action="confirm")
+    if not reason.strip():
+        raise DeliveryEvidenceError("Alasan pengiriman gagal wajib diisi.")
+
+    note = deliveries.get_delivery_note(db, accurate_sj_id)
+    if note is None:
+        raise LookupError(f"Surat Jalan tidak ditemukan: {accurate_sj_id}")
+
+    courier = str(user.get("email_normalized") or "")
+    event = deliveries.insert_delivery_event(
+        db,
+        accurate_sj_id=str(accurate_sj_id),
+        accurate_po_id=str(note["accurate_po_id"]),
+        attempt=deliveries.next_delivery_attempt(db, accurate_sj_id),
+        status=deliveries.DELIVERY_FAILED,
+        courier_email=courier,
+        recipient_name=None,
+        photo_evidence_ids=[],
+        signature_evidence_id=None,
+        failure_reason=reason.strip(),
+    )
+
+    master.seed_master_defaults(db)
+    task = tasks.upsert_task(
+        db,
+        task_type=DELIVERY_FAILURE_TASK,
+        scope="delivery_note",
+        assigned_role=master.assigned_role_for(db, DELIVERY_FAILURE_TASK)
+        or "production-head",
+        ref=_sj_ref(note),
+        label="Pengiriman Gagal — Koordinasi Administrasi",
+        coordination=True,
+        context={
+            "sj_no": note["sj_no"],
+            "failure_reason": reason.strip(),
+            "attempt": event["attempt"],
+            "courier_email": courier,
+        },
+    )
+    append_audit_event(
+        db,
+        action="delivery.confirm.failure",
+        actor_email=courier,
+        target_email=None,
+        detail={
+            "accurate_sj_id": accurate_sj_id,
+            "attempt": event["attempt"],
+            "reason": reason.strip(),
+        },
+    )
+    return {"event": event, "coordination_task_key": task["task_key"]}
+
+
+def soft_delete_delivery_evidence(
+    db: Database,
+    user: dict[str, Any],
+    *,
+    evidence_id: str,
+    reason: str,
+) -> dict[str, Any]:
+    """Hapus bukti = soft delete; file dan riwayat tetap untuk audit berizin."""
+    require_action(db, user, task_type=DRIVER_TASK, action="manage_evidence")
+    doc = evidence.soft_delete_evidence(
+        db,
+        evidence_id=evidence_id,
+        actor_email=str(user.get("email_normalized") or ""),
+        reason=reason,
+    )
+    append_audit_event(
+        db,
+        action="delivery.evidence.soft_delete",
+        actor_email=str(user.get("email_normalized") or ""),
+        target_email=None,
+        detail={"evidence_id": evidence_id, "reason": reason.strip()},
+    )
+    return doc
+
+
+def active_delivery_evidence(db: Database, accurate_sj_id: str) -> dict[str, Any]:
+    return {
+        "photos": evidence.list_evidence(
+            db, scope=DELIVERY_PHOTO_SCOPE, scope_id=str(accurate_sj_id)
+        ),
+        "signatures": evidence.list_evidence(
+            db, scope=DELIVERY_SIGNATURE_SCOPE, scope_id=str(accurate_sj_id)
+        ),
+    }
+
+
+def delivery_schedule(
+    db: Database,
+    *,
+    ship_date_from: str | None = None,
+    ship_date_to: str | None = None,
+) -> dict[str, Any]:
+    """Jadwal Pengiriman: satu baris per SJ + ringkasan periode."""
+    notes = deliveries.list_delivery_notes(
+        db, ship_date_from=ship_date_from, ship_date_to=ship_date_to
+    )
+    rows = []
+    qty_by_unit: dict[str, float] = {}
+    destinations: set[str] = set()
+    for note in notes:
+        loading = deliveries.get_loading_event(db, note["accurate_sj_id"])
+        events = deliveries.list_delivery_events(db, note["accurate_sj_id"])
+        for item in note["items"]:
+            unit = str(item.get("unit") or "-")
+            qty_by_unit[unit] = qty_by_unit.get(unit, 0) + float(item["qty"])
+        if note.get("destination"):
+            destinations.add(str(note["destination"]))
+        rows.append(
+            {
+                **note,
+                "loaded": loading is not None,
+                "loaded_at": (loading or {}).get("created_at"),
+                "delivery_status": events[-1]["status"] if events else deliveries.DELIVERY_PENDING,
+                "attempts": len(events),
+            }
+        )
+    return {
+        "items": rows,
+        "summary": {
+            "sj_count": len(rows),
+            # Satuan berbeda tidak dijumlahkan tanpa aturan konversi Owner.
+            "qty_by_unit": qty_by_unit,
+            "destination_count": len(destinations),
+        },
+        "source": "mongodb",
+    }

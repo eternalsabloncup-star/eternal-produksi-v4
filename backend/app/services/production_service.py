@@ -321,35 +321,6 @@ def _ensure_print_task(db: Database, alloc: dict[str, Any]) -> dict[str, Any]:
     )
 
 
-def _reserve_helper_quota(
-    db: Database, *, accurate_po_id: str, accurate_line_id: str, qty: float
-) -> bool:
-    """Pesan kuota Helper secara atomik; False bila kuota tidak cukup."""
-    key = prep_task_key(accurate_po_id, accurate_line_id)
-    updated = tasks.tasks_collection(db).find_one_and_update(
-        {
-            "task_key": key,
-            "$expr": {
-                "$lte": [
-                    {"$add": [{"$ifNull": ["$qty_consumed", 0]}, qty]},
-                    "$qty_confirmed",
-                ]
-            },
-        },
-        {"$inc": {"qty_consumed": qty}},
-    )
-    return updated is not None
-
-
-def _release_helper_quota(
-    db: Database, *, accurate_po_id: str, accurate_line_id: str, qty: float
-) -> None:
-    tasks.tasks_collection(db).update_one(
-        {"task_key": prep_task_key(accurate_po_id, accurate_line_id)},
-        {"$inc": {"qty_consumed": -qty}},
-    )
-
-
 def confirm_print(
     db: Database,
     user: dict[str, Any],
@@ -359,7 +330,12 @@ def confirm_print(
     idempotency_key: str,
     note: str | None = None,
 ) -> dict[str, Any]:
-    """Cetak massal parsial dengan penjagaan jadwal + kuota Helper bersama."""
+    """Cetak massal parsial dengan penjagaan jadwal + kuota Helper bersama.
+
+    Pemesanan kuota dan penulisan ledger berada dalam satu transaksi replica
+    set, sehingga proses yang mati tidak pernah menyisakan kuota terpakai
+    tanpa konfirmasi cetak yang sah.
+    """
     require_action(db, user, task_type=PRINT_TASK, action="confirm")
     if qty <= 0:
         raise ProductionQuantityError("Qty cetak harus lebih besar dari nol.")
@@ -377,45 +353,47 @@ def confirm_print(
 
     _ensure_print_task(db, alloc)
 
-    # Kuota Helper dipesan lebih dulu; dilepas kembali bila konfirmasi gagal.
-    if not _reserve_helper_quota(
-        db, accurate_po_id=accurate_po_id, accurate_line_id=accurate_line_id, qty=qty
-    ):
-        quota = helper_quota_state(
+    # Retry/double-click dikenali sebelum transaksi dimulai.
+    existing = tasks.find_confirmation(db, idempotency_key)
+    if existing is not None:
+        result = {
+            "task": tasks.get_task(db, print_task_key(alloc)),
+            "confirmation": existing,
+            "duplicate": True,
+        }
+        result["quota"] = helper_quota_state(
             db, accurate_po_id=accurate_po_id, accurate_line_id=accurate_line_id
         )
+        return result
+
+    quota_before = helper_quota_state(
+        db, accurate_po_id=accurate_po_id, accurate_line_id=accurate_line_id
+    )
+    if quota_before["qty_available"] < qty:
         raise ProductionQuantityError(
-            f"Kuota Persiapan Cup tersisa {quota['qty_available']:g} — "
+            f"Kuota Persiapan Cup tersisa {quota_before['qty_available']:g} — "
             f"tidak cukup untuk {qty:g}."
         )
 
-    try:
-        result = confirm_task(
+    def _operation(session: Any) -> dict[str, Any]:
+        return confirm_task(
             db,
             user,
             task_key=print_task_key(alloc),
             qty=qty,
             idempotency_key=idempotency_key,
             note=note,
-        )
-    except Exception:
-        _release_helper_quota(
-            db,
-            accurate_po_id=accurate_po_id,
-            accurate_line_id=accurate_line_id,
-            qty=qty,
-        )
-        raise
-
-    if result.get("duplicate"):
-        # Retry/double-click: Qty tidak ditambah, kuota tidak boleh ikut terpakai.
-        _release_helper_quota(
-            db,
-            accurate_po_id=accurate_po_id,
-            accurate_line_id=accurate_line_id,
-            qty=qty,
+            session=session,
+            extra_reservation={
+                "task_key": prep_task_key(accurate_po_id, accurate_line_id),
+                "qty": qty,
+                "error": (
+                    "Kuota Persiapan Cup tidak mencukupi untuk konfirmasi cetak ini."
+                ),
+            },
         )
 
+    result = tasks.run_in_transaction(db, _operation)
     _sync_qc_task(db, alloc)
     result["quota"] = helper_quota_state(
         db, accurate_po_id=accurate_po_id, accurate_line_id=accurate_line_id

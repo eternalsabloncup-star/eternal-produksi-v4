@@ -35,8 +35,12 @@ export function resolveShellDataMode(
   if (pathname.startsWith("/app/settings")) {
     return "api";
   }
-  // Tugas Tim dan Jadwal Produksi memakai backend nyata saat mode API.
-  if (pathname.startsWith("/app/tasks") || pathname.startsWith("/app/schedule")) {
+  // Tugas Tim, Jadwal Produksi, dan Jadwal Pengiriman memakai backend nyata.
+  if (
+    pathname.startsWith("/app/tasks") ||
+    pathname.startsWith("/app/schedule") ||
+    pathname.startsWith("/app/delivery")
+  ) {
     return inboxMode === "api" ? "api" : "demo";
   }
   // Modul workflow lokal Cursor — simulasi frontend, bukan Accurate/Mongo.
@@ -44,7 +48,6 @@ export function resolveShellDataMode(
     "/app/control",
     "/app/production-flow",
     "/app/buffer-stock",
-    "/app/delivery",
     "/app/samples",
   ];
   if (demoPrefixes.some((p) => pathname === p || pathname.startsWith(`${p}/`))) {

@@ -432,6 +432,44 @@ def test_concurrent_prints_never_exceed_shared_quota(db: Database) -> None:
     assert quota["qty_available"] == 0
 
 
+def test_crash_mid_transaction_leaves_no_consumed_quota(
+    db: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Mati setelah kuota dipesan dan ledger ditulis, sebelum transaksi commit."""
+    po_doc = _seed(db)
+    (alloc_a,) = _schedule(db, po_doc, LINE_A, [("op1@eternal.local", 500)], "d-crash-1")
+    _prep(db, LINE_A, 500, "prep-crash")
+    _screen(db, alloc_a, 50, "screen-crash")
+    _sample_approved(db, alloc_a)
+
+    def _boom(*args, **kwargs):
+        raise RuntimeError("proses mati sebelum commit")
+
+    monkeypatch.setattr(tasks, "_status_for", _boom)
+    with pytest.raises(RuntimeError):
+        prod.confirm_print(
+            db, OPERATOR, allocation_id=alloc_a, qty=200, idempotency_key="print-crash"
+        )
+
+    quota = prod.helper_quota_state(db, accurate_po_id=PO_ID, accurate_line_id=LINE_A)
+    assert quota["qty_consumed"] == 0
+    assert quota["qty_available"] == 500
+    assert tasks.list_confirmations(db, prod.print_task_key({
+        "accurate_po_id": PO_ID,
+        "po_no": "",
+        "accurate_line_id": LINE_A,
+        "item_code": "",
+        "allocation_id": alloc_a,
+    })) == []
+
+    monkeypatch.undo()
+    retried = prod.confirm_print(
+        db, OPERATOR, allocation_id=alloc_a, qty=200, idempotency_key="print-crash"
+    )
+    assert retried["duplicate"] is False
+    assert retried["quota"]["qty_consumed"] == 200
+
+
 def test_print_requires_operator_permission(db: Database) -> None:
     po_doc = _seed(db)
     (alloc_a,) = _schedule(db, po_doc, LINE_A, [("op1@eternal.local", 100)], "d-p-7")

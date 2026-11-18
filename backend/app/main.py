@@ -7,6 +7,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
+from app.api.delivery import router as delivery_router
 from app.api.health import router as health_router
 from app.api.operational import router as operational_router
 from app.api.po import router as po_router
@@ -53,6 +54,7 @@ def create_app() -> FastAPI:
     application.include_router(workflow_router)
     application.include_router(scheduling_router)
     application.include_router(production_router)
+    application.include_router(delivery_router)
     return application
 
 

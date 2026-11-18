@@ -86,6 +86,7 @@ TABLE_PREFERENCES_INDEXES: list[dict[str, Any]] = [
 
 def ensure_indexes(db: Database | None = None) -> dict[str, list[str]]:
     """Create required indexes idempotently. Safe to re-run."""
+    from app.repositories.delivery_repository import ensure_delivery_indexes
     from app.repositories.design_repository import ensure_design_indexes
     from app.repositories.evidence_repository import ensure_evidence_indexes
     from app.repositories.gate_repository import ensure_gate_indexes
@@ -144,6 +145,7 @@ def ensure_indexes(db: Database | None = None) -> dict[str, list[str]]:
     created["evidence_files"] = ensure_evidence_indexes(database)
     created["production_allocations"] = ensure_schedule_indexes(database)
     created["operator_samples"] = ensure_sample_indexes(database)
+    created["accurate_delivery_notes"] = ensure_delivery_indexes(database)
 
     return created
 

@@ -50,7 +50,8 @@ describe("resolveInboxPoSourceMode", () => {
     expect(resolveShellDataMode("/app/tasks/operator", "demo")).toBe("demo");
     expect(resolveShellDataMode("/app/settings", "demo")).toBe("api");
     expect(resolveShellDataMode("/app/buffer-stock", "api")).toBe("demo");
-    expect(resolveShellDataMode("/app/delivery", "api")).toBe("demo");
+    expect(resolveShellDataMode("/app/delivery", "api")).toBe("api");
+    expect(resolveShellDataMode("/app/delivery", "demo")).toBe("demo");
     expect(resolveShellDataMode("/app/dashboard", "api")).toBe("shell");
     expect(resolveShellDataMode("/app/reports", "api")).toBe("shell");
   });
