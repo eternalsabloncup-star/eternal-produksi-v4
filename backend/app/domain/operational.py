@@ -36,6 +36,8 @@ TaskAction = Literal[
     "edit",
     "delete",
     "manage_evidence",
+    # Pembatalan Loading — tidak diberikan ke role mana pun secara default.
+    "cancel",
 ]
 
 TASK_ACTIONS: Final[tuple[TaskAction, ...]] = (
@@ -46,6 +48,7 @@ TASK_ACTIONS: Final[tuple[TaskAction, ...]] = (
     "edit",
     "delete",
     "manage_evidence",
+    "cancel",
 )
 
 # Cakupan unit tugas — menentukan identitas task_key.

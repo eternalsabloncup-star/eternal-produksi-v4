@@ -18,10 +18,19 @@ from pymongo.errors import DuplicateKeyError
 DELIVERY_NOTES_COLLECTION = "accurate_delivery_notes"
 LOADING_EVENTS_COLLECTION = "loading_events"
 DELIVERY_EVENTS_COLLECTION = "delivery_events"
+NOTE_REVISIONS_COLLECTION = "delivery_note_revisions"
 
 DELIVERY_PENDING = "menunggu_pengiriman"
 DELIVERY_SUCCESS = "berhasil"
 DELIVERY_FAILED = "gagal"
+
+# Status revisi SJ (Opsi B — keputusan Owner 19 Nov 2026).
+REVISION_ACTIVE = "aktif"
+REVISION_NEEDS_RELOADING = "PERLU_LOADING_ULANG"
+REVISION_NEEDS_ADMIN_CORRECTION = "PERLU_KOREKSI_ADMINISTRASI"
+
+LOADING_ACTIVE = "aktif"
+LOADING_CANCELLED = "dibatalkan"
 
 _INDEXED_DATABASES: set[str] = set()
 
@@ -42,6 +51,10 @@ def delivery_events_collection(db: Database) -> Collection:
     return db[DELIVERY_EVENTS_COLLECTION]
 
 
+def note_revisions_collection(db: Database) -> Collection:
+    return db[NOTE_REVISIONS_COLLECTION]
+
+
 def ensure_delivery_indexes(db: Database) -> list[str]:
     created = [
         delivery_notes_collection(db).create_index(
@@ -53,8 +66,20 @@ def ensure_delivery_indexes(db: Database) -> list[str]:
         delivery_notes_collection(db).create_index(
             [("ship_date", ASCENDING)], name="idx_sj_ship_date"
         ),
+        # Hanya satu Loading aktif per SJ; Loading batal tetap tersimpan.
         loading_events_collection(db).create_index(
-            [("accurate_sj_id", ASCENDING)], name="uniq_loading_per_sj", unique=True
+            [("accurate_sj_id", ASCENDING)],
+            name="uniq_active_loading_per_sj",
+            unique=True,
+            partialFilterExpression={"status": LOADING_ACTIVE},
+        ),
+        loading_events_collection(db).create_index(
+            [("loading_id", ASCENDING)], name="uniq_loading_id", unique=True
+        ),
+        note_revisions_collection(db).create_index(
+            [("accurate_sj_id", ASCENDING), ("version", ASCENDING)],
+            name="uniq_note_revision_version",
+            unique=True,
         ),
         delivery_events_collection(db).create_index(
             [("accurate_sj_id", ASCENDING), ("attempt", ASCENDING)],
@@ -139,30 +164,121 @@ def normalize_delivery_note(payload: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def diff_note_items(
+    before: dict[str, Any] | None, after: dict[str, Any]
+) -> list[dict[str, Any]]:
+    """Item line yang berubah antara dua snapshot SJ (per ``sj_line_id``)."""
+    if before is None:
+        return []
+    old = {str(i["sj_line_id"]): i for i in before.get("items") or []}
+    new = {str(i["sj_line_id"]): i for i in after.get("items") or []}
+    changes: list[dict[str, Any]] = []
+    for line_id in sorted(set(old) | set(new)):
+        prev = old.get(line_id)
+        curr = new.get(line_id)
+        if prev == curr:
+            continue
+        changes.append(
+            {
+                "sj_line_id": line_id,
+                "accurate_line_id": (curr or prev or {}).get("accurate_line_id"),
+                "qty_before": (prev or {}).get("qty"),
+                "qty_after": (curr or {}).get("qty"),
+                "change": "ditambahkan"
+                if prev is None
+                else "dihapus"
+                if curr is None
+                else "diubah",
+            }
+        )
+    return changes
+
+
 def upsert_delivery_note(db: Database, payload: dict[str, Any]) -> dict[str, Any]:
-    """Idempoten per ``accurate_sj_id``; perubahan sumber tercatat."""
+    """Idempoten per ``accurate_sj_id``; revisi disimpan sebagai versi baru."""
     _ensure_once(db)
     doc = normalize_delivery_note(payload)
     now = datetime.now(timezone.utc)
     before = delivery_notes_collection(db).find_one(
         {"accurate_sj_id": doc["accurate_sj_id"]}, {"_id": 0}
     )
+
+    changes = diff_note_items(before, doc)
+    ship_date_changed = before is not None and before.get("ship_date") != doc.get(
+        "ship_date"
+    )
+    changed = bool(changes) or ship_date_changed
+    version = int((before or {}).get("sj_version") or 0) + (1 if changed or before is None else 0)
+    if before is not None and not changed:
+        version = int(before.get("sj_version") or 1)
+
+    update: dict[str, Any] = {**doc, "synced_at": now, "sj_version": version}
+    if before is None:
+        update["revision_status"] = REVISION_ACTIVE
+
     delivery_notes_collection(db).update_one(
         {"accurate_sj_id": doc["accurate_sj_id"]},
-        {
-            "$set": {**doc, "synced_at": now},
-            "$setOnInsert": {"created_at": now},
-        },
+        {"$set": update, "$setOnInsert": {"created_at": now}},
         upsert=True,
     )
+
+    # Versi pertama juga dicatat agar histori snapshot lengkap sejak awal.
+    if changed or before is None:
+        note_revisions_collection(db).insert_one(
+            {
+                "accurate_sj_id": doc["accurate_sj_id"],
+                "version": version,
+                "snapshot_before": before,
+                "snapshot_after": doc,
+                "changed_items": changes,
+                "ship_date_changed": ship_date_changed,
+                "created_at": now,
+            }
+        )
+
     after = delivery_notes_collection(db).find_one(
         {"accurate_sj_id": doc["accurate_sj_id"]}, {"_id": 0}
     )
-    changed = before is not None and (
-        before.get("items") != after.get("items")
-        or before.get("ship_date") != after.get("ship_date")
+    return {
+        "delivery_note": after,
+        "was_insert": before is None,
+        "source_changed": changed,
+        "changed_items": changes,
+        "sj_version": version,
+    }
+
+
+def list_note_revisions(db: Database, accurate_sj_id: str) -> list[dict[str, Any]]:
+    _ensure_once(db)
+    return list(
+        note_revisions_collection(db)
+        .find({"accurate_sj_id": str(accurate_sj_id)}, {"_id": 0})
+        .sort("version", ASCENDING)
     )
-    return {"delivery_note": after, "was_insert": before is None, "source_changed": changed}
+
+
+def set_revision_status(
+    db: Database,
+    *,
+    accurate_sj_id: str,
+    status: str,
+    reason: str | None = None,
+    session: Any | None = None,
+) -> dict[str, Any] | None:
+    _ensure_once(db)
+    return delivery_notes_collection(db).find_one_and_update(
+        {"accurate_sj_id": str(accurate_sj_id)},
+        {
+            "$set": {
+                "revision_status": status,
+                "revision_reason": reason,
+                "revision_status_at": datetime.now(timezone.utc),
+            }
+        },
+        projection={"_id": 0},
+        return_document=ReturnDocument.AFTER,
+        session=session,
+    )
 
 
 def get_delivery_note(db: Database, accurate_sj_id: str) -> dict[str, Any] | None:
@@ -210,6 +326,16 @@ def mark_superseded(
     return doc
 
 
+def next_loading_sequence(db: Database, accurate_sj_id: str) -> int:
+    _ensure_once(db)
+    return (
+        loading_events_collection(db).count_documents(
+            {"accurate_sj_id": str(accurate_sj_id)}
+        )
+        + 1
+    )
+
+
 def insert_loading_event(
     db: Database,
     *,
@@ -219,18 +345,27 @@ def insert_loading_event(
     items: list[dict[str, Any]],
     actor_email: str,
     idempotency_key: str,
+    sj_version: int = 1,
+    sequence: int = 1,
     session: Any | None = None,
 ) -> dict[str, Any]:
-    """Satu event Loading per SJ; insert kedua ditolak oleh unique index."""
+    """Satu Loading aktif per SJ; versi batal tetap tersimpan sebagai histori."""
     _ensure_once(db)
     doc = {
+        "loading_id": f"loading:{accurate_sj_id}:v{sequence}",
         "accurate_sj_id": str(accurate_sj_id),
         "accurate_po_id": str(accurate_po_id),
         "sj_no": sj_no,
+        "sj_version": sj_version,
+        "sequence": sequence,
+        "status": LOADING_ACTIVE,
         "items": items,
         "actor_email": actor_email,
         "idempotency_key": idempotency_key,
         "created_at": datetime.now(timezone.utc),
+        "cancelled_at": None,
+        "cancelled_by": None,
+        "cancel_reason": None,
     }
     loading_events_collection(db).insert_one(dict(doc), session=session)
     doc.pop("_id", None)
@@ -238,9 +373,50 @@ def insert_loading_event(
 
 
 def get_loading_event(db: Database, accurate_sj_id: str) -> dict[str, Any] | None:
+    """Loading yang sedang aktif untuk satu SJ (bukan yang sudah dibatalkan)."""
     _ensure_once(db)
     return loading_events_collection(db).find_one(
-        {"accurate_sj_id": str(accurate_sj_id)}, {"_id": 0}
+        {"accurate_sj_id": str(accurate_sj_id), "status": LOADING_ACTIVE}, {"_id": 0}
+    )
+
+
+def get_loading_by_id(db: Database, loading_id: str) -> dict[str, Any] | None:
+    _ensure_once(db)
+    return loading_events_collection(db).find_one({"loading_id": loading_id}, {"_id": 0})
+
+
+def list_loading_events(db: Database, accurate_sj_id: str) -> list[dict[str, Any]]:
+    _ensure_once(db)
+    return list(
+        loading_events_collection(db)
+        .find({"accurate_sj_id": str(accurate_sj_id)}, {"_id": 0})
+        .sort("sequence", ASCENDING)
+    )
+
+
+def cancel_loading_event(
+    db: Database,
+    *,
+    loading_id: str,
+    actor_email: str,
+    reason: str,
+    session: Any | None = None,
+) -> dict[str, Any] | None:
+    """Batalkan satu Loading aktif. Dua kali pembatalan menghasilkan None."""
+    _ensure_once(db)
+    return loading_events_collection(db).find_one_and_update(
+        {"loading_id": loading_id, "status": LOADING_ACTIVE},
+        {
+            "$set": {
+                "status": LOADING_CANCELLED,
+                "cancelled_at": datetime.now(timezone.utc),
+                "cancelled_by": actor_email,
+                "cancel_reason": reason,
+            }
+        },
+        projection={"_id": 0},
+        return_document=ReturnDocument.AFTER,
+        session=session,
     )
 
 

@@ -38,6 +38,10 @@ class DeliveryFailureRequest(BaseModel):
     reason: str = Field(min_length=3, max_length=500)
 
 
+class LoadingCancelRequest(BaseModel):
+    reason: str = Field(min_length=3, max_length=500)
+
+
 class EvidenceDeleteRequest(BaseModel):
     evidence_id: str = Field(min_length=5)
     reason: str = Field(min_length=3, max_length=500)
@@ -46,7 +50,9 @@ class EvidenceDeleteRequest(BaseModel):
 def _handle(exc: Exception) -> HTTPException:
     if isinstance(exc, TaskPermissionError):
         return HTTPException(status.HTTP_403_FORBIDDEN, str(exc))
-    if isinstance(exc, delivery_service.LoadingValidationError):
+    if isinstance(
+        exc, (delivery_service.LoadingValidationError, delivery_service.LoadingCancelError)
+    ):
         return HTTPException(status.HTTP_409_CONFLICT, str(exc))
     if isinstance(exc, TaskQuantityError):
         return HTTPException(status.HTTP_409_CONFLICT, str(exc))
@@ -85,7 +91,7 @@ def post_delivery_notes(
     results = []
     try:
         for payload in body.delivery_notes:
-            results.append(deliveries.upsert_delivery_note(db, payload))
+            results.append(delivery_service.ingest_delivery_note(db, auth.user, payload))
     except Exception as exc:  # noqa: BLE001
         raise _handle(exc) from exc
     return {"items": results, "count": len(results)}
@@ -103,6 +109,8 @@ def get_delivery_note(
     return {
         "delivery_note": note,
         "loading": deliveries.get_loading_event(db, accurate_sj_id),
+        "loadings": deliveries.list_loading_events(db, accurate_sj_id),
+        "revisions": deliveries.list_note_revisions(db, accurate_sj_id),
         "events": deliveries.list_delivery_events(db, accurate_sj_id),
         "evidence": delivery_service.active_delivery_evidence(db, accurate_sj_id),
     }
@@ -134,6 +142,35 @@ def post_loading(
         )
     except Exception as exc:  # noqa: BLE001
         raise _handle(exc) from exc
+
+
+@router.post("/{accurate_sj_id}/loading/cancel")
+def post_cancel_loading(
+    accurate_sj_id: str,
+    body: LoadingCancelRequest,
+    auth: AuthContext = Depends(require_csrf),
+) -> dict[str, Any]:
+    try:
+        return delivery_service.cancel_loading(
+            get_db(), auth.user, accurate_sj_id=accurate_sj_id, reason=body.reason
+        )
+    except Exception as exc:  # noqa: BLE001
+        raise _handle(exc) from exc
+
+
+@router.get("/{accurate_sj_id}/revisions")
+def get_revisions(
+    accurate_sj_id: str,
+    auth: AuthContext = Depends(require_session),
+) -> dict[str, Any]:
+    db = get_db()
+    if deliveries.get_delivery_note(db, accurate_sj_id) is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Surat Jalan tidak ditemukan")
+    return {
+        "accurate_sj_id": accurate_sj_id,
+        "revisions": deliveries.list_note_revisions(db, accurate_sj_id),
+        "loadings": deliveries.list_loading_events(db, accurate_sj_id),
+    }
 
 
 @router.post("/{accurate_sj_id}/discrepancy")

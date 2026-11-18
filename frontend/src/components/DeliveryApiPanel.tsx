@@ -1,12 +1,16 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import {
+  cancelLoading,
   confirmLoading,
   fetchDeliverySchedule,
   fetchLoadingValidation,
+  fetchRevisions,
   raiseDiscrepancy,
   type DeliverySchedule,
   type DeliveryScheduleRow,
+  type LoadingEvent,
   type LoadingValidation,
+  type NoteRevision,
 } from "../api/delivery";
 import { newIdempotencyKey } from "../api/operational";
 import { KpiSummary, type KpiItem } from "./KpiSummary";
@@ -32,6 +36,9 @@ export function DeliveryApiPanel() {
   const [expanded, setExpanded] = useState<string | null>(null);
   const [selected, setSelected] = useState<DeliveryScheduleRow | null>(null);
   const [validation, setValidation] = useState<LoadingValidation | null>(null);
+  const [revisions, setRevisions] = useState<NoteRevision[]>([]);
+  const [loadings, setLoadings] = useState<LoadingEvent[]>([]);
+  const [cancelReason, setCancelReason] = useState("");
   const [busy, setBusy] = useState(false);
 
   const load = useCallback(async () => {
@@ -84,9 +91,42 @@ export function DeliveryApiPanel() {
     setError(null);
     if (!keepNotice) setNotice(null);
     try {
-      setValidation(await fetchLoadingValidation(row.accurate_sj_id));
+      const [v, history] = await Promise.all([
+        fetchLoadingValidation(row.accurate_sj_id),
+        fetchRevisions(row.accurate_sj_id).catch(() => ({
+          revisions: [] as NoteRevision[],
+          loadings: [] as LoadingEvent[],
+        })),
+      ]);
+      setValidation(v);
+      setRevisions(history.revisions);
+      setLoadings(history.loadings);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Validasi Loading gagal.");
+    }
+  }
+
+  async function onCancelLoading() {
+    if (!selected) return;
+    if (!cancelReason.trim()) {
+      setError("Alasan pembatalan Loading wajib diisi.");
+      return;
+    }
+    setBusy(true);
+    setError(null);
+    try {
+      const res = await cancelLoading(selected.accurate_sj_id, cancelReason.trim());
+      const message = res.cancelled
+        ? "Loading dibatalkan; Qty QC dikembalikan dan menunggu Loading ulang."
+        : "Tidak ada Loading aktif untuk dibatalkan.";
+      setCancelReason("");
+      await load();
+      await openLoading(selected, true);
+      setNotice(message);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Pembatalan Loading gagal.");
+    } finally {
+      setBusy(false);
     }
   }
 
@@ -281,7 +321,87 @@ export function DeliveryApiPanel() {
                 <dd>{selected.ship_date}</dd>
                 <dt>Status Loading</dt>
                 <dd>{selected.loaded ? "Sudah dikonfirmasi" : "Belum"}</dd>
+                <dt>Versi SJ</dt>
+                <dd>{validation?.sj_version ?? "—"}</dd>
+                <dt>Status Revisi</dt>
+                <dd data-testid="revision-status">
+                  {validation?.needs_reloading
+                    ? "Perlu Loading Ulang"
+                    : validation?.revision_status || "—"}
+                </dd>
               </dl>
+
+              {validation?.needs_reloading ? (
+                <p className="ep-error" data-testid="needs-reloading">
+                  Surat Jalan direvisi setelah Loading. Batalkan Loading lama agar
+                  Qty QC kembali, lalu konfirmasi Loading ulang.
+                </p>
+              ) : null}
+
+              {revisions.length > 1 ? (
+                <>
+                  <p className="ep-sectionlabel">Riwayat Revisi SJ</p>
+                  <table className="ep-table">
+                    <thead>
+                      <tr>
+                        <th>Versi</th>
+                        <th>Item Line</th>
+                        <th>Qty Sebelum</th>
+                        <th>Qty Sesudah</th>
+                        <th>Perubahan</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {revisions
+                        .filter((r) => r.changed_items.length > 0)
+                        .flatMap((r) =>
+                          r.changed_items.map((c) => (
+                            <tr key={`${r.version}-${c.sj_line_id}`}>
+                              <td>{r.version}</td>
+                              <td>{c.accurate_line_id}</td>
+                              <td>{c.qty_before ?? "—"}</td>
+                              <td>{c.qty_after ?? "—"}</td>
+                              <td>{c.change}</td>
+                            </tr>
+                          )),
+                        )}
+                    </tbody>
+                  </table>
+                </>
+              ) : null}
+
+              {loadings.length > 0 ? (
+                <>
+                  <p className="ep-sectionlabel">Riwayat Loading</p>
+                  <table className="ep-table">
+                    <thead>
+                      <tr>
+                        <th>Loading</th>
+                        <th>Versi SJ</th>
+                        <th>Status</th>
+                        <th>Petugas</th>
+                        <th>Dibatalkan oleh</th>
+                        <th>Alasan</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {loadings.map((l) => (
+                        <tr
+                          key={l.loading_id}
+                          className={l.status === "dibatalkan" ? "ep-row-muted" : undefined}
+                        >
+                          <td>{l.sequence}</td>
+                          <td>{l.sj_version}</td>
+                          <td>{l.status}</td>
+                          <td>{l.actor_email}</td>
+                          <td>{l.cancelled_by || "—"}</td>
+                          <td>{l.cancel_reason || "—"}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </>
+              ) : null}
 
               <p className="ep-sectionlabel">Validasi Qty Loading</p>
               {validation === null ? (
@@ -343,6 +463,25 @@ export function DeliveryApiPanel() {
                   </button>
                 ) : null}
               </div>
+
+              {validation?.already_loaded && !validation.delivered ? (
+                <div className="ep-filterbar" data-testid="cancel-loading-block">
+                  <label htmlFor="cancel-reason">Alasan pembatalan</label>
+                  <input
+                    id="cancel-reason"
+                    value={cancelReason}
+                    onChange={(e) => setCancelReason(e.target.value)}
+                  />
+                  <button
+                    type="button"
+                    className="ep-btn"
+                    disabled={busy}
+                    onClick={() => void onCancelLoading()}
+                  >
+                    Batalkan Loading
+                  </button>
+                </div>
+              ) : null}
               {error ? <p className="ep-error">{error}</p> : null}
               {notice ? <p className="ep-notice">{notice}</p> : null}
             </div>

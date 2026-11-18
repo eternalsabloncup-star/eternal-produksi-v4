@@ -39,6 +39,11 @@ export type DeliverySchedule = {
 export type LoadingValidation = {
   accurate_sj_id: string;
   sj_no: string;
+  sj_version: number;
+  revision_status: string;
+  needs_reloading: boolean;
+  delivered: boolean;
+  active_loading_id: string | null;
   all_matched: boolean;
   already_loaded: boolean;
   items: {
@@ -122,6 +127,45 @@ export async function confirmLoading(
     method: "POST",
     body: JSON.stringify({ idempotency_key: idempotencyKey }),
   });
+}
+
+export type LoadingEvent = {
+  loading_id: string;
+  sequence: number;
+  sj_version: number;
+  status: string;
+  actor_email: string;
+  cancelled_by?: string | null;
+  cancel_reason?: string | null;
+  items: { accurate_line_id: string; qty: number; process_kind: string | null }[];
+};
+
+export type NoteRevision = {
+  version: number;
+  changed_items: {
+    sj_line_id: string;
+    accurate_line_id: string;
+    qty_before: number | null;
+    qty_after: number | null;
+    change: string;
+  }[];
+  created_at: string;
+};
+
+export async function cancelLoading(
+  sjId: string,
+  reason: string,
+): Promise<{ cancelled: boolean; duplicate: boolean }> {
+  return request(`/api/delivery/${encodeURIComponent(sjId)}/loading/cancel`, {
+    method: "POST",
+    body: JSON.stringify({ reason }),
+  });
+}
+
+export async function fetchRevisions(
+  sjId: string,
+): Promise<{ revisions: NoteRevision[]; loadings: LoadingEvent[] }> {
+  return request(`/api/delivery/${encodeURIComponent(sjId)}/revisions`);
 }
 
 export async function raiseDiscrepancy(sjId: string): Promise<{ task_key: string }> {

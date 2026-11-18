@@ -31,7 +31,11 @@ DISCREPANCY_MESSAGE = (
 
 
 class LoadingValidationError(RuntimeError):
-    """Loading terkunci karena Qty/identitas tidak cocok."""
+    """Loading terkunci karena Qty/identitas tidak cocok atau SJ direvisi."""
+
+
+class LoadingCancelError(RuntimeError):
+    """Pembatalan Loading tidak sah pada kondisi saat ini."""
 
 
 class DeliveryEvidenceError(ValueError):
@@ -54,6 +58,61 @@ def _po_line_index(po_doc: dict[str, Any]) -> dict[str, dict[str, Any]]:
         for i in (header.get("items") or [])
         if isinstance(i, dict) and i.get("accurate_line_id")
     }
+
+
+def has_successful_delivery(db: Database, accurate_sj_id: str) -> bool:
+    return any(
+        e["status"] == deliveries.DELIVERY_SUCCESS
+        for e in deliveries.list_delivery_events(db, accurate_sj_id)
+    )
+
+
+def ingest_delivery_note(
+    db: Database, user: dict[str, Any], payload: dict[str, Any]
+) -> dict[str, Any]:
+    """Sinkron SJ + penerapan aturan revisi sebagian item (Opsi B Owner).
+
+    - Belum Loading → cukup simpan revisi; Loading biasa setelah valid.
+    - Sudah Loading, belum terkirim → ``PERLU_LOADING_ULANG`` dan Loading lama
+      harus dibatalkan secara teraudit sebelum Loading ulang.
+    - Sudah terkirim → ``PERLU_KOREKSI_ADMINISTRASI``; Loading dan bukti
+      historis tidak disentuh.
+    """
+    result = deliveries.upsert_delivery_note(db, payload)
+    note = result["delivery_note"]
+    sj_id = str(note["accurate_sj_id"])
+
+    if not result["source_changed"]:
+        return {**result, "revision_status": note.get("revision_status")}
+
+    delivered = has_successful_delivery(db, sj_id)
+    active_loading = deliveries.get_loading_event(db, sj_id)
+    reason = "Revisi item Surat Jalan dari Accurate."
+
+    if delivered:
+        status = deliveries.REVISION_NEEDS_ADMIN_CORRECTION
+    elif active_loading is not None:
+        status = deliveries.REVISION_NEEDS_RELOADING
+    else:
+        status = deliveries.REVISION_ACTIVE
+
+    updated = deliveries.set_revision_status(
+        db, accurate_sj_id=sj_id, status=status, reason=reason
+    )
+    append_audit_event(
+        db,
+        action="delivery.note.revision",
+        actor_email=str(user.get("email_normalized") or ""),
+        target_email=None,
+        detail={
+            "accurate_sj_id": sj_id,
+            "sj_version": result["sj_version"],
+            "changed_items": result["changed_items"],
+            "revision_status": status,
+            "active_loading_id": (active_loading or {}).get("loading_id"),
+        },
+    )
+    return {**result, "delivery_note": updated, "revision_status": status}
 
 
 def validate_loading(db: Database, accurate_sj_id: str) -> dict[str, Any]:
@@ -127,13 +186,20 @@ def validate_loading(db: Database, accurate_sj_id: str) -> dict[str, Any]:
             }
         )
 
+    active_loading = deliveries.get_loading_event(db, accurate_sj_id)
+    revision_status = note.get("revision_status") or deliveries.REVISION_ACTIVE
     return {
         "accurate_sj_id": accurate_sj_id,
         "sj_no": note["sj_no"],
+        "sj_version": note.get("sj_version", 1),
+        "revision_status": revision_status,
         "accurate_po_id": note["accurate_po_id"],
         "items": checks,
         "all_matched": all(c["matched"] for c in checks),
-        "already_loaded": deliveries.get_loading_event(db, accurate_sj_id) is not None,
+        "already_loaded": active_loading is not None,
+        "active_loading_id": (active_loading or {}).get("loading_id"),
+        "needs_reloading": revision_status == deliveries.REVISION_NEEDS_RELOADING,
+        "delivered": has_successful_delivery(db, accurate_sj_id),
     }
 
 
@@ -149,6 +215,12 @@ def confirm_loading(
 
     existing = deliveries.get_loading_event(db, accurate_sj_id)
     if existing is not None:
+        note_now = deliveries.get_delivery_note(db, accurate_sj_id) or {}
+        if note_now.get("revision_status") == deliveries.REVISION_NEEDS_RELOADING:
+            raise LoadingValidationError(
+                "Surat Jalan direvisi: batalkan Loading lama terlebih dahulu "
+                "sebelum Loading ulang."
+            )
         return {"loading": existing, "duplicate": True}
 
     validation = validate_loading(db, accurate_sj_id)
@@ -159,6 +231,7 @@ def confirm_loading(
 
     note = deliveries.get_delivery_note(db, accurate_sj_id)
     actor = str(user.get("email_normalized") or "")
+    sequence = deliveries.next_loading_sequence(db, accurate_sj_id)
 
     def _operation(session: Any) -> dict[str, Any]:
         for check in validation["items"]:
@@ -195,11 +268,19 @@ def confirm_loading(
             ],
             actor_email=actor,
             idempotency_key=idempotency_key,
+            sj_version=int(note.get("sj_version") or 1),
+            sequence=sequence,
             session=session,
         )
 
     loading = tasks.run_in_transaction(db, _operation)
-    driver_task = _ensure_driver_task(db, note)
+    deliveries.set_revision_status(
+        db,
+        accurate_sj_id=accurate_sj_id,
+        status=deliveries.REVISION_ACTIVE,
+        reason="Loading dikonfirmasi untuk versi SJ terbaru.",
+    )
+    driver_task = _ensure_driver_task(db, note, loading)
 
     append_audit_event(
         db,
@@ -215,10 +296,12 @@ def confirm_loading(
     return {"loading": loading, "driver_task_key": driver_task["task_key"], "duplicate": False}
 
 
-def _ensure_driver_task(db: Database, note: dict[str, Any]) -> dict[str, Any]:
-    """Satu tugas Driver per SJ — bukan per item."""
+def _ensure_driver_task(
+    db: Database, note: dict[str, Any], loading: dict[str, Any]
+) -> dict[str, Any]:
+    """Satu tugas Driver per SJ, terikat pada Loading aktif (bukan per item)."""
     master.seed_master_defaults(db)
-    return tasks.upsert_task(
+    task = tasks.upsert_task(
         db,
         task_type=DRIVER_TASK,
         scope="delivery_note",
@@ -230,8 +313,138 @@ def _ensure_driver_task(db: Database, note: dict[str, Any]) -> dict[str, Any]:
             "shipment": note.get("shipment"),
             "ship_date": note.get("ship_date"),
             "item_count": len(note.get("items") or []),
+            "loading_id": loading["loading_id"],
+            "sj_version": loading.get("sj_version"),
+            "loading_cancelled": False,
         },
     )
+    # Loading ulang mengaktifkan kembali tugas yang sama dengan Loading baru.
+    tasks.tasks_collection(db).update_one(
+        {"task_key": task["task_key"]},
+        {"$set": {"status": tasks.TASK_STATUS_OPEN}},
+    )
+    return tasks.get_task(db, task["task_key"]) or task
+
+
+def _require_active_loading(db: Database, accurate_sj_id: str) -> dict[str, Any]:
+    """Driver hanya boleh bekerja atas Loading yang masih aktif."""
+    loading = deliveries.get_loading_event(db, accurate_sj_id)
+    if loading is None:
+        raise LoadingValidationError(
+            "Tidak ada Loading aktif untuk SJ ini — Loading ulang diperlukan."
+        )
+    note = deliveries.get_delivery_note(db, accurate_sj_id) or {}
+    if note.get("revision_status") == deliveries.REVISION_NEEDS_RELOADING:
+        raise LoadingValidationError(
+            "Surat Jalan direvisi: konfirmasi pengiriman diblokir sampai "
+            "Loading dibatalkan dan dikonfirmasi ulang."
+        )
+    if int(loading.get("sj_version") or 1) != int(note.get("sj_version") or 1):
+        raise LoadingValidationError(
+            "Loading aktif mengacu versi SJ lama — Loading ulang diperlukan."
+        )
+    return loading
+
+
+def cancel_loading(
+    db: Database,
+    user: dict[str, Any],
+    *,
+    accurate_sj_id: str,
+    reason: str,
+) -> dict[str, Any]:
+    """Batalkan Loading aktif dan kembalikan Qty QC yang benar-benar dipakai."""
+    require_action(db, user, task_type=DRIVER_TASK, action="cancel")
+    if not reason.strip():
+        raise ValueError("Alasan pembatalan Loading wajib diisi.")
+
+    note = deliveries.get_delivery_note(db, accurate_sj_id)
+    if note is None:
+        raise LookupError(f"Surat Jalan tidak ditemukan: {accurate_sj_id}")
+    if has_successful_delivery(db, accurate_sj_id):
+        raise LoadingCancelError(
+            "Pengiriman sudah berhasil dengan bukti penerimaan — Loading tidak "
+            "dapat dibatalkan."
+        )
+
+    loading = deliveries.get_loading_event(db, accurate_sj_id)
+    if loading is None:
+        return {"cancelled": False, "duplicate": True, "loading": None}
+
+    actor = str(user.get("email_normalized") or "")
+    loading_id = str(loading["loading_id"])
+
+    def _operation(session: Any) -> dict[str, Any]:
+        cancelled = deliveries.cancel_loading_event(
+            db,
+            loading_id=loading_id,
+            actor_email=actor,
+            reason=reason.strip(),
+            session=session,
+        )
+        if cancelled is None:
+            # Pembatalan paralel/berulang: tidak ada reversal kedua.
+            return {"cancelled": False, "duplicate": True, "loading": None}
+
+        # Reversal memakai Qty yang benar-benar dikonsumsi Loading tersebut.
+        for item in cancelled.get("items") or []:
+            if item.get("process_kind") != "Cetak":
+                continue
+            tasks.tasks_collection(db).update_one(
+                {
+                    "task_key": production.qc_task_key(
+                        str(cancelled["accurate_po_id"]), str(item["accurate_line_id"])
+                    )
+                },
+                {"$inc": {"qty_consumed": -float(item["qty"])}},
+                session=session,
+            )
+
+        deliveries.set_revision_status(
+            db,
+            accurate_sj_id=accurate_sj_id,
+            status=deliveries.REVISION_NEEDS_RELOADING,
+            reason=reason.strip(),
+            session=session,
+        )
+        return {"cancelled": True, "duplicate": False, "loading": cancelled}
+
+    result = tasks.run_in_transaction(db, _operation)
+    if not result["cancelled"]:
+        return result
+
+    driver_key = build_task_key(DRIVER_TASK, "delivery_note", _sj_ref(note))
+    tasks.tasks_collection(db).update_one(
+        {"task_key": driver_key},
+        {
+            "$set": {
+                "context.loading_cancelled": True,
+                "context.cancelled_loading_id": loading_id,
+                "status": tasks.TASK_STATUS_OPEN,
+            }
+        },
+    )
+    append_audit_event(
+        db,
+        action="delivery.loading.cancel",
+        actor_email=actor,
+        target_email=None,
+        detail={
+            "accurate_sj_id": accurate_sj_id,
+            "loading_id": loading_id,
+            "reason": reason.strip(),
+            "reverted_items": [
+                {
+                    "accurate_line_id": i["accurate_line_id"],
+                    "qty": i["qty"],
+                    "process_kind": i.get("process_kind"),
+                }
+                for i in (result["loading"].get("items") or [])
+            ],
+            "sj_version_at_cancel": note.get("sj_version"),
+        },
+    )
+    return result
 
 
 def raise_quantity_discrepancy(
@@ -335,8 +548,7 @@ def confirm_delivery_success(
     note = deliveries.get_delivery_note(db, accurate_sj_id)
     if note is None:
         raise LookupError(f"Surat Jalan tidak ditemukan: {accurate_sj_id}")
-    if deliveries.get_loading_event(db, accurate_sj_id) is None:
-        raise LoadingValidationError("Loading untuk SJ ini belum dikonfirmasi.")
+    _require_active_loading(db, accurate_sj_id)
     if len(photos) < MIN_DELIVERY_PHOTOS:
         raise DeliveryEvidenceError(
             f"Konfirmasi pengiriman memerlukan minimal {MIN_DELIVERY_PHOTOS} foto."
@@ -427,6 +639,7 @@ def confirm_delivery_failure(
     note = deliveries.get_delivery_note(db, accurate_sj_id)
     if note is None:
         raise LookupError(f"Surat Jalan tidak ditemukan: {accurate_sj_id}")
+    _require_active_loading(db, accurate_sj_id)
 
     courier = str(user.get("email_normalized") or "")
     event = deliveries.insert_delivery_event(

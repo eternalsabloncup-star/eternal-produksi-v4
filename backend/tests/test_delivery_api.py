@@ -391,6 +391,106 @@ def test_failure_and_soft_delete_over_http(
     assert db["evidence_files"].count_documents({"evidence_id": evidence_id}) == 1
 
 
+def test_revision_then_cancel_and_reload_over_http(
+    app_client: TestClient, db: Database
+) -> None:
+    _seed_users(db)
+    _seed_packed(db, qty=200)
+    owner_csrf = _login(app_client, "owner@eternal.local")
+    app_client.post(
+        "/api/delivery/notes",
+        json={"delivery_notes": [_sj_payload()]},
+        headers={"X-CSRF-Token": owner_csrf},
+    )
+    driver_csrf = _login(app_client, "driver@eternal.local")
+    app_client.post(
+        f"/api/delivery/{SJ_ID}/loading",
+        json={"idempotency_key": "api-rev-load-1"},
+        headers={"X-CSRF-Token": driver_csrf},
+    )
+
+    # Revisi Qty satu item setelah Loading.
+    revised = _sj_payload()
+    revised["detailItem"][0]["quantity"] = 150
+    owner_csrf = _login(app_client, "owner@eternal.local")
+    ingested = app_client.post(
+        "/api/delivery/notes",
+        json={"delivery_notes": [revised]},
+        headers={"X-CSRF-Token": owner_csrf},
+    )
+    assert ingested.json()["items"][0]["revision_status"] == "PERLU_LOADING_ULANG"
+
+    # Driver tanpa izin cancel ditolak 403.
+    driver_csrf = _login(app_client, "driver@eternal.local")
+    denied = app_client.post(
+        f"/api/delivery/{SJ_ID}/loading/cancel",
+        json={"reason": "Revisi Qty dari administrasi"},
+        headers={"X-CSRF-Token": driver_csrf},
+    )
+    assert denied.status_code == 403
+
+    # Pengiriman memakai Loading lama diblokir backend.
+    blocked = app_client.post(
+        f"/api/delivery/{SJ_ID}/delivered",
+        data={"recipient_name": "Penerima"},
+        files=[
+            ("photos", ("p1.png", PNG, "image/png")),
+            ("photos", ("p2.png", PNG, "image/png")),
+            ("signature", ("sig.png", PNG, "image/png")),
+        ],
+        headers={"X-CSRF-Token": driver_csrf},
+    )
+    assert blocked.status_code == 409
+
+    # Owner memberikan izin cancel lewat Master, lalu membatalkan Loading.
+    owner_csrf = _login(app_client, "owner@eternal.local")
+    grant = app_client.put(
+        "/api/master/role-actions",
+        json={
+            "role": "driver",
+            "task_type": "pengiriman",
+            "actions": ["view", "input", "confirm", "manage_evidence", "cancel"],
+        },
+        headers={"X-CSRF-Token": owner_csrf},
+    )
+    assert grant.status_code == 200
+
+    driver_csrf = _login(app_client, "driver@eternal.local")
+    cancelled = app_client.post(
+        f"/api/delivery/{SJ_ID}/loading/cancel",
+        json={"reason": "Revisi Qty dari administrasi"},
+        headers={"X-CSRF-Token": driver_csrf},
+    )
+    assert cancelled.status_code == 200
+    assert cancelled.json()["cancelled"] is True
+
+    reloaded = app_client.post(
+        f"/api/delivery/{SJ_ID}/loading",
+        json={"idempotency_key": "api-rev-load-2"},
+        headers={"X-CSRF-Token": driver_csrf},
+    )
+    assert reloaded.status_code == 200
+    assert reloaded.json()["duplicate"] is False
+
+    detail = app_client.get(f"/api/delivery/{SJ_ID}")
+    body = detail.json()
+    assert body["delivery_note"]["sj_version"] == 2
+    assert [l["status"] for l in body["loadings"]] == ["dibatalkan", "aktif"]
+    assert len(body["revisions"]) == 2
+
+    delivered = app_client.post(
+        f"/api/delivery/{SJ_ID}/delivered",
+        data={"recipient_name": "Penerima Setelah Revisi"},
+        files=[
+            ("photos", ("p1.png", PNG, "image/png")),
+            ("photos", ("p2.png", b"\x89PNG dua", "image/png")),
+            ("signature", ("sig.png", PNG, "image/png")),
+        ],
+        headers={"X-CSRF-Token": driver_csrf},
+    )
+    assert delivered.status_code == 200
+
+
 def test_schedule_endpoint_with_date_filter(app_client: TestClient, db: Database) -> None:
     _seed_users(db)
     _seed_packed(db, qty=200)
