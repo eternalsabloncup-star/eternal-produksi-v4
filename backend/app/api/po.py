@@ -56,6 +56,10 @@ def _sanitize_header_for_api(header: dict[str, Any]) -> dict[str, Any]:
         "notes",
         "po_date",
         "eta_ship",
+        "address_pic_name",
+        "print_user_name",
+        "created_by_id",
+        "priority_label",
     ):
         if key in out:
             out[key] = _label_for_api(out.get(key))
