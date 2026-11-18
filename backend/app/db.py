@@ -92,6 +92,7 @@ def ensure_indexes(db: Database | None = None) -> dict[str, list[str]]:
     from app.repositories.master_repository import ensure_master_indexes
     from app.repositories.payment_repository import ensure_payment_indexes
     from app.repositories.po_repository import ensure_po_indexes
+    from app.repositories.schedule_repository import ensure_schedule_indexes
     from app.repositories.task_repository import ensure_task_indexes
     from app.services.audit_log import ensure_audit_indexes
 
@@ -140,6 +141,7 @@ def ensure_indexes(db: Database | None = None) -> dict[str, list[str]]:
     created["design"] = ensure_design_indexes(database)
     created["payment_receipts"] = ensure_payment_indexes(database)
     created["evidence_files"] = ensure_evidence_indexes(database)
+    created["production_allocations"] = ensure_schedule_indexes(database)
 
     return created
 

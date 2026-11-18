@@ -43,7 +43,8 @@ describe("resolveInboxPoSourceMode", () => {
     expect(shellModeBadgeLabel("api")).not.toBe(shellModeBadgeLabel("demo"));
     expect(resolveShellDataMode("/app/inbox", "api")).toBe("api");
     expect(resolveShellDataMode("/app/control", "api")).toBe("demo");
-    expect(resolveShellDataMode("/app/schedule", "api")).toBe("demo");
+    expect(resolveShellDataMode("/app/schedule", "api")).toBe("api");
+    expect(resolveShellDataMode("/app/schedule", "demo")).toBe("demo");
     expect(resolveShellDataMode("/app/production-flow", "api")).toBe("demo");
     expect(resolveShellDataMode("/app/tasks/operator", "api")).toBe("api");
     expect(resolveShellDataMode("/app/tasks/operator", "demo")).toBe("demo");

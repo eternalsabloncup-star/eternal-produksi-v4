@@ -3,6 +3,7 @@ import { AppShell } from "./app/AppShell";
 import { TEAM_TASK_ROLES } from "./app/nav";
 import { useAuth } from "./auth";
 import { ControlPage } from "./pages/ControlPage";
+import { DesignApprovalPage } from "./pages/DesignApprovalPage";
 import { InboxPage } from "./pages/InboxPage";
 import { LoginPage } from "./pages/LoginPage";
 import { BufferStockPage } from "./pages/BufferStockPage";
@@ -55,6 +56,8 @@ export default function App() {
           </PublicOnly>
         }
       />
+      {/* Halaman customer — tanpa sesi internal V4. */}
+      <Route path="/approval/:token" element={<DesignApprovalPage />} />
       <Route
         path="/app"
         element={

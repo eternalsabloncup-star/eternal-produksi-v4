@@ -35,14 +35,13 @@ export function resolveShellDataMode(
   if (pathname.startsWith("/app/settings")) {
     return "api";
   }
-  // Tugas Tim memakai task engine nyata saat Inbox berjalan mode API.
-  if (pathname.startsWith("/app/tasks")) {
+  // Tugas Tim dan Jadwal Produksi memakai backend nyata saat mode API.
+  if (pathname.startsWith("/app/tasks") || pathname.startsWith("/app/schedule")) {
     return inboxMode === "api" ? "api" : "demo";
   }
   // Modul workflow lokal Cursor — simulasi frontend, bukan Accurate/Mongo.
   const demoPrefixes = [
     "/app/control",
-    "/app/schedule",
     "/app/production-flow",
     "/app/buffer-stock",
     "/app/delivery",
@@ -62,7 +61,7 @@ export function shellModeBadgeLabel(mode: ShellDataMode): string | null {
 
 export function shellModeFooterHint(mode: ShellDataMode): string {
   if (mode === "api") {
-    return "Eternal Production V4 · Inbox Accurate read-only dari MongoDB V4 (bukan DEMO).";
+    return "Eternal Production V4 · Data operasional dari MongoDB V4 (bukan DEMO).";
   }
   if (mode === "demo") {
     return "Eternal Production V4 · Modul ini memakai data DEMO browser — tidak menulis MongoDB.";

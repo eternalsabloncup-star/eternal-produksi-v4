@@ -1,7 +1,9 @@
 import { useEffect, useState } from "react";
 import { KpiSummary, type KpiItem } from "../components/KpiSummary";
+import { ScheduleApiPanel } from "../components/ScheduleApiPanel";
 import { ScheduleProductionTable } from "../components/ScheduleProductionTable";
 import { getDemoPoSource } from "../demo/DemoPoSource";
+import { resolveInboxPoSourceMode } from "../demo/resolveInboxMode";
 
 function formatQty(n: number): string {
   return n.toLocaleString("id-ID");
@@ -9,9 +11,12 @@ function formatQty(n: number): string {
 
 /** Halaman Jadwal Produksi (konten eks-Kontrol Produksi). */
 export function ControlPage() {
+  const apiMode =
+    resolveInboxPoSourceMode(import.meta.env.VITE_INBOX_PO_SOURCE) === "api";
   const [kpis, setKpis] = useState<KpiItem[]>([]);
 
   useEffect(() => {
+    if (apiMode) return;
     let cancelled = false;
     (async () => {
       const m = await getDemoPoSource().metrics();
@@ -53,7 +58,11 @@ export function ControlPage() {
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [apiMode]);
+
+  if (apiMode) {
+    return <ScheduleApiPanel />;
+  }
 
   return (
     <div>

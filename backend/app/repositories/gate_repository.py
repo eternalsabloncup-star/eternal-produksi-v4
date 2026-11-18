@@ -48,16 +48,22 @@ def _ensure_once(db: Database) -> None:
         ensure_gate_indexes(db)
 
 
+_DEFAULT_GATES: dict[str, dict[str, Any]] = {
+    "design": {"state": GATE_CLOSED, "reason": "Belum ada approval desain."},
+    "payment": {"state": GATE_CLOSED, "reason": "Belum ada penerimaan terverifikasi."},
+}
+
+
 def get_gates(db: Database, accurate_po_id: str) -> dict[str, Any]:
+    """Selalu mengembalikan kedua gate; yang belum pernah di-set tetap tertutup."""
     _ensure_once(db)
     doc = gates_collection(db).find_one({"accurate_po_id": accurate_po_id}, {"_id": 0})
-    if doc:
-        return doc
-    return {
-        "accurate_po_id": accurate_po_id,
-        "design": {"state": GATE_CLOSED, "reason": "Belum ada approval desain."},
-        "payment": {"state": GATE_CLOSED, "reason": "Belum ada penerimaan terverifikasi."},
-    }
+    merged: dict[str, Any] = {"accurate_po_id": accurate_po_id}
+    merged.update(doc or {})
+    for gate, default in _DEFAULT_GATES.items():
+        if not isinstance(merged.get(gate), dict):
+            merged[gate] = dict(default)
+    return merged
 
 
 def set_gate(
