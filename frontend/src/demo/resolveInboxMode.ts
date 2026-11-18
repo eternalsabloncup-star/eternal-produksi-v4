@@ -31,12 +31,19 @@ export function resolveShellDataMode(
   if (pathname.startsWith("/app/inbox")) {
     return inboxMode === "api" ? "api" : "demo";
   }
+  // Master/Pengaturan membaca MongoDB V4 pada kedua mode.
+  if (pathname.startsWith("/app/settings")) {
+    return "api";
+  }
+  // Tugas Tim memakai task engine nyata saat Inbox berjalan mode API.
+  if (pathname.startsWith("/app/tasks")) {
+    return inboxMode === "api" ? "api" : "demo";
+  }
   // Modul workflow lokal Cursor — simulasi frontend, bukan Accurate/Mongo.
   const demoPrefixes = [
     "/app/control",
     "/app/schedule",
     "/app/production-flow",
-    "/app/tasks",
     "/app/buffer-stock",
     "/app/delivery",
     "/app/samples",

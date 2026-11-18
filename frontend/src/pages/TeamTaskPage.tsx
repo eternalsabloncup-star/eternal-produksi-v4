@@ -5,51 +5,43 @@ import { HelperTaskPanel } from "../components/HelperTaskPanel";
 import { OperatorTaskPanel } from "../components/OperatorTaskPanel";
 import { ProductionHeadAllocTable } from "../components/ProductionHeadAllocTable";
 import { ScreenerTaskPanel } from "../components/ScreenerTaskPanel";
+import { TeamTaskApiPanel } from "../components/TeamTaskApiPanel";
+import { resolveInboxPoSourceMode } from "../demo/resolveInboxMode";
 
 type Props = {
   role: TeamTaskRole;
 };
 
-/** Halaman submenu peran — panel khusus per unit record Owner. */
-export function TeamTaskPage({ role }: Props) {
+function DemoRolePanel({ role }: Props) {
   switch (role.id) {
     case "production-head":
-      return (
-        <div>
-          <ProductionHeadAllocTable />
-        </div>
-      );
+      return <ProductionHeadAllocTable />;
     case "designer":
-      return (
-        <div>
-          <DesignerTaskPanel />
-        </div>
-      );
+      return <DesignerTaskPanel />;
     case "screener":
-      return (
-        <div>
-          <ScreenerTaskPanel />
-        </div>
-      );
+      return <ScreenerTaskPanel />;
     case "helper":
-      return (
-        <div>
-          <HelperTaskPanel />
-        </div>
-      );
+      return <HelperTaskPanel />;
     case "operator":
-      return (
-        <div>
-          <OperatorTaskPanel />
-        </div>
-      );
+      return <OperatorTaskPanel />;
     case "driver":
-      return (
-        <div>
-          <DriverTaskPanel />
-        </div>
-      );
+      return <DriverTaskPanel />;
     default:
       return null;
   }
+}
+
+/** Halaman submenu peran: task engine nyata di mode API, DEMO lokal di mode demo. */
+export function TeamTaskPage({ role }: Props) {
+  const apiMode =
+    resolveInboxPoSourceMode(import.meta.env.VITE_INBOX_PO_SOURCE) === "api";
+  return (
+    <div>
+      {apiMode ? (
+        <TeamTaskApiPanel role={role.id} roleLabel={role.label} />
+      ) : (
+        <DemoRolePanel role={role} />
+      )}
+    </div>
+  );
 }

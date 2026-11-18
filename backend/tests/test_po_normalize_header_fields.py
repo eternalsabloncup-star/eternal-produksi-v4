@@ -114,7 +114,7 @@ def test_header_salesman_alias_not_used_as_transaction_seller() -> None:
 def test_production_95106_mongo_shape_dates_notes_empty_optional() -> None:
     """Snapshot lama: dates/notes terisi; penjual kosong jika baris tanpa salesmanName."""
     payload = copy.deepcopy(SAMPLE_SALES_ORDER_STRUCTURE)
-    payload["customer"] = {"name": "MUDITA"}
+    payload["customer"] = {"name": "PELANGGAN-SANITIZED"}
     payload["transDate"] = "18/11/2026"
     payload["shipDate"] = "21/11/2026"
     payload["description"] = "Catatan SO production terisi"

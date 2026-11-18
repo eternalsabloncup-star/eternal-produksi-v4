@@ -17,6 +17,12 @@ services:
       - ./scripts/mongo-healthcheck.sh:/mongo-healthcheck.sh:ro
     entrypoint: ["/bin/bash", "/mongo-entrypoint.sh"]
     command: ["mongod", "--replSet", "rs0", "--bind_ip_all", "--auth", "--keyFile", "/data/configdb/keyfile"]
+    # WiredTiger membuka banyak file per database; default 1024 membuat mongod
+    # fassert "Too many open files" saat suite test membuat banyak DB sementara.
+    ulimits:
+      nofile:
+        soft: 64000
+        hard: 64000
     # Localhost-only publish for optional host tooling; not 0.0.0.0.
     ports:
       - "127.0.0.1:27017:27017"

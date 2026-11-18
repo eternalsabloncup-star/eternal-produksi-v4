@@ -9,6 +9,7 @@ import { BufferStockPage } from "./pages/BufferStockPage";
 import { DeliveryPage } from "./pages/DeliveryPage";
 import { PlaceholderModulePage } from "./pages/PlaceholderModulePage";
 import { ProductionFlowPage } from "./pages/ProductionFlowPage";
+import { SettingsMasterPage } from "./pages/SettingsMasterPage";
 import { TeamTaskPage } from "./pages/TeamTaskPage";
 import { TeamTasksSummaryPage } from "./pages/TeamTasksSummaryPage";
 
@@ -111,16 +112,7 @@ export default function App() {
             />
           }
         />
-        <Route
-          path="settings"
-          element={
-            <PlaceholderModulePage
-              title="Pengaturan"
-              subtitle="Master data — pratinjau menu saja."
-              nextHint="Cabang, user/role, mesin, produk, shift, integrasi."
-            />
-          }
-        />
+        <Route path="settings" element={<SettingsMasterPage />} />
       </Route>
       <Route path="*" element={<Navigate to="/app/schedule" replace />} />
     </Routes>

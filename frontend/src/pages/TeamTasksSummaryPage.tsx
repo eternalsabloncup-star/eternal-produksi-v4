@@ -10,6 +10,8 @@ import { HelperTaskPanel } from "../components/HelperTaskPanel";
 import { OperatorTaskPanel } from "../components/OperatorTaskPanel";
 import { ProductionHeadAllocTable } from "../components/ProductionHeadAllocTable";
 import { ScreenerTaskPanel } from "../components/ScreenerTaskPanel";
+import { TeamTaskApiPanel } from "../components/TeamTaskApiPanel";
+import { resolveInboxPoSourceMode } from "../demo/resolveInboxMode";
 import { subscribeProductionAlloc } from "../demo/productionHeadAlloc";
 import { getOpenTeamTaskCounts } from "../demo/teamTasks";
 import { subscribeTeamTaskWork } from "../demo/teamTaskWork";
@@ -35,6 +37,8 @@ function RolePanel({ roleId }: { roleId: TeamTaskRoleId }) {
 
 /** Ringkasan: deretan chip peran + satu panel aktif; judul hanya di topbar. */
 export function TeamTasksSummaryPage() {
+  const apiMode =
+    resolveInboxPoSourceMode(import.meta.env.VITE_INBOX_PO_SOURCE) === "api";
   const [activeRoleId, setActiveRoleId] =
     useState<TeamTaskRoleId>("production-head");
   const [tick, setTick] = useState(0);
@@ -93,7 +97,15 @@ export function TeamTasksSummaryPage() {
         </div>
       </div>
 
-      <RolePanel key={activeRole.id} roleId={activeRole.id} />
+      {apiMode ? (
+        <TeamTaskApiPanel
+          key={activeRole.id}
+          role={activeRole.id}
+          roleLabel={activeRole.label}
+        />
+      ) : (
+        <RolePanel key={activeRole.id} roleId={activeRole.id} />
+      )}
     </div>
   );
 }
