@@ -285,6 +285,14 @@ export async function fetchDeliveryDetail(
   return request(`/api/delivery/${encodeURIComponent(sjId)}`);
 }
 
+/** URL stream bukti foto/tanda tangan SJ — sesi cookie; soft-delete → 404. */
+export function deliveryEvidenceContentUrl(
+  sjId: string,
+  evidenceId: string,
+): string {
+  return `/api/delivery/${encodeURIComponent(sjId)}/evidence/${encodeURIComponent(evidenceId)}/content`;
+}
+
 /** Alasan soft-delete wajib (≥3), selaras validasi backend. */
 export const SOFT_DELETE_REASON_MIN = 3;
 

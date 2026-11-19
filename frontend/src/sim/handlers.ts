@@ -4,7 +4,9 @@
 
 import {
   ALLOC_A,
+  LINE_CETAK,
   PO_ID,
+  PO_NO,
   SIM_ACTOR,
   SIM_BUFFER,
   SIM_CAPABILITIES,
@@ -292,7 +294,15 @@ export function handleSimRequest(
         (d) => String((d.header as { po_no?: string })?.po_no) === id,
       );
     if (!doc) return json({ detail: "PO tidak ditemukan" }, 404);
-    return json(doc);
+    // Selaras backend _serialize_po_doc: top-level customer dari header.customer.
+    const header = (doc.header || {}) as Record<string, unknown>;
+    const items = Array.isArray(header.items) ? header.items : [];
+    return json({
+      ...doc,
+      po_no: header.po_no || doc.po_no,
+      customer: header.customer ?? null,
+      item_count: items.length,
+    });
   }
 
   // --- Master / tasks ---
@@ -380,6 +390,32 @@ export function handleSimRequest(
     if ("error" in result) return json({ detail: result.error }, result.status);
     return json(result);
   }
+  if (path.includes("/samples/evidence/") && path.endsWith("/content") && method === "GET") {
+    const bytes = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+    return new Response(bytes, {
+      status: 200,
+      headers: {
+        "Content-Type": "image/png",
+        "Cache-Control": "private, no-store",
+      },
+    });
+  }
+  if (path.includes("/samples/confirm") && method === "POST") {
+    return json({
+      sample: {
+        sample_id: "sample-draft",
+        allocation_id: ALLOC_A,
+        version: 2,
+        filename: "upload-sim.jpg",
+        evidence_id: "evid:sample:sim:v2",
+        status: "menunggu_approval",
+        submitted_by: SIM_ACTOR,
+        submitted_at: new Date().toISOString(),
+      },
+      duplicate: false,
+      phase: "menunggu_approval",
+    });
+  }
   if (path.includes("/samples") && method === "GET") {
     return json({
       allocation_id: ALLOC_A,
@@ -389,9 +425,21 @@ export function handleSimRequest(
           allocation_id: ALLOC_A,
           version: 1,
           filename: "sample-v1.jpg",
-          status: "menunggu_approval",
-          submitted_by: "screener@eternal.local",
+          evidence_id: "evid:sample:sim:v1",
+          status: "ditolak",
+          submitted_by: "operator@eternal.local",
           submitted_at: "2026-11-18T09:00:00Z",
+          reject_reason: "Warna kurang tajam",
+        },
+        {
+          sample_id: "sample-draft",
+          allocation_id: ALLOC_A,
+          version: 2,
+          filename: "upload-sim.jpg",
+          evidence_id: "evid:sample:sim:v2",
+          status: "draft",
+          submitted_by: SIM_ACTOR,
+          submitted_at: null,
         },
       ],
     });
@@ -401,12 +449,14 @@ export function handleSimRequest(
       sample: {
         sample_id: "sample-new",
         allocation_id: ALLOC_A,
-        version: 2,
+        version: 3,
         filename: "upload-sim.jpg",
-        status: "menunggu_approval",
+        evidence_id: "evid:sample:sim:v3",
+        status: "draft",
         submitted_by: SIM_ACTOR,
-        submitted_at: new Date().toISOString(),
+        submitted_at: null,
       },
+      phase: "draft",
     });
   }
   if (path.includes("/samples/decision") && method === "POST") {
@@ -422,6 +472,22 @@ export function handleSimRequest(
   }
 
   // Scheduling
+  if (path === "/api/scheduling/operators" && method === "GET") {
+    return json({
+      items: [
+        {
+          id: "sim-op-1",
+          email: "operator@eternal.local",
+          display_name: "Operator Cetak",
+        },
+        {
+          id: "sim-op-2",
+          email: "operator2@eternal.local",
+          display_name: "Operator Cadangan",
+        },
+      ],
+    });
+  }
   if (path.startsWith("/api/scheduling/") && method === "GET") {
     if (path.includes("/lines/")) {
       const lineId = path.split("/lines/")[1]?.split("/")[0];
@@ -435,25 +501,171 @@ export function handleSimRequest(
     if (poId && poId !== PO_ID) {
       return json({ accurate_po_id: poId, po_no: poId, lines: [] });
     }
-    return json(SIM_SCHEDULE_LINES);
+    // Selaras backend: hanya item Cetak masuk jadwal penjadwalan.
+    return json({
+      ...SIM_SCHEDULE_LINES,
+      lines: SIM_SCHEDULE_LINES.lines.filter(
+        (l) => (l as { process_kind?: string }).process_kind === "Cetak",
+      ),
+    });
   }
   if (path.includes("/allocations") && method === "POST") {
+    const line = SIM_SCHEDULE_LINES.lines[0];
+    const body = (init?.body ? JSON.parse(String(init.body)) : {}) as {
+      allocations?: Array<{
+        operator_email?: string;
+        qty?: number;
+        print_color?: string;
+        screen_kind?: string;
+      }>;
+      schedule_date?: string;
+    };
+    const entry = body.allocations?.[0];
     return json({
-      created: 1,
-      lines: SIM_SCHEDULE_LINES.lines,
+      allocations: [
+        {
+          allocation_id: `alloc-sim-${Date.now()}`,
+          accurate_po_id: line?.accurate_po_id || PO_ID,
+          po_no: line?.po_no || PO_NO,
+          accurate_line_id: line?.accurate_line_id || LINE_CETAK,
+          item_code: line?.item_code || "CUP-12OZ",
+          operator_email: entry?.operator_email || "operator@eternal.local",
+          operator_display_name:
+            entry?.operator_email === "operator2@eternal.local"
+              ? "Operator Cadangan"
+              : "Operator Cetak",
+          qty: entry?.qty ?? 1000,
+          status: "active",
+          schedule_date: body.schedule_date || "2026-11-21",
+          qty_printed: 0,
+          print_color: entry?.print_color ?? null,
+          screen_kind: entry?.screen_kind ?? null,
+        },
+      ],
+      duplicate: false,
     });
   }
   if (path.includes("/allocations/") && path.endsWith("/qty") && method === "PUT") {
-    return json({ ok: true, allocation_id: ALLOC_A });
+    const line = SIM_SCHEDULE_LINES.lines[0];
+    const alloc = line?.allocations?.[0];
+    const body = (init?.body ? JSON.parse(String(init.body)) : {}) as {
+      qty?: number;
+      reason?: string;
+    };
+    const printed = alloc?.qty_printed || 0;
+    const qtyNew = Number(body.qty);
+    if (!body.reason?.trim()) {
+      return json({ detail: "Alasan revisi wajib diisi." }, 422);
+    }
+    if (!Number.isFinite(qtyNew) || qtyNew < 0 || qtyNew !== Math.trunc(qtyNew)) {
+      return json({ detail: "Qty alokasi harus bilangan bulat." }, 422);
+    }
+    if (qtyNew < printed) {
+      return json(
+        {
+          detail: {
+            code: "ALLOCATION_BELOW_CONFIRMED_PRINT",
+            detail:
+              "Qty alokasi tidak boleh lebih kecil dari Qty cetak yang sudah dikonfirmasi operator.",
+          },
+        },
+        409,
+      );
+    }
+    const qtyTarget = line?.qty_target ?? 5000;
+    if (qtyNew > qtyTarget) {
+      return json(
+        {
+          detail: `Total alokasi ${qtyNew} melampaui Qty item line ${qtyTarget}.`,
+        },
+        422,
+      );
+    }
+    if (alloc) {
+      alloc.qty = qtyNew;
+      alloc.qty_revise_min = printed;
+      alloc.qty_revise_max = qtyTarget;
+      alloc.can_revise = true;
+      if (line) {
+        line.qty_allocated = qtyNew;
+        line.qty_unallocated = Math.max(qtyTarget - qtyNew, 0);
+        line.qty_printed = printed;
+      }
+    }
+    return json({
+      allocation_id: ALLOC_A,
+      accurate_po_id: alloc?.accurate_po_id || PO_ID,
+      po_no: alloc?.po_no || PO_NO,
+      accurate_line_id: alloc?.accurate_line_id || LINE_CETAK,
+      item_code: alloc?.item_code || "CUP-12OZ",
+      operator_email: alloc?.operator_email || "operator-sim@eternal.local",
+      operator_display_name: alloc?.operator_display_name || "Operator Cetak",
+      qty: qtyNew,
+      status: "active",
+      schedule_date: alloc?.schedule_date || "2026-11-20",
+      qty_printed: printed,
+      qty_revise_min: printed,
+      qty_revise_max: qtyTarget,
+      can_revise: true,
+      print_color: alloc?.print_color ?? null,
+      screen_kind: alloc?.screen_kind ?? null,
+    });
   }
 
   // Delivery
   if (path.startsWith("/api/delivery/schedule") && method === "GET") {
     return json(SIM_DELIVERY_SCHEDULE);
   }
+  if (
+    path.includes("/api/delivery/") &&
+    path.includes("/evidence/") &&
+    path.endsWith("/content") &&
+    method === "GET"
+  ) {
+    const bytes = new Uint8Array([0xff, 0xd8, 0xff, 0xd9]);
+    return new Response(bytes, {
+      status: 200,
+      headers: {
+        "Content-Type": "image/jpeg",
+        "Cache-Control": "private, no-store",
+      },
+    });
+  }
+  if (
+    path.startsWith("/api/design/") &&
+    path.includes("/evidence/") &&
+    path.endsWith("/content") &&
+    method === "GET"
+  ) {
+    const bytes = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+    return new Response(bytes, {
+      status: 200,
+      headers: {
+        "Content-Type": "image/png",
+        "Cache-Control": "private, no-store",
+      },
+    });
+  }
   if (path.match(/^\/api\/delivery\/[^/]+$/) && method === "GET") {
     const sj = SIM_DELIVERY_SCHEDULE.items[0];
-    return json(sj);
+    return json({
+      delivery_note: sj,
+      loading: null,
+      loadings: [],
+      revisions: [],
+      events: [
+        {
+          attempt: 1,
+          status: sj.delivery_status || "pending",
+          courier_email: sj.driver_email || SIM_ACTOR,
+          recipient_name: sj.recipient_name || null,
+          failure_reason: null,
+          photo_evidence_ids: [],
+          created_at: "2026-11-19T10:00:00Z",
+        },
+      ],
+      evidence: { photos: [], signatures: [] },
+    });
   }
   if (path.includes("/loading-validation") && method === "GET") {
     return json({
@@ -745,13 +957,44 @@ export function handleSimRequest(
   }
 
   // Workflow stubs
+  if (
+    path.includes("/api/design/") &&
+    path.includes("/evidence/") &&
+    path.endsWith("/content") &&
+    method === "GET"
+  ) {
+    // Simulasi: tidak ada blob desain — empty state jujur (bukan preview palsu).
+    return json({ detail: "File desain tidak tersedia di simulasi." }, 404);
+  }
   if (path.startsWith("/api/design/") && method === "GET") {
     return json({
       accurate_po_id: PO_ID,
-      gates: { design: { state: "closed" } },
-      submissions: [],
-      can_confirm: false,
-      can_create_link: true,
+      gates: { design: { state: "open" } },
+      submissions: [
+        {
+          accurate_po_id: PO_ID,
+          po_no: PO_NO,
+          version: 1,
+          evidence_id: "evid:design:sim:v1",
+          filename: "desain-cup.png",
+          submitted_by: "designer@eternal.local",
+          submitted_at: "2026-11-18T09:00:00Z",
+          confirmed_at: "2026-11-18T10:00:00Z",
+          confirmed_by: "designer@eternal.local",
+        },
+      ],
+      latest: {
+        accurate_po_id: PO_ID,
+        po_no: PO_NO,
+        version: 1,
+        evidence_id: "evid:design:sim:v1",
+        filename: "desain-cup.png",
+        submitted_by: "designer@eternal.local",
+        submitted_at: "2026-11-18T09:00:00Z",
+        confirmed_at: "2026-11-18T10:00:00Z",
+        confirmed_by: "designer@eternal.local",
+      },
+      approval: null,
     });
   }
   if (path.startsWith("/api/payment/") && method === "GET") {

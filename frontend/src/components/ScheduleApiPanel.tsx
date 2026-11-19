@@ -3,6 +3,8 @@ import {
   createAllocations,
   fetchPoSchedule,
   reviseAllocationQty,
+  SchedulingApiError,
+  type Allocation,
   type LineSchedule,
 } from "../api/scheduling";
 import { newIdempotencyKey } from "../api/operational";
@@ -11,6 +13,10 @@ import { DataTable } from "./DataTable/DataTable";
 import { DEFAULT_TABLE_PAGE_SIZE } from "./DataTable/Pagination";
 import type { ColumnDef } from "./DataTable/types";
 import { KpiSummary, type KpiItem } from "./KpiSummary";
+import {
+  allocationCanReviseQty,
+  allocationReviseBounds,
+} from "./teamTaskUi";
 
 function qty(n: number): string {
   return n.toLocaleString("id-ID");
@@ -38,6 +44,10 @@ export function ScheduleApiPanel() {
   const [filters, setFilters] = useState<Filters>({});
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState(DEFAULT_TABLE_PAGE_SIZE);
+  const [reviseTarget, setReviseTarget] = useState<Allocation | null>(null);
+  const [reviseQty, setReviseQty] = useState("");
+  const [reviseReason, setReviseReason] = useState("");
+  const [reviseError, setReviseError] = useState<string | null>(null);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -172,28 +182,83 @@ export function ScheduleApiPanel() {
     }
   }
 
-  async function onRevise(allocationId: string, current: number) {
-    const input = window.prompt("Qty alokasi baru", String(current));
-    if (input === null) return;
-    const value = Number(input);
-    if (!Number.isFinite(value) || value < 0) {
-      setError("Qty revisi tidak valid.");
+  function openRevise(alloc: Allocation) {
+    setReviseTarget(alloc);
+    setReviseQty(String(alloc.qty));
+    setReviseReason("");
+    setReviseError(null);
+    setError(null);
+  }
+
+  function closeRevise() {
+    if (busy) return;
+    setReviseTarget(null);
+    setReviseQty("");
+    setReviseReason("");
+    setReviseError(null);
+  }
+
+  async function submitRevise() {
+    if (!reviseTarget || !selected) return;
+    const bounds = allocationReviseBounds({
+      qty: reviseTarget.qty,
+      qty_printed: reviseTarget.qty_printed,
+      qty_revise_min: reviseTarget.qty_revise_min,
+      qty_revise_max: reviseTarget.qty_revise_max,
+      lineQtyTarget: selected.qty_target,
+      otherActiveQty: Math.max(
+        selected.qty_allocated -
+          (reviseTarget.status === "active" ? reviseTarget.qty : 0),
+        0,
+      ),
+    });
+    const value = Number(reviseQty);
+    if (!Number.isFinite(value) || value < 0 || value !== Math.trunc(value)) {
+      setReviseError("Qty baru harus bilangan bulat nonnegatif.");
       return;
     }
-    const reason = window.prompt("Alasan revisi") || "";
-    if (!reason.trim()) {
-      setError("Alasan revisi wajib diisi.");
+    if (value < bounds.min) {
+      setReviseError(
+        `Qty baru tidak boleh lebih kecil dari minimum revisi (${qty(bounds.min)}).`,
+      );
+      return;
+    }
+    if (value > bounds.max) {
+      setReviseError(
+        `Qty baru tidak boleh melebihi maksimum revisi (${qty(bounds.max)}).`,
+      );
+      return;
+    }
+    if (!reviseReason.trim()) {
+      setReviseError("Alasan revisi wajib diisi.");
       return;
     }
     setBusy(true);
+    setReviseError(null);
     setError(null);
     try {
-      await reviseAllocationQty(allocationId, value, reason.trim());
-      setNotice(`Alokasi ${allocationId} direvisi menjadi ${qty(value)}.`);
-      if (selected) await refreshSelected(selected);
+      await reviseAllocationQty(
+        reviseTarget.allocation_id,
+        value,
+        reviseReason.trim(),
+      );
+      setNotice(
+        `Alokasi ${reviseTarget.allocation_id} direvisi menjadi ${qty(value)}.`,
+      );
+      setReviseTarget(null);
+      setReviseQty("");
+      setReviseReason("");
+      await refreshSelected(selected);
       await load();
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Revisi gagal.");
+      const msg =
+        err instanceof SchedulingApiError
+          ? err.message
+          : err instanceof Error
+            ? err.message
+            : "Revisi gagal.";
+      setReviseError(msg);
+      setError(msg);
     } finally {
       setBusy(false);
     }
@@ -515,13 +580,13 @@ export function ScheduleApiPanel() {
                             <button
                               type="button"
                               className="ep-btn"
-                              disabled={busy || (a.qty_printed || 0) > 0}
+                              disabled={busy || !allocationCanReviseQty(a)}
                               title={
-                                (a.qty_printed || 0) > 0
-                                  ? "Sudah ada Qty cetak terkonfirmasi"
-                                  : "Ubah Qty alokasi"
+                                allocationCanReviseQty(a)
+                                  ? "Ubah Qty alokasi"
+                                  : "Alokasi tidak dapat direvisi"
                               }
-                              onClick={() => void onRevise(a.allocation_id, a.qty)}
+                              onClick={() => openRevise(a)}
                             >
                               Ubah Qty
                             </button>
@@ -566,6 +631,123 @@ export function ScheduleApiPanel() {
               {error ? <p className="ep-error">{error}</p> : null}
               {notice ? <p className="ep-notice">{notice}</p> : null}
             </div>
+          </div>
+        </div>
+      ) : null}
+
+      {reviseTarget && selected ? (
+        <div
+          className="ep-modalshade ep-modalshade-center ep-sched-revise-shade"
+          data-testid="schedule-revise-modal"
+          onClick={(e) => {
+            if (e.target === e.currentTarget) closeRevise();
+          }}
+        >
+          <div className="ep-modal ep-sched-revise-modal" role="dialog" aria-modal="true">
+            <header className="ep-modal-head">
+              <div>
+                <h2>Ubah Qty Alokasi</h2>
+                <div className="ep-modal-submeta">
+                  {reviseTarget.allocation_id}
+                </div>
+              </div>
+              <button
+                type="button"
+                className="ep-btn sm"
+                disabled={busy}
+                onClick={closeRevise}
+              >
+                Tutup
+              </button>
+            </header>
+            <div className="ep-modal-body">
+              {(() => {
+                const bounds = allocationReviseBounds({
+                  qty: reviseTarget.qty,
+                  qty_printed: reviseTarget.qty_printed,
+                  qty_revise_min: reviseTarget.qty_revise_min,
+                  qty_revise_max: reviseTarget.qty_revise_max,
+                  lineQtyTarget: selected.qty_target,
+                  otherActiveQty: Math.max(
+                    selected.qty_allocated -
+                      (reviseTarget.status === "active" ? reviseTarget.qty : 0),
+                    0,
+                  ),
+                });
+                return (
+                  <>
+                    <dl className="ep-kv ep-kv-sched ep-sched-revise-kv">
+                      <dt>Operator</dt>
+                      <dd>{reviseTarget.operator_email}</dd>
+                      <dt>Nama barang</dt>
+                      <dd>{selected.item_name}</dd>
+                      <dt>Qty alokasi saat ini</dt>
+                      <dd className="ep-num">{qty(reviseTarget.qty)}</dd>
+                      <dt>Qty cetak terkonfirmasi</dt>
+                      <dd className="ep-num">
+                        {qty(reviseTarget.qty_printed || 0)}
+                      </dd>
+                      <dt>Qty minimum revisi</dt>
+                      <dd className="ep-num">{qty(bounds.min)}</dd>
+                      <dt>Qty maksimum revisi</dt>
+                      <dd className="ep-num">{qty(bounds.max)}</dd>
+                    </dl>
+                    <div className="ep-sched-revise-fields">
+                      <label className="ep-sched-field">
+                        <span>Qty baru</span>
+                        <input
+                          type="number"
+                          inputMode="numeric"
+                          min={bounds.min}
+                          max={bounds.max}
+                          step={1}
+                          aria-label="Qty baru"
+                          className="ep-num"
+                          value={reviseQty}
+                          disabled={busy}
+                          onChange={(e) => setReviseQty(e.target.value)}
+                        />
+                      </label>
+                      <label className="ep-sched-field">
+                        <span>Alasan revisi</span>
+                        <input
+                          type="text"
+                          aria-label="Alasan revisi"
+                          value={reviseReason}
+                          disabled={busy}
+                          onChange={(e) => setReviseReason(e.target.value)}
+                        />
+                      </label>
+                    </div>
+                    {reviseError ? (
+                      <p className="ep-error" role="alert">
+                        {reviseError}
+                      </p>
+                    ) : null}
+                  </>
+                );
+              })()}
+            </div>
+            <footer className="ep-modal-foot">
+              <div className="ep-modal-foot-actions">
+                <button
+                  type="button"
+                  className="ep-btn"
+                  disabled={busy}
+                  onClick={closeRevise}
+                >
+                  Batal
+                </button>
+                <button
+                  type="button"
+                  className="ep-btn primary"
+                  disabled={busy}
+                  onClick={() => void submitRevise()}
+                >
+                  {busy ? "Menyimpan…" : "Simpan Revisi"}
+                </button>
+              </div>
+            </footer>
           </div>
         </div>
       ) : null}

@@ -3,72 +3,94 @@ import {
   confirmCoordination,
   confirmDelivered,
   confirmDeliveryFailed,
+  deliveryEvidenceContentUrl,
+  fetchDeliveryDetail,
+  type DeliveryDetail,
 } from "../api/delivery";
 import {
   confirmProductionQty,
+  confirmSampleSubmission,
   decideSample,
+  fetchRoleActions,
   fetchSamples,
   fetchTaskConfirmations,
   fetchTasks,
   newIdempotencyKey,
+  sampleEvidenceContentUrl,
   uploadSample,
   type OperationalRole,
   type OperationalTask,
   type ProductionSample,
+  type TaskAction,
   type TaskConfirmation,
 } from "../api/operational";
+import {
+  fetchPoDetail,
+  urgencyLabel,
+  type PoDetailSummary,
+} from "../api/poDetail";
+import { useAuth } from "../auth";
+import { formatDateTimeDisplay } from "../lib/formatDate";
+import { isSuperAdmin } from "../roles";
+import { ConfirmationSuccessOverlay } from "./ConfirmationSuccessOverlay";
 import { DataTable } from "./DataTable/DataTable";
 import { DEFAULT_TABLE_PAGE_SIZE } from "./DataTable/Pagination";
 import type { ColumnDef } from "./DataTable/types";
 import { DesignWorkflowPanel } from "./DesignWorkflowPanel";
+import { EvidenceContentPreview } from "./EvidenceContentPreview";
+import { TeamTaskSchedulingForm } from "./TeamTaskSchedulingForm";
+import {
+  allowTaskAction,
+  aggregateStatusCounts,
+  filterTasksByStatus,
+  formatCountBadge,
+  isCoordinationTask,
+  isSampleTask,
+  isSchedulingTask,
+  remainingQty,
+  latestDraftSample,
+  sampleStatusClass,
+  sampleStatusLabel,
+  shortfallLabel,
+  statusBadgeClass,
+  statusLabel,
+  taskDisplayLabel,
+  TASK_LIST_FETCH_LIMIT,
+  type StatusFilter,
+} from "./teamTaskUi";
 
 type Props = {
   role: OperationalRole;
   roleLabel: string;
 };
 
-type DoneFilter = "all" | "done" | "open";
-
-function statusLabel(status: OperationalTask["status"]): string {
-  if (status === "selesai") return "Selesai";
-  if (status === "sebagian") return "Sebagian";
-  return "Belum Dikerjakan";
-}
+const SAMPLE_UPLOAD_TASK = "konfirmasi-sample";
+const SAMPLE_APPROVAL_TASK = "approval-sampel";
+const DRIVER_TASK = "pengiriman";
+const DESIGN_TASK = "design";
 
 function formatQty(n: number | undefined): string {
   if (n === undefined || Number.isNaN(n)) return "—";
   return n.toLocaleString("id-ID");
 }
 
-/** Istilah kekurangan Qty mengikuti ketentuan Owner per jenis pekerjaan. */
-function shortfallLabel(taskType: string): string {
-  if (taskType === "persiapan-cup") return "Belum Disiapkan";
-  if (taskType === "qc-packing") return "Belum Di-QC & Packing";
-  return "Kekurangan Qty";
-}
-
-const SAMPLE_UPLOAD_TASK = "konfirmasi-sample";
-const SAMPLE_APPROVAL_TASK = "approval-sampel";
-const DRIVER_TASK = "pengiriman";
-const DESIGN_TASK = "design";
-const COORDINATION_TASKS = new Set([
-  "qty-loading-sj-berbeda",
-  "pengiriman-gagal-koordinasi",
-]);
-
-/** Kanvas tanda tangan penerima → PNG blob. */
 function signatureBlob(canvas: HTMLCanvasElement): Promise<Blob | null> {
   return new Promise((resolve) => canvas.toBlob(resolve, "image/png"));
 }
 
 /** Tugas peran dari task engine MongoDB V4 — tanpa fixture DEMO. */
 export function TeamTaskApiPanel({ role, roleLabel }: Props) {
-  const [tasks, setTasks] = useState<OperationalTask[]>([]);
-  const [filter, setFilter] = useState<DoneFilter>("all");
+  const { user, isSuperAdmin: authSuper } = useAuth();
+  const elevated = authSuper || isSuperAdmin(user?.role);
+
+  const [allTasks, setAllTasks] = useState<OperationalTask[]>([]);
+  const [truncated, setTruncated] = useState(false);
+  const [statusFilter, setStatusFilter] = useState<StatusFilter>("all");
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [selected, setSelected] = useState<OperationalTask | null>(null);
   const [history, setHistory] = useState<TaskConfirmation[]>([]);
+  const [historyError, setHistoryError] = useState<string | null>(null);
   const [qtyInput, setQtyInput] = useState("");
   const [busy, setBusy] = useState(false);
   const [actionError, setActionError] = useState<string | null>(null);
@@ -84,6 +106,47 @@ export function TeamTaskApiPanel({ role, roleLabel }: Props) {
   const [q, setQ] = useState("");
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState(DEFAULT_TABLE_PAGE_SIZE);
+  const [grantsByTaskType, setGrantsByTaskType] = useState<Map<
+    string,
+    TaskAction[]
+  > | null>(null);
+  const [grantsError, setGrantsError] = useState<string | null>(null);
+  const [deliveryDetail, setDeliveryDetail] = useState<DeliveryDetail | null>(
+    null,
+  );
+  const [deliveryDetailError, setDeliveryDetailError] = useState<string | null>(
+    null,
+  );
+  const [successOpen, setSuccessOpen] = useState(false);
+  const [successMsg, setSuccessMsg] = useState("");
+  const [evidencePreview, setEvidencePreview] = useState<{
+    title: string;
+    url: string;
+    filename?: string | null;
+  } | null>(null);
+  const [poDetail, setPoDetail] = useState<PoDetailSummary | null>(null);
+  const [poDetailError, setPoDetailError] = useState<string | null>(null);
+  const [poDetailLoading, setPoDetailLoading] = useState(false);
+  const [headerReloading, setHeaderReloading] = useState(false);
+  const designReloadRef = useRef<(() => Promise<void>) | null>(null);
+  const registerDesignReload = useCallback((fn: () => Promise<void>) => {
+    designReloadRef.current = fn;
+  }, []);
+  const schedDesignOpenRef = useRef<(() => void) | null>(null);
+  const registerSchedDesignOpen = useCallback((fn: (() => void) | null) => {
+    schedDesignOpenRef.current = fn;
+  }, []);
+
+  const canAct = useCallback(
+    (taskType: string, action: TaskAction) =>
+      allowTaskAction({
+        isSuperAdmin: elevated,
+        grantsByTaskType,
+        taskType,
+        action,
+      }),
+    [elevated, grantsByTaskType],
+  );
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -91,49 +154,189 @@ export function TeamTaskApiPanel({ role, roleLabel }: Props) {
     try {
       const res = await fetchTasks({
         role,
-        done: filter === "all" ? undefined : filter === "done",
+        limit: TASK_LIST_FETCH_LIMIT,
       });
-      setTasks(res.items);
+      setAllTasks(res.items);
+      setTruncated(res.items.length >= TASK_LIST_FETCH_LIMIT);
     } catch (err) {
-      setTasks([]);
+      setAllTasks([]);
+      setTruncated(false);
       setError(err instanceof Error ? err.message : "Gagal memuat tugas.");
     } finally {
       setLoading(false);
     }
-  }, [role, filter]);
+  }, [role]);
 
   useEffect(() => {
     void load();
   }, [load]);
 
-  const counts = useMemo(() => {
-    const done = tasks.filter((t) => t.status === "selesai").length;
-    return { total: tasks.length, done, open: tasks.length - done };
-  }, [tasks]);
+  useEffect(() => {
+    let cancelled = false;
+    void (async () => {
+      try {
+        const res = await fetchRoleActions(role);
+        if (cancelled) return;
+        const map = new Map<string, TaskAction[]>();
+        for (const g of res.items) {
+          if (g.role === role) map.set(g.task_type, g.actions);
+        }
+        setGrantsByTaskType(map);
+        setGrantsError(null);
+      } catch (err) {
+        if (cancelled) return;
+        setGrantsByTaskType(null);
+        setGrantsError(
+          err instanceof Error
+            ? err.message
+            : "Izin Master tidak dimuat — aksi mutasi dinonaktifkan sampai izin tersedia.",
+        );
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [role]);
+
+  const statusCounts = useMemo(
+    () => aggregateStatusCounts(allTasks),
+    [allTasks],
+  );
+
+  const statusFiltered = useMemo(
+    () => filterTasksByStatus(allTasks, statusFilter),
+    [allTasks, statusFilter],
+  );
 
   const filteredTasks = useMemo(() => {
     const qq = q.trim().toLowerCase();
-    if (!qq) return tasks;
-    return tasks.filter((t) => {
+    if (!qq) return statusFiltered;
+    return statusFiltered.filter((t) => {
       const hay = [
-        t.label,
+        taskDisplayLabel(t),
         t.task_type,
         t.ref.po_no,
         t.ref.sj_no,
         t.ref.accurate_line_id,
-        t.status,
+        t.ref.allocation_id,
+        statusLabel(t.status),
       ]
         .filter(Boolean)
         .join(" ")
         .toLowerCase();
       return hay.includes(qq);
     });
-  }, [tasks, q]);
+  }, [statusFiltered, q]);
 
   const pageTasks = useMemo(() => {
     const start = (page - 1) * pageSize;
     return filteredTasks.slice(start, start + pageSize);
   }, [filteredTasks, page, pageSize]);
+
+  const loadPoDetailForTask = useCallback(async (task: OperationalTask) => {
+    const poKey = task.ref.accurate_po_id || task.ref.po_no;
+    // Driver berorientasi SJ — PO detail opsional; role lain butuh customer/urgent.
+    const needsPoDetail =
+      Boolean(poKey) && task.task_type !== DRIVER_TASK;
+    if (!needsPoDetail || !poKey) {
+      setPoDetail(null);
+      setPoDetailError(null);
+      setPoDetailLoading(false);
+      return;
+    }
+    setPoDetailLoading(true);
+    setPoDetailError(null);
+    try {
+      setPoDetail(await fetchPoDetail(poKey));
+    } catch (err) {
+      setPoDetail(null);
+      setPoDetailError(
+        err instanceof Error ? err.message : "Gagal memuat detail PO.",
+      );
+    } finally {
+      setPoDetailLoading(false);
+    }
+  }, []);
+
+  const openTask = useCallback(async (task: OperationalTask) => {
+    setSelected(task);
+    setQtyInput("");
+    setRejectReason("");
+    setActionError(null);
+    setActionNotice(null);
+    setEvidencePreview(null);
+    setHistoryError(null);
+    setDeliveryDetail(null);
+    setDeliveryDetailError(null);
+    setPoDetail(null);
+    setPoDetailError(null);
+    try {
+      const res = await fetchTaskConfirmations(task.task_key);
+      setHistory(res.items);
+    } catch (err) {
+      setHistory([]);
+      setHistoryError(
+        err instanceof Error ? err.message : "Riwayat konfirmasi gagal dimuat.",
+      );
+    }
+    const allocationId = task.ref.allocation_id;
+    if (allocationId && isSampleTask(task.task_type)) {
+      try {
+        const res = await fetchSamples(allocationId);
+        setSampleRows(res.items);
+      } catch {
+        setSampleRows([]);
+      }
+    } else {
+      setSampleRows([]);
+    }
+    if (task.task_type === DRIVER_TASK && task.ref.accurate_delivery_note_id) {
+      try {
+        const detail = await fetchDeliveryDetail(
+          task.ref.accurate_delivery_note_id,
+        );
+        setDeliveryDetail(detail);
+      } catch (err) {
+        setDeliveryDetailError(
+          err instanceof Error
+            ? err.message
+            : "Detail pengiriman/bukti gagal dimuat.",
+        );
+      }
+    }
+    await loadPoDetailForTask(task);
+  }, [loadPoDetailForTask]);
+
+  async function onDesignerHeaderReload() {
+    if (!selected || selected.task_type !== DESIGN_TASK) return;
+    setHeaderReloading(true);
+    setActionError(null);
+    try {
+      await Promise.all([
+        loadPoDetailForTask(selected),
+        designReloadRef.current?.() ?? Promise.resolve(),
+        fetchTaskConfirmations(selected.task_key)
+          .then((res) => {
+            setHistory(res.items);
+            setHistoryError(null);
+          })
+          .catch((err) => {
+            setHistoryError(
+              err instanceof Error
+                ? err.message
+                : "Riwayat konfirmasi gagal dimuat.",
+            );
+          }),
+      ]);
+      setActionNotice("Data desain dan PO dimuat ulang.");
+    } catch (err) {
+      setActionError(
+        err instanceof Error ? err.message : "Gagal memuat ulang.",
+      );
+    } finally {
+      setHeaderReloading(false);
+    }
+  }
 
   const columns: ColumnDef<OperationalTask>[] = useMemo(
     () => [
@@ -142,11 +345,11 @@ export function TeamTaskApiPanel({ role, roleLabel }: Props) {
         label: "Jenis Pekerjaan",
         hideable: true,
         filterType: "text",
-        defaultWidth: 160,
-        getFilterValue: (t) => t.label || t.task_type,
+        defaultWidth: 170,
+        getFilterValue: (t) => taskDisplayLabel(t),
         render: (t) => (
           <span className={t.coordination ? "ep-text-danger" : undefined}>
-            {t.label || t.task_type}
+            {taskDisplayLabel(t)}
           </span>
         ),
       },
@@ -177,7 +380,7 @@ export function TeamTaskApiPanel({ role, roleLabel }: Props) {
         defaultWidth: 100,
         getFilterValue: (t) => String(t.qty_target ?? ""),
         getSortValue: (t) => t.qty_target ?? null,
-        render: (t) => formatQty(t.qty_target),
+        render: (t) => <span className="ep-num">{formatQty(t.qty_target)}</span>,
       },
       {
         id: "qtyConfirmed",
@@ -187,7 +390,9 @@ export function TeamTaskApiPanel({ role, roleLabel }: Props) {
         defaultWidth: 120,
         getFilterValue: (t) => String(t.qty_confirmed),
         getSortValue: (t) => t.qty_confirmed,
-        render: (t) => formatQty(t.qty_confirmed),
+        render: (t) => (
+          <span className="ep-num">{formatQty(t.qty_confirmed)}</span>
+        ),
       },
       {
         id: "shortfall",
@@ -195,27 +400,30 @@ export function TeamTaskApiPanel({ role, roleLabel }: Props) {
         hideable: true,
         filterType: "number",
         defaultWidth: 110,
-        getFilterValue: (t) =>
-          t.qty_target !== undefined
-            ? String(Math.max(t.qty_target - t.qty_confirmed, 0))
-            : "",
-        getSortValue: (t) =>
-          t.qty_target !== undefined
-            ? Math.max(t.qty_target - t.qty_confirmed, 0)
-            : null,
-        render: (t) =>
-          t.qty_target !== undefined
-            ? formatQty(Math.max(t.qty_target - t.qty_confirmed, 0))
-            : "—",
+        getFilterValue: (t) => {
+          const r = remainingQty(t);
+          return r === null ? "" : String(r);
+        },
+        getSortValue: (t) => remainingQty(t),
+        render: (t) => {
+          const r = remainingQty(t);
+          return (
+            <span className="ep-num">{r === null ? "—" : formatQty(r)}</span>
+          );
+        },
       },
       {
         id: "status",
         label: "Status",
         hideable: true,
         filterType: "text",
-        defaultWidth: 120,
+        defaultWidth: 130,
         getFilterValue: (t) => statusLabel(t.status),
-        render: (t) => statusLabel(t.status),
+        render: (t) => (
+          <span className={statusBadgeClass(t.status)}>
+            {statusLabel(t.status)}
+          </span>
+        ),
       },
       {
         id: "action",
@@ -238,60 +446,54 @@ export function TeamTaskApiPanel({ role, roleLabel }: Props) {
         ),
       },
     ],
-    [],
+    [openTask],
   );
-
-  const isSampleTask =
-    selected?.task_type === SAMPLE_UPLOAD_TASK ||
-    selected?.task_type === SAMPLE_APPROVAL_TASK;
-
-  async function openTask(task: OperationalTask) {
-    setSelected(task);
-    setQtyInput("");
-    setRejectReason("");
-    setActionError(null);
-    setActionNotice(null);
-    try {
-      const res = await fetchTaskConfirmations(task.task_key);
-      setHistory(res.items);
-    } catch {
-      setHistory([]);
-    }
-    const allocationId = task.ref.allocation_id;
-    if (
-      allocationId &&
-      (task.task_type === SAMPLE_UPLOAD_TASK || task.task_type === SAMPLE_APPROVAL_TASK)
-    ) {
-      try {
-        const res = await fetchSamples(allocationId);
-        setSampleRows(res.items);
-      } catch {
-        setSampleRows([]);
-      }
-    } else {
-      setSampleRows([]);
-    }
-  }
 
   async function reloadAfterAction(task: OperationalTask) {
     const [listed, hist] = await Promise.all([
-      fetchTasks({ role, done: filter === "all" ? undefined : filter === "done" }),
-      fetchTaskConfirmations(task.task_key).catch(() => ({ items: [] as TaskConfirmation[] })),
+      fetchTasks({ role, limit: TASK_LIST_FETCH_LIMIT }),
+      fetchTaskConfirmations(task.task_key).catch(() => ({
+        items: [] as TaskConfirmation[],
+      })),
     ]);
-    setTasks(listed.items);
+    setAllTasks(listed.items);
+    setTruncated(listed.items.length >= TASK_LIST_FETCH_LIMIT);
     setHistory(hist.items);
-    if (task.ref.allocation_id && isSampleTask) {
+    setHistoryError(null);
+    const fresh =
+      listed.items.find((t) => t.task_key === task.task_key) || task;
+    setSelected(fresh);
+    if (task.ref.allocation_id && isSampleTask(task.task_type)) {
       const res = await fetchSamples(task.ref.allocation_id).catch(() => ({
         items: [] as ProductionSample[],
       }));
       setSampleRows(res.items);
     }
+    if (task.task_type === DRIVER_TASK && task.ref.accurate_delivery_note_id) {
+      try {
+        setDeliveryDetail(
+          await fetchDeliveryDetail(task.ref.accurate_delivery_note_id),
+        );
+        setDeliveryDetailError(null);
+      } catch {
+        /* keep previous */
+      }
+    }
   }
 
-  async function onUploadSample() {
+  function showSuccess(message: string) {
+    setSuccessMsg(message);
+    setSuccessOpen(true);
+  }
+
+  async function onUploadSampleDraft() {
     const file = fileRef.current?.files?.[0];
     if (!selected?.ref.allocation_id || !file) {
       setActionError("Pilih file sampel terlebih dahulu.");
+      return;
+    }
+    if (!canAct(SAMPLE_UPLOAD_TASK, "input") && !canAct(SAMPLE_UPLOAD_TASK, "confirm")) {
+      setActionError("Aksi upload sampel tidak diizinkan untuk peran ini.");
       return;
     }
     setBusy(true);
@@ -299,11 +501,44 @@ export function TeamTaskApiPanel({ role, roleLabel }: Props) {
     setActionNotice(null);
     try {
       const res = await uploadSample(selected.ref.allocation_id, file);
-      setActionNotice(`Sampel versi ${res.sample.version} tersimpan.`);
+      const msg = `Draft sampel v${res.sample.version} tersimpan — belum diajukan.`;
+      setActionNotice(msg);
+      showSuccess(msg);
       if (fileRef.current) fileRef.current.value = "";
       await reloadAfterAction(selected);
     } catch (err) {
-      setActionError(err instanceof Error ? err.message : "Upload sampel gagal.");
+      setActionError(err instanceof Error ? err.message : "Upload draft sampel gagal.");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function onConfirmSampleSubmission() {
+    if (!selected?.ref.allocation_id) return;
+    if (!canAct(SAMPLE_UPLOAD_TASK, "confirm") && !canAct(SAMPLE_UPLOAD_TASK, "input")) {
+      setActionError("Aksi konfirmasi sampel tidak diizinkan untuk peran ini.");
+      return;
+    }
+    const draft = latestDraftSample(sampleRows);
+    if (!draft) {
+      setActionError("Belum ada draft aktif — unggah file terlebih dahulu.");
+      return;
+    }
+    setBusy(true);
+    setActionError(null);
+    setActionNotice(null);
+    try {
+      const res = await confirmSampleSubmission(selected.ref.allocation_id);
+      const msg = res.duplicate
+        ? `Sampel v${res.sample.version} sudah menunggu approval.`
+        : `Sampel v${res.sample.version} diajukan — menunggu Approval Kepala Produksi.`;
+      setActionNotice(msg);
+      showSuccess(msg);
+      await reloadAfterAction(selected);
+    } catch (err) {
+      setActionError(
+        err instanceof Error ? err.message : "Konfirmasi sampel gagal.",
+      );
     } finally {
       setBusy(false);
     }
@@ -345,6 +580,10 @@ export function TeamTaskApiPanel({ role, roleLabel }: Props) {
     const files = Array.from(photosRef.current?.files || []);
     const canvas = signatureRef.current;
     if (!sjId || !canvas) return;
+    if (!canAct(DRIVER_TASK, "confirm")) {
+      setActionError("Konfirmasi pengiriman tidak diizinkan untuk peran ini.");
+      return;
+    }
     if (files.length < 2) {
       setActionError("Konfirmasi pengiriman memerlukan minimal 2 foto.");
       return;
@@ -362,15 +601,22 @@ export function TeamTaskApiPanel({ role, roleLabel }: Props) {
     setActionError(null);
     setActionNotice(null);
     try {
-      const res = await confirmDelivered(sjId, recipientName.trim(), files, signature);
-      setActionNotice(
-        `Pengiriman ${res.status} · ${res.photo_evidence_ids.length} foto tersimpan.`,
+      const res = await confirmDelivered(
+        sjId,
+        recipientName.trim(),
+        files,
+        signature,
       );
+      const msg = `Pengiriman ${res.status} · ${res.photo_evidence_ids.length} foto tersimpan.`;
+      setActionNotice(msg);
+      showSuccess(msg);
       if (photosRef.current) photosRef.current.value = "";
       setRecipientName("");
       await reloadAfterAction(selected!);
     } catch (err) {
-      setActionError(err instanceof Error ? err.message : "Konfirmasi pengiriman gagal.");
+      setActionError(
+        err instanceof Error ? err.message : "Konfirmasi pengiriman gagal.",
+      );
     } finally {
       setBusy(false);
     }
@@ -379,6 +625,10 @@ export function TeamTaskApiPanel({ role, roleLabel }: Props) {
   async function onDeliveryFailed() {
     const sjId = selected?.ref.accurate_delivery_note_id;
     if (!sjId) return;
+    if (!canAct(DRIVER_TASK, "confirm")) {
+      setActionError("Menandai gagal tidak diizinkan untuk peran ini.");
+      return;
+    }
     if (!failureReason.trim()) {
       setActionError("Alasan pengiriman gagal wajib diisi.");
       return;
@@ -388,13 +638,16 @@ export function TeamTaskApiPanel({ role, roleLabel }: Props) {
     setActionNotice(null);
     try {
       await confirmDeliveryFailed(sjId, failureReason.trim());
-      setActionNotice(
-        "Pengiriman ditandai gagal; tugas koordinasi Kepala Produksi dibuat.",
-      );
+      const msg =
+        "Pengiriman ditandai gagal; tugas Koordinasi Pengiriman Gagal dibuat.";
+      setActionNotice(msg);
+      showSuccess(msg);
       setFailureReason("");
       await reloadAfterAction(selected!);
     } catch (err) {
-      setActionError(err instanceof Error ? err.message : "Gagal menyimpan kegagalan.");
+      setActionError(
+        err instanceof Error ? err.message : "Gagal menyimpan kegagalan.",
+      );
     } finally {
       setBusy(false);
     }
@@ -402,6 +655,10 @@ export function TeamTaskApiPanel({ role, roleLabel }: Props) {
 
   async function onConfirmCoordination() {
     if (!selected) return;
+    if (!canAct(selected.task_type, "confirm")) {
+      setActionError("Konfirmasi koordinasi tidak diizinkan untuk peran ini.");
+      return;
+    }
     setBusy(true);
     setActionError(null);
     setActionNotice(null);
@@ -410,10 +667,14 @@ export function TeamTaskApiPanel({ role, roleLabel }: Props) {
         selected.task_key,
         newIdempotencyKey(`coord:${selected.task_key}`),
       );
-      setActionNotice("Koordinasi administrasi ditandai selesai.");
+      const msg = "Koordinasi administrasi ditandai selesai.";
+      setActionNotice(msg);
+      showSuccess(msg);
       await reloadAfterAction(selected);
     } catch (err) {
-      setActionError(err instanceof Error ? err.message : "Konfirmasi koordinasi gagal.");
+      setActionError(
+        err instanceof Error ? err.message : "Konfirmasi koordinasi gagal.",
+      );
     } finally {
       setBusy(false);
     }
@@ -421,6 +682,10 @@ export function TeamTaskApiPanel({ role, roleLabel }: Props) {
 
   async function onDecideSample(version: number, approved: boolean) {
     if (!selected?.ref.allocation_id) return;
+    if (!canAct(SAMPLE_APPROVAL_TASK, "approve")) {
+      setActionError("Keputusan sampel tidak diizinkan untuk peran ini.");
+      return;
+    }
     if (!approved && !rejectReason.trim()) {
       setActionError("Alasan penolakan wajib diisi.");
       return;
@@ -429,22 +694,23 @@ export function TeamTaskApiPanel({ role, roleLabel }: Props) {
     setActionError(null);
     setActionNotice(null);
     try {
-      const res = await decideSample(
+      await decideSample(
         selected.ref.allocation_id,
         version,
         approved,
         approved ? undefined : rejectReason.trim(),
       );
-      setActionNotice(
-        approved
-          ? `Sampel versi ${version} disetujui — cetak massal terbuka.`
-          : `Sampel versi ${version} ditolak.`,
-      );
+      const msg = approved
+        ? `Sampel versi ${version} disetujui — cetak massal terbuka.`
+        : `Sampel versi ${version} ditolak.`;
+      setActionNotice(msg);
+      showSuccess(msg);
       setRejectReason("");
-      void res;
       await reloadAfterAction(selected);
     } catch (err) {
-      setActionError(err instanceof Error ? err.message : "Keputusan sampel gagal.");
+      setActionError(
+        err instanceof Error ? err.message : "Keputusan sampel gagal.",
+      );
     } finally {
       setBusy(false);
     }
@@ -452,9 +718,26 @@ export function TeamTaskApiPanel({ role, roleLabel }: Props) {
 
   async function onConfirm() {
     if (!selected) return;
+    if (isSchedulingTask(selected.task_type)) {
+      setActionError(
+        "Penjadwalan tidak memakai konfirmasi Qty generik. Gunakan form alokasi.",
+      );
+      return;
+    }
+    if (!canAct(selected.task_type, "confirm") && !canAct(selected.task_type, "input")) {
+      setActionError("Konfirmasi Qty tidak diizinkan untuk peran ini.");
+      return;
+    }
     const qty = Number(qtyInput);
     if (!Number.isFinite(qty) || qty <= 0) {
       setActionError("Qty konfirmasi harus lebih besar dari nol.");
+      return;
+    }
+    const rem = remainingQty(selected);
+    if (rem !== null && qty > rem) {
+      setActionError(
+        `Qty melebihi sisa yang tersedia (${formatQty(rem)}).`,
+      );
       return;
     }
     setBusy(true);
@@ -466,11 +749,11 @@ export function TeamTaskApiPanel({ role, roleLabel }: Props) {
         qty,
         newIdempotencyKey(`${role}:${selected.task_key}`),
       );
-      setActionNotice(
-        res.duplicate
-          ? "Konfirmasi sama sudah tercatat — Qty tidak digandakan."
-          : `Qty ${formatQty(qty)} tersimpan di MongoDB V4.`,
-      );
+      const msg = res.duplicate
+        ? "Konfirmasi sama sudah tercatat — Qty tidak digandakan."
+        : `Qty ${formatQty(qty)} tersimpan di MongoDB V4.`;
+      setActionNotice(msg);
+      showSuccess(msg);
       setSelected(res.task);
       setQtyInput("");
       await reloadAfterAction(res.task);
@@ -481,12 +764,40 @@ export function TeamTaskApiPanel({ role, roleLabel }: Props) {
     }
   }
 
+  function setFilter(next: StatusFilter) {
+    setStatusFilter(next);
+    setPage(1);
+  }
+
+  const selectedIsSample =
+    selected != null && isSampleTask(selected.task_type);
+  const selectedIsDesigner =
+    selected != null && selected.task_type === DESIGN_TASK;
+  const selectedIsScheduling =
+    selected != null && isSchedulingTask(selected.task_type);
+  const selectedIsDriver =
+    selected != null && selected.task_type === DRIVER_TASK;
+
   return (
     <div className="ep-taskpanel" data-testid="team-task-api-panel">
       {error ? (
         <div className="ep-error" role="alert">
           {error}
+          <button type="button" className="ep-btn sm" onClick={() => void load()}>
+            Coba Lagi
+          </button>
         </div>
+      ) : null}
+      {truncated ? (
+        <p className="ep-notice" data-testid="tasks-truncated-notice" role="status">
+          Daftar tugas mencapai batas baca API ({TASK_LIST_FETCH_LIMIT}). Angka
+          filter adalah batas bawah — bukan total lengkap.
+        </p>
+      ) : null}
+      {grantsError ? (
+        <p className="ep-notice" role="status">
+          {grantsError}
+        </p>
       ) : null}
 
       <DataTable
@@ -516,33 +827,43 @@ export function TeamTaskApiPanel({ role, roleLabel }: Props) {
             <strong>{roleLabel}</strong>
             <button
               type="button"
-              className={filter === "all" ? "ep-btn sm is-active" : "ep-btn sm"}
-              onClick={() => {
-                setFilter("all");
-                setPage(1);
-              }}
+              className={
+                statusFilter === "all" ? "ep-btn sm is-active" : "ep-btn sm"
+              }
+              onClick={() => setFilter("all")}
             >
-              Semua ({counts.total})
+              Semua ({formatCountBadge(statusCounts.all, truncated)})
             </button>
             <button
               type="button"
-              className={filter === "done" ? "ep-btn sm is-active" : "ep-btn sm"}
-              onClick={() => {
-                setFilter("done");
-                setPage(1);
-              }}
+              className={
+                statusFilter === "belum" ? "ep-btn sm is-active" : "ep-btn sm"
+              }
+              onClick={() => setFilter("belum")}
             >
-              Sudah ({counts.done})
+              Belum Dikerjakan ({formatCountBadge(statusCounts.belum, truncated)})
             </button>
             <button
               type="button"
-              className={filter === "open" ? "ep-btn sm is-active" : "ep-btn sm"}
-              onClick={() => {
-                setFilter("open");
-                setPage(1);
-              }}
+              className={
+                statusFilter === "sebagian"
+                  ? "ep-btn sm is-active"
+                  : "ep-btn sm"
+              }
+              onClick={() => setFilter("sebagian")}
             >
-              Belum ({counts.open})
+              Sebagian ({formatCountBadge(statusCounts.sebagian, truncated)})
+            </button>
+            <button
+              type="button"
+              className={
+                statusFilter === "selesai"
+                  ? "ep-btn sm is-active"
+                  : "ep-btn sm"
+              }
+              onClick={() => setFilter("selesai")}
+            >
+              Selesai ({formatCountBadge(statusCounts.selesai, truncated)})
             </button>
             <div className="ep-search">
               <span style={{ fontSize: 14, color: "#97a8bc" }} aria-hidden>
@@ -558,6 +879,17 @@ export function TeamTaskApiPanel({ role, roleLabel }: Props) {
                 aria-label="Cari tugas"
               />
             </div>
+            <button
+              type="button"
+              className="ep-btn sm"
+              onClick={() => {
+                setQ("");
+                setStatusFilter("all");
+                setPage(1);
+              }}
+            >
+              Reset filter
+            </button>
             <button type="button" className="ep-btn sm" onClick={() => void load()}>
               Muat ulang
             </button>
@@ -567,6 +899,13 @@ export function TeamTaskApiPanel({ role, roleLabel }: Props) {
               onClick={(e) => tools.openColumns(e.currentTarget)}
             >
               ▥ Kolom Tabel
+            </button>
+            <button
+              type="button"
+              className="ep-btn sm"
+              onClick={() => void tools.resetPrefs()}
+            >
+              Reset tampilan
             </button>
             {tools.prefsHint ? (
               <span
@@ -587,44 +926,315 @@ export function TeamTaskApiPanel({ role, roleLabel }: Props) {
             if (e.target === e.currentTarget) setSelected(null);
           }}
         >
-          <div className="ep-modal" role="dialog" aria-modal="true">
-            <header className="ep-modalhead">
-              <strong>{selected.label || selected.task_type}</strong>
-              <button type="button" className="ep-btn" onClick={() => setSelected(null)}>
-                Tutup
-              </button>
+          <div
+            className={`ep-modal ep-task-modal${
+              selectedIsDesigner ? " is-designer" : ""
+            }${selectedIsScheduling ? " is-scheduling" : ""}`}
+            role="dialog"
+            aria-modal="true"
+            data-testid="team-task-modal"
+            data-task-type={selected.task_type}
+          >
+            <header className="ep-modal-head">
+              <div className="ep-modal-head-main">
+                <div className="ep-modal-kicker">{roleLabel}</div>
+                <h2 data-testid="task-modal-title">
+                  {taskDisplayLabel(selected)}
+                </h2>
+                {!selectedIsDriver ? (
+                  <div
+                    className="ep-sched-head-meta"
+                    data-testid="task-head-meta"
+                  >
+                    <span
+                      className="ep-sched-head-customer"
+                      data-testid="task-head-customer"
+                    >
+                      {poDetailLoading
+                        ? "Memuat…"
+                        : poDetail?.customer ?? "Belum tersedia"}
+                    </span>
+                    <span
+                      className="ep-sched-head-po"
+                      data-testid="task-head-po"
+                    >
+                      {selected.ref.po_no || poDetail?.poNo || "—"}
+                    </span>
+                    {selected.ref.sj_no ||
+                    selected.ref.accurate_delivery_note_id ? (
+                      <span data-testid="task-head-sj">
+                        SJ{" "}
+                        {selected.ref.sj_no ||
+                          selected.ref.accurate_delivery_note_id}
+                      </span>
+                    ) : null}
+                    <span
+                      className={
+                        poDetail?.urgent === true
+                          ? "ep-task-status is-urgent"
+                          : "ep-task-status is-belum"
+                      }
+                      data-testid="task-head-urgency"
+                    >
+                      {poDetailLoading
+                        ? "…"
+                        : urgencyLabel(poDetail?.urgent ?? null)}
+                    </span>
+                    <span
+                      className={statusBadgeClass(selected.status)}
+                      data-testid="task-head-task-status"
+                    >
+                      {statusLabel(selected.status)}
+                    </span>
+                  </div>
+                ) : (
+                  <div
+                    className="ep-sched-head-meta"
+                    data-testid="task-head-meta-driver"
+                  >
+                    <span
+                      className="ep-sched-head-po"
+                      data-testid="task-head-sj"
+                    >
+                      SJ{" "}
+                      {selected.ref.sj_no ||
+                        selected.ref.accurate_delivery_note_id ||
+                        "—"}
+                    </span>
+                    {selected.ref.po_no ? (
+                      <span className="ep-muted">PO {selected.ref.po_no}</span>
+                    ) : null}
+                    <span
+                      className={statusBadgeClass(selected.status)}
+                      data-testid="task-head-task-status"
+                    >
+                      {statusLabel(selected.status)}
+                    </span>
+                  </div>
+                )}
+              </div>
+              <div className="ep-modal-head-actions">
+                {selectedIsDesigner ? (
+                  <button
+                    type="button"
+                    className="ep-btn sm"
+                    disabled={headerReloading || poDetailLoading}
+                    data-testid="designer-modal-reload"
+                    title="Muat ulang data desain dan PO"
+                    onClick={() => void onDesignerHeaderReload()}
+                  >
+                    {headerReloading || poDetailLoading
+                      ? "Memuat…"
+                      : "Muat ulang"}
+                  </button>
+                ) : null}
+                {selectedIsScheduling ? (
+                  <button
+                    type="button"
+                    className="ep-btn sm ep-btn-design"
+                    data-testid="sched-view-design"
+                    title="Lihat desain PO aktif"
+                    onClick={() => schedDesignOpenRef.current?.()}
+                  >
+                    Lihat Design
+                  </button>
+                ) : null}
+                <button
+                  type="button"
+                  className="ep-btn sm"
+                  onClick={() => setSelected(null)}
+                >
+                  Tutup
+                </button>
+              </div>
             </header>
-            <div className="ep-modalbody">
-              <dl className="ep-kv">
-                <dt>No. PO</dt>
-                <dd>{selected.ref.po_no || "—"}</dd>
-                <dt>Item Line</dt>
-                <dd>{selected.ref.accurate_line_id || "—"}</dd>
-                <dt>Qty Target</dt>
-                <dd>{formatQty(selected.qty_target)}</dd>
-                <dt>Qty Terkonfirmasi</dt>
-                <dd>{formatQty(selected.qty_confirmed)}</dd>
-                {selected.qty_target !== undefined ? (
-                  <>
-                    <dt>{shortfallLabel(selected.task_type)}</dt>
-                    <dd>
-                      {formatQty(
-                        Math.max(selected.qty_target - selected.qty_confirmed, 0),
-                      )}
-                    </dd>
-                  </>
-                ) : null}
-                {selected.ref.allocation_id ? (
-                  <>
-                    <dt>Allocation ID</dt>
-                    <dd>{selected.ref.allocation_id}</dd>
-                  </>
-                ) : null}
-                <dt>Status</dt>
-                <dd>{statusLabel(selected.status)}</dd>
-              </dl>
+            <div className="ep-modal-body">
+              {selectedIsDesigner ? (
+                <div
+                  className="ep-designer-summary"
+                  data-testid="designer-summary-grid"
+                >
+                  <div className="ep-designer-summary-col">
+                    <p className="ep-designer-summary-title">
+                      Informasi Pesanan
+                    </p>
+                    <dl className="ep-kv ep-kv-compact">
+                      <dt>Customer</dt>
+                      <dd data-testid="designer-customer">
+                        {poDetailLoading
+                          ? "Memuat…"
+                          : poDetailError
+                            ? "—"
+                            : poDetail?.customer ?? "Belum tersedia"}
+                      </dd>
+                      <dt>No. PO</dt>
+                      <dd>{selected.ref.po_no || poDetail?.poNo || "—"}</dd>
+                      <dt>Jenis Pekerjaan</dt>
+                      <dd>{taskDisplayLabel(selected)}</dd>
+                      <dt>Status Pesanan</dt>
+                      <dd data-testid="designer-urgency">
+                        {poDetailLoading
+                          ? "Memuat…"
+                          : urgencyLabel(poDetail?.urgent ?? null)}
+                      </dd>
+                    </dl>
+                    {poDetailError ? (
+                      <p className="ep-error ep-error-inline" role="alert">
+                        Detail PO: {poDetailError}
+                      </p>
+                    ) : null}
+                  </div>
+                  <div className="ep-designer-summary-col">
+                    <p className="ep-designer-summary-title">Item & Progres</p>
+                    <dl className="ep-kv ep-kv-compact">
+                      <dt>Jumlah item line</dt>
+                      <dd data-testid="designer-item-count">
+                        {poDetailLoading
+                          ? "…"
+                          : poDetail
+                            ? poDetail.itemCount
+                            : "—"}
+                      </dd>
+                      <dt>Item Cetak</dt>
+                      <dd data-testid="designer-print-list">
+                        {poDetailLoading ? (
+                          "Memuat…"
+                        ) : poDetail && poDetail.printLines.length > 0 ? (
+                          <ul className="ep-designer-print-list">
+                            {poDetail.printLines.map((line) => (
+                              <li key={line.accurateLineId || line.itemCode}>
+                                <span className="ep-designer-print-name">
+                                  {line.itemName}
+                                </span>
+                                <span className="ep-designer-print-sep" aria-hidden>
+                                  —
+                                </span>
+                                <span className="ep-designer-print-qty ep-num">
+                                  {formatQty(line.qty)}{" "}
+                                  {line.unit.toLowerCase()}
+                                </span>
+                              </li>
+                            ))}
+                          </ul>
+                        ) : poDetail ? (
+                          "Tidak ada item Cetak"
+                        ) : (
+                          "—"
+                        )}
+                      </dd>
+                      <dt title="Indikator progres tugas desain — bukan Qty cup">
+                        Qty Target tugas
+                      </dt>
+                      <dd className="ep-num">
+                        {formatQty(selected.qty_target)}
+                      </dd>
+                      <dt>Qty Terkonfirmasi</dt>
+                      <dd className="ep-num">
+                        {formatQty(selected.qty_confirmed)}
+                      </dd>
+                      <dt>{shortfallLabel(selected.task_type)}</dt>
+                      <dd className="ep-num">
+                        {formatQty(
+                          selected.qty_target !== undefined
+                            ? (remainingQty(selected) ?? 0)
+                            : undefined,
+                        )}
+                      </dd>
+                    </dl>
+                  </div>
+                </div>
+              ) : selectedIsScheduling ? null : selectedIsDriver ? null : (
+                <div
+                  className="ep-task-progress-block"
+                  data-testid="task-progress-table"
+                >
+                  <p className="ep-sectionlabel">Item & Progres</p>
+                  <div className="ep-tblscroll ep-tblscroll-embed">
+                    <table className="ep-table ep-sched-items-table">
+                      <thead>
+                        <tr>
+                          <th>Nama Barang / Ref</th>
+                          <th className="ep-num">Qty Target</th>
+                          <th className="ep-num">Qty Terkonfirmasi</th>
+                          <th className="ep-num">
+                            {shortfallLabel(selected.task_type)}
+                          </th>
+                          <th>Status</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        <tr>
+                          <td className="ep-sched-td-text">
+                            <span className="ep-sched-item-name">
+                              {selected.ref.item_code ||
+                                selected.ref.accurate_line_id ||
+                                "—"}
+                            </span>
+                            <span className="ep-sched-item-code">
+                              {[
+                                selected.ref.accurate_line_id,
+                                selected.ref.allocation_id,
+                              ]
+                                .filter(Boolean)
+                                .join(" · ") || "—"}
+                            </span>
+                          </td>
+                          <td className="ep-num">
+                            {formatQty(selected.qty_target)}
+                          </td>
+                          <td className="ep-num">
+                            {formatQty(selected.qty_confirmed)}
+                          </td>
+                          <td className="ep-num">
+                            {formatQty(remainingQty(selected) ?? 0)}
+                          </td>
+                          <td>
+                            <span className={statusBadgeClass(selected.status)}>
+                              {statusLabel(selected.status)}
+                            </span>
+                          </td>
+                        </tr>
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+              )}
 
-              {isSampleTask ? (
+              {selectedIsDesigner && selected.ref.accurate_po_id ? (
+                <DesignWorkflowPanel
+                  accuratePoId={selected.ref.accurate_po_id}
+                  poNo={selected.ref.po_no}
+                  compact
+                  hideReloadButton
+                  onRegisterReload={registerDesignReload}
+                  onChanged={() => void reloadAfterAction(selected)}
+                />
+              ) : null}
+
+              {isSchedulingTask(selected.task_type) ? (
+                <TeamTaskSchedulingForm
+                  task={selected}
+                  canAllocate={
+                    selected.task_type === "penjadwalan" &&
+                    (canAct("penjadwalan", "confirm") ||
+                      canAct("penjadwalan", "input"))
+                  }
+                  canRevise={
+                    canAct(selected.task_type, "edit") ||
+                    canAct(selected.task_type, "input") ||
+                    canAct("penjadwalan", "edit")
+                  }
+                  busy={busy}
+                  setBusy={setBusy}
+                  onError={setActionError}
+                  onNotice={setActionNotice}
+                  onSuccess={showSuccess}
+                  onChanged={() => reloadAfterAction(selected)}
+                  onRegisterDesignOpen={registerSchedDesignOpen}
+                />
+              ) : null}
+
+              {selectedIsSample ? (
                 <>
                   <p className="ep-sectionlabel">Riwayat Sampel</p>
                   {sampleRows.length === 0 ? (
@@ -635,6 +1245,7 @@ export function TeamTaskApiPanel({ role, roleLabel }: Props) {
                         <tr>
                           <th>Versi</th>
                           <th>File</th>
+                          <th>Bukti</th>
                           <th>Status</th>
                           <th>Operator</th>
                           <th>Alasan Tolak</th>
@@ -648,26 +1259,58 @@ export function TeamTaskApiPanel({ role, roleLabel }: Props) {
                           <tr key={s.sample_id}>
                             <td>{s.version}</td>
                             <td>{s.filename}</td>
-                            <td>{s.status}</td>
+                            <td>
+                              {s.evidence_id && selected.ref.allocation_id ? (
+                                <button
+                                  type="button"
+                                  className="ep-btn sm"
+                                  data-testid="sample-preview-btn"
+                                  onClick={() =>
+                                    setEvidencePreview({
+                                      title: `Sampel v${s.version}`,
+                                      url: sampleEvidenceContentUrl(
+                                        selected.ref.allocation_id!,
+                                        s.evidence_id!,
+                                      ),
+                                      filename: s.filename,
+                                    })
+                                  }
+                                >
+                                  Preview
+                                </button>
+                              ) : (
+                                "—"
+                              )}
+                            </td>
+                            <td>
+                              <span className={sampleStatusClass(s.status)}>
+                                {sampleStatusLabel(s.status)}
+                              </span>
+                            </td>
                             <td>{s.submitted_by}</td>
                             <td>{s.reject_reason || "—"}</td>
                             {selected.task_type === SAMPLE_APPROVAL_TASK ? (
                               <td>
-                                {s.status === "menunggu_approval" ? (
+                                {s.status === "menunggu_approval" &&
+                                canAct(SAMPLE_APPROVAL_TASK, "approve") ? (
                                   <>
                                     <button
                                       type="button"
-                                      className="ep-btn primary"
+                                      className="ep-btn primary sm"
                                       disabled={busy}
-                                      onClick={() => void onDecideSample(s.version, true)}
+                                      onClick={() =>
+                                        void onDecideSample(s.version, true)
+                                      }
                                     >
                                       Setujui
-                                    </button>
+                                    </button>{" "}
                                     <button
                                       type="button"
-                                      className="ep-btn"
+                                      className="ep-btn sm"
                                       disabled={busy}
-                                      onClick={() => void onDecideSample(s.version, false)}
+                                      onClick={() =>
+                                        void onDecideSample(s.version, false)
+                                      }
                                     >
                                       Tolak
                                     </button>
@@ -682,7 +1325,6 @@ export function TeamTaskApiPanel({ role, roleLabel }: Props) {
                       </tbody>
                     </table>
                   )}
-
                   {selected.task_type === SAMPLE_APPROVAL_TASK ? (
                     <div className="ep-filterbar">
                       <label htmlFor="reject-reason">Alasan tolak</label>
@@ -692,7 +1334,8 @@ export function TeamTaskApiPanel({ role, roleLabel }: Props) {
                         onChange={(e) => setRejectReason(e.target.value)}
                       />
                     </div>
-                  ) : (
+                  ) : canAct(SAMPLE_UPLOAD_TASK, "input") ||
+                    canAct(SAMPLE_UPLOAD_TASK, "confirm") ? (
                     <div className="ep-filterbar">
                       <input
                         ref={fileRef}
@@ -702,40 +1345,89 @@ export function TeamTaskApiPanel({ role, roleLabel }: Props) {
                       />
                       <button
                         type="button"
-                        className="ep-btn primary"
+                        className="ep-btn"
                         disabled={busy}
-                        onClick={() => void onUploadSample()}
+                        data-testid="sample-upload-draft-btn"
+                        onClick={() => void onUploadSampleDraft()}
                       >
-                        {busy ? "Mengunggah…" : "Konfirmasi Upload Sampel"}
+                        {busy ? "Mengunggah…" : "Unggah Draft"}
+                      </button>
+                      <button
+                        type="button"
+                        className="ep-btn primary"
+                        disabled={busy || !latestDraftSample(sampleRows)}
+                        data-testid="sample-confirm-btn"
+                        onClick={() => void onConfirmSampleSubmission()}
+                      >
+                        {busy ? "Mengirim…" : "Konfirmasi"}
                       </button>
                     </div>
-                  )}
+                  ) : null}
                 </>
               ) : null}
 
-              <p className="ep-sectionlabel">Riwayat Konfirmasi</p>
-              {history.length === 0 ? (
-                <p className="ep-empty">Belum ada konfirmasi.</p>
-              ) : (
-                <ul className="ep-history">
-                  {history.map((h) => (
-                    <li key={h.idempotency_key}>
-                      {formatQty(h.qty)} · {h.actor_email} · {h.created_at}
-                    </li>
-                  ))}
-                </ul>
-              )}
+              <div
+                className={`ep-task-history-block${
+                  selectedIsDesigner || selectedIsScheduling
+                    ? " is-compact"
+                    : ""
+                }`}
+                data-testid="task-history-block"
+              >
+                <p className="ep-sectionlabel">Riwayat Konfirmasi</p>
+                {historyError ? (
+                  <p className="ep-error" role="alert">
+                    {historyError}{" "}
+                    <button
+                      type="button"
+                      className="ep-btn sm"
+                      onClick={() => void openTask(selected)}
+                    >
+                      Coba Lagi
+                    </button>
+                  </p>
+                ) : history.length === 0 ? (
+                  <p className="ep-empty ep-empty-inline">Belum ada konfirmasi.</p>
+                ) : (
+                  <ul className="ep-history">
+                    {history.map((h) => (
+                      <li key={h.idempotency_key}>
+                        {formatQty(h.qty)} · {h.actor_email} ·{" "}
+                        {formatDateTimeDisplay(h.created_at)}
+                      </li>
+                    ))}
+                  </ul>
+                )}
+              </div>
 
-              {COORDINATION_TASKS.has(selected.task_type) ? (
+              {isCoordinationTask(selected.task_type) ? (
                 <div className="ep-coordination" data-testid="coordination-block">
+                  <p className="ep-sectionlabel">
+                    {taskDisplayLabel(selected)}
+                  </p>
+                  {selected.ref.sj_no ||
+                  selected.ref.accurate_delivery_note_id ? (
+                    <p>
+                      SJ:{" "}
+                      <strong>
+                        {selected.ref.sj_no ||
+                          selected.ref.accurate_delivery_note_id}
+                      </strong>
+                    </p>
+                  ) : null}
                   <p className="ep-coordination-message">
                     {String(
                       selected.context?.message ||
-                        "Mohon konfirmasi ke administrasi karena qty loading dan SJ berbeda",
+                        (selected.task_type === "pengiriman-gagal-koordinasi"
+                          ? "Mohon koordinasi administrasi terkait pengiriman gagal."
+                          : "Mohon konfirmasi ke administrasi karena qty loading dan SJ berbeda"),
                     )}
                   </p>
                   {selected.context?.failure_reason ? (
-                    <p>Alasan gagal: {String(selected.context.failure_reason)}</p>
+                    <p>
+                      Alasan gagal:{" "}
+                      <strong>{String(selected.context.failure_reason)}</strong>
+                    </p>
                   ) : null}
                   {Array.isArray(selected.context?.mismatched_items) ? (
                     <table className="ep-table">
@@ -756,97 +1448,177 @@ export function TeamTaskApiPanel({ role, roleLabel }: Props) {
                         ).map((m) => (
                           <tr key={m.accurate_line_id} className="ep-row-danger">
                             <td>{m.accurate_line_id}</td>
-                            <td>{formatQty(m.qty_sj)}</td>
-                            <td>{formatQty(m.qty_available)}</td>
+                            <td className="ep-num">{formatQty(m.qty_sj)}</td>
+                            <td className="ep-num">
+                              {formatQty(m.qty_available)}
+                            </td>
                           </tr>
                         ))}
                       </tbody>
                     </table>
                   ) : null}
-                  <button
-                    type="button"
-                    className="ep-btn primary"
-                    disabled={busy || selected.status === "selesai"}
-                    onClick={() => void onConfirmCoordination()}
-                  >
-                    Konfirmasi
-                  </button>
+                  <p className="ep-notice">
+                    Konfirmasi hanya menandai koordinasi selesai — tidak mengubah
+                    SJ atau Qty pengiriman.
+                  </p>
+                  {canAct(selected.task_type, "confirm") ? (
+                    <button
+                      type="button"
+                      className="ep-btn primary"
+                      disabled={busy || selected.status === "selesai"}
+                      onClick={() => void onConfirmCoordination()}
+                    >
+                      {busy ? "Menyimpan…" : "Konfirmasi"}
+                    </button>
+                  ) : null}
                 </div>
               ) : null}
 
               {selected.task_type === DRIVER_TASK ? (
                 <div data-testid="driver-block">
-                  <p className="ep-sectionlabel">Pengiriman Berhasil</p>
-                  <div className="ep-filterbar">
-                    <label htmlFor="recipient-name">Nama penerima</label>
-                    <input
-                      id="recipient-name"
-                      value={recipientName}
-                      onChange={(e) => setRecipientName(e.target.value)}
-                    />
-                    <input
-                      ref={photosRef}
-                      type="file"
-                      multiple
-                      aria-label="Foto bukti pengiriman"
-                      accept="image/png,image/jpeg,image/webp"
-                    />
-                  </div>
-                  <canvas
-                    ref={signatureRef}
-                    width={360}
-                    height={140}
-                    className="ep-signature"
-                    data-testid="delivery-signature"
-                    onPointerDown={startSignature}
-                    onPointerMove={moveSignature}
-                    onPointerUp={endSignature}
-                    onPointerLeave={endSignature}
-                  />
-                  <div className="ep-filterbar">
-                    <button
-                      type="button"
-                      className="ep-btn primary"
-                      disabled={busy}
-                      onClick={() => void onDeliverySuccess()}
-                    >
-                      Konfirmasi Pengiriman Berhasil
-                    </button>
-                  </div>
+                  <dl className="ep-kv">
+                    <dt>Driver (akun login)</dt>
+                    <dd>{user?.email || "—"}</dd>
+                    <dt>No. SJ</dt>
+                    <dd>
+                      {selected.ref.sj_no ||
+                        selected.ref.accurate_delivery_note_id ||
+                        "—"}
+                    </dd>
+                  </dl>
+                  {deliveryDetailError ? (
+                    <p className="ep-error" role="alert">
+                      {deliveryDetailError}
+                    </p>
+                  ) : null}
+                  {deliveryDetail ? (
+                    <>
+                      <p className="ep-sectionlabel">Riwayat & Bukti (baca)</p>
+                      <ul className="ep-history">
+                        {deliveryDetail.events.map((ev) => (
+                          <li key={`${ev.attempt}-${ev.created_at}`}>
+                            Attempt {ev.attempt}: {ev.status}
+                            {ev.recipient_name
+                              ? ` · ${ev.recipient_name}`
+                              : ""}
+                            {ev.failure_reason
+                              ? ` · gagal: ${ev.failure_reason}`
+                              : ""}
+                            {ev.created_at
+                              ? ` · ${formatDateTimeDisplay(ev.created_at)}`
+                              : ""}
+                            {" · "}
+                            {ev.photo_evidence_ids.length} foto
+                            {ev.photo_evidence_ids.length > 0 &&
+                            selected.ref.accurate_delivery_note_id ? (
+                              <span className="ep-evidence-inline-actions">
+                                {ev.photo_evidence_ids.map((eid, idx) => (
+                                  <button
+                                    key={eid}
+                                    type="button"
+                                    className="ep-btn sm"
+                                    data-testid="delivery-photo-preview-btn"
+                                    onClick={() =>
+                                      setEvidencePreview({
+                                        title: `Foto pengiriman #${idx + 1}`,
+                                        url: deliveryEvidenceContentUrl(
+                                          selected.ref
+                                            .accurate_delivery_note_id!,
+                                          eid,
+                                        ),
+                                        filename: `photo-${idx + 1}.jpg`,
+                                      })
+                                    }
+                                  >
+                                    Foto {idx + 1}
+                                  </button>
+                                ))}
+                              </span>
+                            ) : null}
+                          </li>
+                        ))}
+                      </ul>
+                      <p className="ep-notice">
+                        Soft-delete bukti pengiriman hanya di menu Jadwal
+                        Pengiriman.
+                      </p>
+                    </>
+                  ) : null}
 
-                  <p className="ep-sectionlabel">Pengiriman Gagal</p>
-                  <div className="ep-filterbar">
-                    <label htmlFor="failure-reason">Alasan</label>
-                    <input
-                      id="failure-reason"
-                      value={failureReason}
-                      onChange={(e) => setFailureReason(e.target.value)}
-                    />
-                    <button
-                      type="button"
-                      className="ep-btn"
-                      disabled={busy}
-                      onClick={() => void onDeliveryFailed()}
-                    >
-                      Pengiriman Gagal
-                    </button>
-                  </div>
+                  {canAct(DRIVER_TASK, "confirm") ? (
+                    <>
+                      <p className="ep-sectionlabel">Pengiriman Berhasil</p>
+                      <div className="ep-filterbar">
+                        <label htmlFor="recipient-name">Nama penerima</label>
+                        <input
+                          id="recipient-name"
+                          value={recipientName}
+                          onChange={(e) => setRecipientName(e.target.value)}
+                        />
+                        <input
+                          ref={photosRef}
+                          type="file"
+                          multiple
+                          aria-label="Foto bukti pengiriman"
+                          accept="image/png,image/jpeg,image/webp"
+                        />
+                      </div>
+                      <canvas
+                        ref={signatureRef}
+                        width={360}
+                        height={140}
+                        className="ep-signature"
+                        data-testid="delivery-signature"
+                        onPointerDown={startSignature}
+                        onPointerMove={moveSignature}
+                        onPointerUp={endSignature}
+                        onPointerLeave={endSignature}
+                      />
+                      <div className="ep-filterbar">
+                        <button
+                          type="button"
+                          className="ep-btn primary"
+                          disabled={busy}
+                          onClick={() => void onDeliverySuccess()}
+                        >
+                          {busy
+                            ? "Menyimpan…"
+                            : "Konfirmasi Pengiriman Berhasil"}
+                        </button>
+                      </div>
+
+                      <p className="ep-sectionlabel">Pengiriman Gagal</p>
+                      <div className="ep-filterbar">
+                        <label htmlFor="failure-reason">Alasan</label>
+                        <input
+                          id="failure-reason"
+                          value={failureReason}
+                          onChange={(e) => setFailureReason(e.target.value)}
+                        />
+                        <button
+                          type="button"
+                          className="ep-btn"
+                          disabled={busy}
+                          onClick={() => void onDeliveryFailed()}
+                        >
+                          Pengiriman Gagal
+                        </button>
+                      </div>
+                    </>
+                  ) : (
+                    <p className="ep-notice">Mode lihat — tanpa aksi mutasi.</p>
+                  )}
                 </div>
-              ) : null}
-
-              {selected.task_type === DESIGN_TASK && selected.ref.accurate_po_id ? (
-                <DesignWorkflowPanel
-                  accuratePoId={selected.ref.accurate_po_id}
-                  poNo={selected.ref.po_no}
-                  onChanged={() => void reloadAfterAction(selected)}
-                />
               ) : null}
 
               {selected.qty_target !== undefined &&
               selected.task_type !== DRIVER_TASK &&
               selected.task_type !== DESIGN_TASK &&
-              !COORDINATION_TASKS.has(selected.task_type) &&
-              !isSampleTask ? (
+              !isCoordinationTask(selected.task_type) &&
+              !selectedIsSample &&
+              !isSchedulingTask(selected.task_type) &&
+              (canAct(selected.task_type, "confirm") ||
+                canAct(selected.task_type, "input")) ? (
                 <div className="ep-filterbar">
                   <label htmlFor="qty-confirm">Qty</label>
                   <input
@@ -867,11 +1639,51 @@ export function TeamTaskApiPanel({ role, roleLabel }: Props) {
                 </div>
               ) : null}
 
-              {actionError ? <p className="ep-error">{actionError}</p> : null}
+              {actionError ? (
+                <p className="ep-error" role="alert">
+                  {actionError}
+                </p>
+              ) : null}
               {actionNotice ? <p className="ep-notice">{actionNotice}</p> : null}
             </div>
+            <footer className="ep-modal-foot">
+              <span className="ep-muted">
+                {busy
+                  ? "Memproses…"
+                  : selectedIsDesigner
+                    ? "Desain · MongoDB V4"
+                    : selectedIsScheduling
+                      ? "Penjadwalan · alokasi operator"
+                      : "Backend tetap otorisasi final."}
+              </span>
+              <div className="ep-modal-foot-actions">
+                <button
+                  type="button"
+                  className="ep-btn sm"
+                  onClick={() => setSelected(null)}
+                >
+                  Tutup
+                </button>
+              </div>
+            </footer>
+            <ConfirmationSuccessOverlay
+              open={successOpen}
+              title="Berhasil"
+              message={successMsg}
+              autoCloseMs={2200}
+              onClose={() => setSuccessOpen(false)}
+            />
           </div>
         </div>
+      ) : null}
+
+      {evidencePreview ? (
+        <EvidenceContentPreview
+          title={evidencePreview.title}
+          contentUrl={evidencePreview.url}
+          filename={evidencePreview.filename}
+          onClose={() => setEvidencePreview(null)}
+        />
       ) : null}
     </div>
   );
