@@ -6,16 +6,15 @@ import {
 } from "../components/ProductionFlowTrack";
 import { ProductionFlowApiPanel } from "../components/ProductionFlowApiPanel";
 import { ProductionFlowStageTable } from "../components/ProductionFlowStageTable";
-import { resolveInboxPoSourceMode } from "../demo/resolveInboxMode";
+import { useProductionApiPanels } from "../sim/previewMode";
 
-/** Alur Produksi: state backend nyata di mode API, DEMO lokal di mode demo. */
+/** Alur Produksi — preview Cursor memakai ProductionFlowApiPanel. */
 export function ProductionFlowPage() {
-  const apiMode =
-    resolveInboxPoSourceMode(import.meta.env.VITE_INBOX_PO_SOURCE) === "api";
+  const apiPanels = useProductionApiPanels();
   const steps = useMemo(() => buildProductionFlowSteps(), []);
   const [selected, setSelected] = useState<ProductionFlowStep>(steps[0]);
 
-  if (apiMode) {
+  if (apiPanels) {
     return (
       <div className="ep-flow-page">
         <ProductionFlowTrack

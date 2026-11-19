@@ -63,6 +63,30 @@ REQUIRED_TRACKING_INDEX_SPECS: list[dict[str, Any]] = [
     },
 ]
 
+# Bukan required request-path / bukan bootstrap auto-create.
+# Manual maintenance (setelah audit duplikat aktif) untuk hard concurrency:
+#   db.tracking_links.createIndex(
+#     { accurate_po_id: 1 },
+#     { unique: true, name: "uniq_tracking_one_active_per_po",
+#       partialFilterExpression: { status: "active" } })
+MANUAL_UNIQ_ACTIVE_PER_PO_INDEX = {
+    "collection": COLLECTION,
+    "keys": [("accurate_po_id", ASCENDING)],
+    "name": "uniq_tracking_one_active_per_po",
+    "unique": True,
+    "partialFilterExpression": {"status": "active"},
+}
+
+
+class TrackingActiveLinkExists(RuntimeError):
+    """PO sudah punya link aktif — generate ditolak (bukan regenerate)."""
+
+    code = "TRACKING_ACTIVE_EXISTS"
+
+    def __init__(self, message: str = "Link aktif sudah ada untuk PO ini.") -> None:
+        super().__init__(message)
+        self.message = message
+
 
 class MissingRequiredTrackingIndexError(RuntimeError):
     """Indeks tracking wajib hilang/salah spek — request ditolak (fail-closed)."""
@@ -266,6 +290,25 @@ def _public_link(doc: dict[str, Any]) -> dict[str, Any]:
     return out
 
 
+def find_active_for_po(db: Database, accurate_po_id: str) -> dict[str, Any] | None:
+    """Link aktif terbaru untuk PO (tanpa raw token)."""
+    _ensure_once(db)
+    doc = links_collection(db).find_one(
+        {"accurate_po_id": str(accurate_po_id), "status": "active"},
+        sort=[("created_at", -1)],
+    )
+    return _public_link(doc) if doc else None
+
+
+def count_active_for_po(db: Database, accurate_po_id: str) -> int:
+    _ensure_once(db)
+    return int(
+        links_collection(db).count_documents(
+            {"accurate_po_id": str(accurate_po_id), "status": "active"}
+        )
+    )
+
+
 def create_link(
     db: Database,
     *,
@@ -279,8 +322,16 @@ def create_link(
     expires_at: datetime | None = None,
     ttl_seconds: int | None = None,
 ) -> tuple[str, dict[str, Any]]:
-    """Buat link baru. Token mentah hanya dikembalikan sekali."""
+    """Buat link baru. Token mentah hanya dikembalikan sekali.
+
+    Menolak jika sudah ada link aktif (check-then-insert). Hard race protection
+    membutuhkan indeks manual ``uniq_tracking_one_active_per_po`` (lihat konstanta).
+    """
+    from pymongo.errors import DuplicateKeyError
+
     _ensure_once(db)
+    if find_active_for_po(db, str(accurate_po_id)):
+        raise TrackingActiveLinkExists()
     raw = generate_raw_token()
     now = utcnow()
     exp = expires_at
@@ -304,7 +355,11 @@ def create_link(
         "last_accessed_at": None,
         "access_count": 0,
     }
-    result = links_collection(db).insert_one(doc)
+    try:
+        result = links_collection(db).insert_one(doc)
+    except DuplicateKeyError as exc:
+        # Unique partial index (manual) menangkap race dua generate bersamaan.
+        raise TrackingActiveLinkExists() from exc
     doc["_id"] = result.inserted_id
     _append_event(
         db,

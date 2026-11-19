@@ -12,8 +12,8 @@ import { OperatorTaskPanel } from "../components/OperatorTaskPanel";
 import { ProductionHeadAllocTable } from "../components/ProductionHeadAllocTable";
 import { ScreenerTaskPanel } from "../components/ScreenerTaskPanel";
 import { TeamTaskApiPanel } from "../components/TeamTaskApiPanel";
-import { resolveInboxPoSourceMode } from "../demo/resolveInboxMode";
 import { useOpenTeamTaskCounts } from "../hooks/useOpenTeamTaskCounts";
+import { useProductionApiPanels } from "../sim/previewMode";
 
 function RolePanel({ roleId }: { roleId: TeamTaskRoleId }) {
   switch (roleId) {
@@ -36,8 +36,7 @@ function RolePanel({ roleId }: { roleId: TeamTaskRoleId }) {
 
 /** Ringkasan: deretan chip peran + satu panel aktif; judul hanya di topbar. */
 export function TeamTasksSummaryPage() {
-  const apiMode =
-    resolveInboxPoSourceMode(import.meta.env.VITE_INBOX_PO_SOURCE) === "api";
+  const apiMode = useProductionApiPanels();
   const [activeRoleId, setActiveRoleId] =
     useState<TeamTaskRoleId>("production-head");
   const {

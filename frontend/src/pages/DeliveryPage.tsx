@@ -1,10 +1,9 @@
 import { DeliveryApiPanel } from "../components/DeliveryApiPanel";
 import { DeliveryScheduleTable } from "../components/DeliveryScheduleTable";
-import { resolveInboxPoSourceMode } from "../demo/resolveInboxMode";
+import { useProductionApiPanels } from "../sim/previewMode";
 
-/** Jadwal Pengiriman: SJ Accurate nyata di mode API, DEMO lokal di mode demo. */
+/** Jadwal Pengiriman — preview Cursor memakai DeliveryApiPanel. */
 export function DeliveryPage() {
-  const apiMode =
-    resolveInboxPoSourceMode(import.meta.env.VITE_INBOX_PO_SOURCE) === "api";
-  return <div>{apiMode ? <DeliveryApiPanel /> : <DeliveryScheduleTable />}</div>;
+  const apiPanels = useProductionApiPanels();
+  return <div>{apiPanels ? <DeliveryApiPanel /> : <DeliveryScheduleTable />}</div>;
 }

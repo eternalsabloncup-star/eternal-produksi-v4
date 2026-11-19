@@ -1,4 +1,5 @@
 import { useEffect } from "react";
+import { createPortal } from "react-dom";
 
 type Props = {
   open: boolean;
@@ -7,12 +8,18 @@ type Props = {
   /** Tampilkan penanda DEMO di bawah pesan. */
   demo?: boolean;
   demoLabel?: string;
+  /** success (default) | error — pola visual gagal memakai overlay yang sama. */
+  tone?: "success" | "error";
+  /** Auto-tutup (ms). 0 = manual saja. */
+  autoCloseMs?: number;
+  /** Render fixed ke document.body (satu-klik Inbox). Default: absolute di parent. */
+  global?: boolean;
   onClose: () => void;
 };
 
 /**
- * Overlay sukses konfirmasi global Eternal V4.
- * Hanya tampilkan setelah aksi sukses; penutupan tidak menjalankan ulang aksi.
+ * Overlay feedback konfirmasi global Eternal V4.
+ * Hanya tampilkan setelah aksi selesai; penutupan tidak menjalankan ulang aksi.
  */
 export function ConfirmationSuccessOverlay({
   open,
@@ -20,6 +27,9 @@ export function ConfirmationSuccessOverlay({
   message,
   demo = false,
   demoLabel = "Simulasi DEMO · tidak tersimpan ke server",
+  tone = "success",
+  autoCloseMs = 0,
+  global = false,
   onClose,
 }: Props) {
   useEffect(() => {
@@ -34,14 +44,23 @@ export function ConfirmationSuccessOverlay({
     return () => window.removeEventListener("keydown", onKey, true);
   }, [open, onClose]);
 
+  useEffect(() => {
+    if (!open || !autoCloseMs || autoCloseMs <= 0) return;
+    const t = window.setTimeout(() => onClose(), autoCloseMs);
+    return () => window.clearTimeout(t);
+  }, [open, autoCloseMs, onClose]);
+
   if (!open) return null;
 
-  return (
+  const isError = tone === "error";
+
+  const node = (
     <div
-      className="ep-confirm-success"
-      role="status"
-      aria-live="polite"
+      className={`ep-confirm-success${isError ? " is-error" : ""}${global ? " is-global" : ""}`}
+      role={isError ? "alert" : "status"}
+      aria-live={isError ? "assertive" : "polite"}
       aria-label={title}
+      data-tone={tone}
       onClick={(e) => {
         e.stopPropagation();
         onClose();
@@ -60,11 +79,19 @@ export function ConfirmationSuccessOverlay({
           <svg viewBox="0 0 64 64" className="ep-confirm-success-svg">
             <circle className="ep-confirm-success-halo" cx="32" cy="32" r="30" />
             <circle className="ep-confirm-success-ring" cx="32" cy="32" r="26" />
-            <path
-              className="ep-confirm-success-check"
-              d="M18 33.5 L28 43 L46 22"
-              fill="none"
-            />
+            {isError ? (
+              <path
+                className="ep-confirm-success-check"
+                d="M22 22 L42 42 M42 22 L22 42"
+                fill="none"
+              />
+            ) : (
+              <path
+                className="ep-confirm-success-check"
+                d="M18 33.5 L28 43 L46 22"
+                fill="none"
+              />
+            )}
           </svg>
         </div>
         <div className="ep-confirm-success-title">{title}</div>
@@ -78,4 +105,9 @@ export function ConfirmationSuccessOverlay({
       </div>
     </div>
   );
+
+  if (global && typeof document !== "undefined") {
+    return createPortal(node, document.body);
+  }
+  return node;
 }

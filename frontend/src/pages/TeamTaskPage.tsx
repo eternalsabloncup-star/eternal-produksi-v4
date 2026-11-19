@@ -1,12 +1,12 @@
 import type { TeamTaskRole } from "../app/nav";
+import { TeamTaskApiPanel } from "../components/TeamTaskApiPanel";
 import { DesignerTaskPanel } from "../components/DesignerTaskPanel";
 import { DriverTaskPanel } from "../components/DriverTaskPanel";
 import { HelperTaskPanel } from "../components/HelperTaskPanel";
 import { OperatorTaskPanel } from "../components/OperatorTaskPanel";
 import { ProductionHeadAllocTable } from "../components/ProductionHeadAllocTable";
 import { ScreenerTaskPanel } from "../components/ScreenerTaskPanel";
-import { TeamTaskApiPanel } from "../components/TeamTaskApiPanel";
-import { resolveInboxPoSourceMode } from "../demo/resolveInboxMode";
+import { useProductionApiPanels } from "../sim/previewMode";
 
 type Props = {
   role: TeamTaskRole;
@@ -31,13 +31,15 @@ function DemoRolePanel({ role }: Props) {
   }
 }
 
-/** Halaman submenu peran: task engine nyata di mode API, DEMO lokal di mode demo. */
+/**
+ * Preview Cursor / simulasi API → selalu TeamTaskApiPanel.
+ * DemoRolePanel hanya jika VITE_INBOX_PO_SOURCE=demo dan simulasi OFF.
+ */
 export function TeamTaskPage({ role }: Props) {
-  const apiMode =
-    resolveInboxPoSourceMode(import.meta.env.VITE_INBOX_PO_SOURCE) === "api";
+  const apiPanels = useProductionApiPanels();
   return (
     <div>
-      {apiMode ? (
+      {apiPanels ? (
         <TeamTaskApiPanel role={role.id} roleLabel={role.label} />
       ) : (
         <DemoRolePanel role={role} />

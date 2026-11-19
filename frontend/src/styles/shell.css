@@ -2291,6 +2291,35 @@
   animation: ep-confirm-success-fade 0.28s ease-out both;
 }
 
+/* Overlay global untuk aksi satu-klik (Inbox Live Tracking). */
+.ep-confirm-success.is-global {
+  position: fixed;
+  z-index: 80;
+  inset: 0;
+  pointer-events: auto;
+}
+
+.ep-confirm-success.is-error {
+  background: rgba(255, 248, 246, 0.96);
+}
+
+.ep-confirm-success.is-error .ep-confirm-success-halo {
+  fill: #f5d8d4;
+}
+
+.ep-confirm-success.is-error .ep-confirm-success-ring {
+  fill: #7a2e28;
+  stroke: #5c221e;
+}
+
+.ep-confirm-success.is-error .ep-confirm-success-title {
+  color: #7a2e28;
+}
+
+.ep-confirm-success.is-error .ep-confirm-success-sub {
+  color: #8a4a42;
+}
+
 .ep-confirm-success-inner {
   display: flex;
   flex-direction: column;
