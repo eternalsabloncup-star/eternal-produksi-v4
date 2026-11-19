@@ -33,3 +33,18 @@
 .ep-inbox-error-hint {
   color: #6a4543;
 }
+
+.ep-live-tracking-done {
+  display: inline-block;
+  max-width: 118px;
+  padding: 4px 8px;
+  font-size: 10px;
+  font-weight: 700;
+  line-height: 1.25;
+  text-align: center;
+  color: #1f5a3a;
+  background: #e8f5ee;
+  border: 1px solid #b7d4c4;
+  border-radius: 6px;
+  user-select: none;
+}

@@ -6,6 +6,7 @@ import {
   resolveShellDataMode,
   shellModeFooterHint,
 } from "../demo/DemoPoSource";
+import { ApiSimulationBanner } from "../sim/ApiSimulationBanner";
 import { Header } from "./Header";
 import { navByPath } from "./nav";
 import { Sidebar } from "./Sidebar";
@@ -41,6 +42,7 @@ export function AppShell() {
       <div className="ep-main">
         <Header current={current} dataMode={dataMode} />
         <main className="ep-container">
+          <ApiSimulationBanner />
           <Outlet />
           <p
             className="ep-footerhint"

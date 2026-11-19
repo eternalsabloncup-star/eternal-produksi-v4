@@ -4,21 +4,17 @@ export type PoSourceMode = "demo" | "api";
  * Mode sumber Inbox.
  * - eksplisit api|accurate → api
  * - eksplisit demo → demo
- * - kosong: production build → api (hindari default DEMO diam-diam);
- *   development → demo
+ * - kosong → api (production & Cursor preview memakai panel API yang sama;
+ *   DEMO hanya jika dipaksa `VITE_INBOX_PO_SOURCE=demo`)
  */
 export function resolveInboxPoSourceMode(
   envValue?: string,
-  options?: { production?: boolean },
+  _options?: { production?: boolean },
 ): PoSourceMode {
   const raw = (envValue ?? "").trim().toLowerCase();
   if (raw === "api" || raw === "accurate") return "api";
   if (raw === "demo") return "demo";
-  const isProd =
-    options?.production ??
-    (typeof import.meta !== "undefined" &&
-      Boolean((import.meta as ImportMeta & { env?: { PROD?: boolean } }).env?.PROD));
-  return isProd ? "api" : "demo";
+  return "api";
 }
 
 /** Mode indikator shell per route. */

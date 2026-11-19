@@ -11,6 +11,7 @@ import {
 } from "../../api/tracking";
 import "../../styles/tracking.css";
 
+/** Route kompatibilitas /app/tracking — akses utama via kolom Inbox PO. */
 export function TrackingAdminPage() {
   const [poKey, setPoKey] = useState("");
   const [payload, setPayload] = useState<TrackingPayload | null>(null);
@@ -92,7 +93,9 @@ export function TrackingAdminPage() {
     <div className="elt-admin">
       <h1>Live Tracking</h1>
       <p className="muted" style={{ marginTop: 0, color: "var(--elt-muted)" }}>
-        Manajemen link pelacakan customer. Token acak; slug hanya label URL.
+        Halaman kompatibilitas. Manajemen utama ada di kolom{" "}
+        <strong>Live Tracking</strong> pada Inbox PO. Token acak; slug hanya
+        label URL.
       </p>
 
       <div className="elt-admin-toolbar">

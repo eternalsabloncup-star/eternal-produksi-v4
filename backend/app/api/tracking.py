@@ -14,7 +14,11 @@ from app.config import get_settings
 from app.db import get_db
 from app.repositories.tracking_link_repository import MissingRequiredTrackingIndexError
 from app.services import tracking_service as tracking
-from app.services.tracking_service import TrackingForbidden, TrackingNotFound
+from app.services.tracking_service import (
+    TrackingConflict,
+    TrackingForbidden,
+    TrackingNotFound,
+)
 
 router = APIRouter(tags=["tracking"])
 
@@ -173,6 +177,8 @@ def post_generate_link(
         )
     except MissingRequiredTrackingIndexError as exc:
         raise _http_from_index_error(exc) from exc
+    except TrackingConflict as exc:
+        raise HTTPException(status.HTTP_409_CONFLICT, exc.message) from exc
     except TrackingNotFound as exc:
         raise HTTPException(status.HTTP_404_NOT_FOUND, exc.message) from exc
     return result
@@ -197,6 +203,8 @@ def post_regenerate_link(
         )
     except MissingRequiredTrackingIndexError as exc:
         raise _http_from_index_error(exc) from exc
+    except TrackingConflict as exc:
+        raise HTTPException(status.HTTP_409_CONFLICT, exc.message) from exc
     except TrackingNotFound as exc:
         raise HTTPException(status.HTTP_404_NOT_FOUND, exc.message) from exc
 

@@ -144,15 +144,6 @@ export const APP_NAV: AppNavItem[] = [
     fg: "#7ED4C8",
   },
   {
-    id: "tracking",
-    path: "/app/tracking",
-    icon: "truck",
-    label: "Live Tracking",
-    box: "#1F4F58",
-    fg: "#7ED4C8",
-    showcase: true,
-  },
-  {
     id: "tasks",
     path: "/app/tasks",
     icon: "clipboard-list",
@@ -204,6 +195,15 @@ const HIDDEN_NAV: Partial<Record<AppNavId, AppNavItem>> = {
     box: "#31583E",
     fg: "#94D4A2",
   },
+  /** Live Tracking dikelola dari kolom Inbox PO — bukan menu sidebar. */
+  tracking: {
+    id: "tracking",
+    path: "/app/tracking",
+    icon: "truck",
+    label: "Live Tracking",
+    box: "#1F4F58",
+    fg: "#7ED4C8",
+  },
 };
 
 export function teamTaskRoleByPath(pathname: string): TeamTaskRole | undefined {
@@ -228,6 +228,9 @@ export function navByPath(pathname: string): AppNavItem {
   }
   if (pathname === "/app/qc" || pathname.startsWith("/app/qc/")) {
     return HIDDEN_NAV.qc!;
+  }
+  if (pathname === "/app/tracking" || pathname.startsWith("/app/tracking/")) {
+    return HIDDEN_NAV.tracking!;
   }
   const hit = APP_NAV.find(
     (n) => pathname === n.path || pathname.startsWith(n.path + "/"),

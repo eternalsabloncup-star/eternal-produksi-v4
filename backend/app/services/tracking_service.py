@@ -48,6 +48,11 @@ class TrackingForbidden(TrackingError):
         super().__init__(message, code="forbidden")
 
 
+class TrackingConflict(TrackingError):
+    def __init__(self, message: str = "Link aktif sudah ada untuk PO ini.") -> None:
+        super().__init__(message, code="conflict")
+
+
 def _header(po_doc: dict[str, Any]) -> dict[str, Any]:
     return dict(po_doc.get("header") or {})
 
@@ -82,17 +87,20 @@ def generate_tracking_link(
     po_no = str(po.get("po_no") or header.get("po_no") or "")
     customer_slug = slugify_customer(customer)
     po_slug = slugify_po_reference(po_no)
-    raw, link = links.create_link(
-        db,
-        accurate_po_id=str(po["accurate_id"]),
-        po_no=po_no,
-        customer_name=customer,
-        customer_slug=customer_slug,
-        po_slug=po_slug,
-        actor_email=actor_email,
-        scopes=scopes,
-        ttl_seconds=ttl_seconds,
-    )
+    try:
+        raw, link = links.create_link(
+            db,
+            accurate_po_id=str(po["accurate_id"]),
+            po_no=po_no,
+            customer_name=customer,
+            customer_slug=customer_slug,
+            po_slug=po_slug,
+            actor_email=actor_email,
+            scopes=scopes,
+            ttl_seconds=ttl_seconds,
+        )
+    except links.TrackingActiveLinkExists as exc:
+        raise TrackingConflict(str(exc)) from exc
     path = build_public_path(
         customer_slug=customer_slug, po_slug=po_slug, raw_token=raw
     )

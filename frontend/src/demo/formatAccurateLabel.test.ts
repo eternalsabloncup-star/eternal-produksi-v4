@@ -32,9 +32,9 @@ describe("resolveInboxPoSourceMode", () => {
     expect(resolveInboxPoSourceMode("", { production: true })).toBe("api");
   });
 
-  it("keeps DEMO for explicit demo and for development unset", () => {
+  it("honors explicit demo; unset defaults to api for Cursor/production parity", () => {
     expect(resolveInboxPoSourceMode("demo", { production: true })).toBe("demo");
-    expect(resolveInboxPoSourceMode(undefined, { production: false })).toBe("demo");
+    expect(resolveInboxPoSourceMode(undefined, { production: false })).toBe("api");
   });
 
   it("API mode has distinct badge from DEMO", () => {

@@ -10,6 +10,7 @@ import { ColumnFilter } from "./DataTable/ColumnFilter";
 import { DataTable } from "./DataTable/DataTable";
 import { DEFAULT_TABLE_PAGE_SIZE } from "./DataTable/Pagination";
 import type { ColumnDef } from "./DataTable/types";
+import { InboxLiveTrackingButton } from "./InboxLiveTrackingButton";
 import { InboxPoDetailModal } from "./InboxPoDetailModal";
 import { PoLineItemsDetail } from "./PoLineItemsDetail";
 import "../styles/inbox.css";
@@ -268,6 +269,14 @@ export function InboxPoTable({ tableId }: Props) {
         defaultWidth: 140,
         getFilterValue: (row) => row.totalQtyDisplay,
         render: (row) => <b>{row.totalQtyDisplay || "—"}</b>,
+      },
+      {
+        id: "liveTracking",
+        label: "Live Tracking",
+        hideable: true,
+        defaultWidth: 128,
+        minWidth: 112,
+        render: (row) => <InboxLiveTrackingButton row={row} />,
       },
     ],
     [],
