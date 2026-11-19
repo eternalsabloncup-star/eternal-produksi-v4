@@ -1,12 +1,15 @@
 """Guard fail-closed untuk target MongoDB V4 (bukan ERP legacy).
 
-Owner: Mongo V4 test di 127.0.0.1:27018; ERP lama di 27017 — diblokir untuk sync.
+Topologi VPS Owner (terbukti):
+- 27017 = ERP lama — diblokir untuk sync test (kecuali pytest CI + eternal_v4_test_*).
+- 27018 = Mongo V4 **production** — diblokir untuk sync test.
+- 27019 = Mongo V4 **test** (eternalV4TestRS) — jalur sync non-prod.
 """
 
 from __future__ import annotations
 
 import re
-from urllib.parse import parse_qs, urlparse
+from urllib.parse import parse_qs, unquote, urlparse
 
 # Nama DB yang tidak boleh ditarget sync Accurate → V4.
 _LEGACY_OR_OPS_DB_NAMES = frozenset(
@@ -74,6 +77,31 @@ def extract_mongo_auth_source(uri: str) -> str | None:
     parsed = urlparse(text)
     query = parse_qs(parsed.query)
     values = query.get("authSource") or query.get("authsource") or []
+    if not values:
+        return None
+    value = str(values[0]).strip()
+    return value or None
+
+
+def extract_mongo_username(uri: str) -> str | None:
+    """Username dari URI (tanpa password)."""
+    text = (uri or "").strip()
+    if not text or "://" not in text:
+        return None
+    parsed = urlparse(text)
+    if not parsed.username:
+        return None
+    return unquote(parsed.username)
+
+
+def extract_mongo_replica_set(uri: str) -> str | None:
+    """replicaSet dari query URI."""
+    text = (uri or "").strip()
+    if not text or "://" not in text:
+        return None
+    parsed = urlparse(text)
+    query = parse_qs(parsed.query)
+    values = query.get("replicaSet") or query.get("replicaset") or []
     if not values:
         return None
     value = str(values[0]).strip()
@@ -155,13 +183,21 @@ def assert_safe_mongo_sync_target(
     is_isolated_test_db = name.startswith("eternal_v4_test_")
     ports = extract_mongo_ports(uri)
 
+    # Production V4 Mongo — jangan pernah dipakai jalur sync test.
+    if PRODUCTION_SYNC_PORT in ports:
+        raise UnsafeMongoTargetError(
+            "Mongo port 27018 adalah V4 production — diblokir untuk sync test. "
+            "Gunakan 127.0.0.1:27019 + DB eternal_v4_test_*.",
+            code="mongo_production_port_blocked",
+        )
+
     if 27017 in ports:
-        # Port ERP lama Owner — hanya izinkan pytest DB terisolasi.
+        # Port ERP lama Owner — hanya izinkan pytest DB terisolasi di CI.
         if env == "test" and is_isolated_test_db:
             return
         raise UnsafeMongoTargetError(
             "Mongo port 27017 diblokir untuk sync Accurate → V4 "
-            "(cadangan ERP lama). Gunakan 127.0.0.1:27018 + DB test.",
+            "(cadangan ERP lama). Gunakan 127.0.0.1:27019 + DB test.",
             code="mongo_legacy_port_blocked",
         )
 

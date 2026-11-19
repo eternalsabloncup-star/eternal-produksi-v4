@@ -43,6 +43,11 @@ class PoHeaderModel(BaseModel):
     buffer_label: str = ""
     notes: str = ""
     urgent: bool = False
+    # F12 Accurate 95106 — bukan pengganti recipient / creator name.
+    address_pic_name: str = ""
+    print_user_name: str = ""
+    created_by_id: str = ""
+    priority_label: str = ""
     items: list[PoLineItemModel] = Field(default_factory=list)
     raw_sync_meta: dict[str, Any] = Field(default_factory=dict)
 

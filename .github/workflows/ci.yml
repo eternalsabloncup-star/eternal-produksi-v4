@@ -36,6 +36,11 @@ jobs:
           chmod +x scripts/start-test-mongo.sh scripts/mongo-entrypoint.sh scripts/mongo-rs-init.sh
           ./scripts/start-test-mongo.sh
 
+      - name: Oneshot worktree permission regression
+        run: |
+          chmod +x scripts/tests/test_oneshot_worktree_perms.sh scripts/lib/oneshot_worktree.sh
+          bash scripts/tests/test_oneshot_worktree_perms.sh
+
       - name: Run backend tests
         working-directory: backend
         env:

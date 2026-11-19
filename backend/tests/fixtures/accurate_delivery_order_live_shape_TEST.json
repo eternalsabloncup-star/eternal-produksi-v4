@@ -1,0 +1,57 @@
+{
+  "_label": "TEST — bentuk live Accurate DO (disanitasi, bukan data pelanggan)",
+  "_source_note": "Meniru kontrak empiris VPS: header poNumber/contactInfoId NULL; salesOrder boolean; item salesOrder objek; charField3 netral.",
+  "id": 880101,
+  "number": "TEST-SJ/19/11/2026/000099",
+  "transDate": "19/11/2026",
+  "customer": {
+    "id": 5509,
+    "name": "PELANGGAN-TEST LIVE SHAPE",
+    "customerNo": "C-TEST-LIVE"
+  },
+  "toAddress": "ALAMAT-TEST LIVE\nKota Test",
+  "poNumber": null,
+  "contactInfoId": null,
+  "salesOrder": false,
+  "shipment": { "id": 7, "name": "EKSPEDISI-TEST-LIVE" },
+  "charField3": "K",
+  "masterSalesmanId": 150,
+  "createdBy": 1162627,
+  "statusName": "Belum Terkirim",
+  "detailItem": [
+    {
+      "id": 990001,
+      "salesOrderId": 95106,
+      "salesOrderDetailId": 106318,
+      "salesOrder": {
+        "id": 95106,
+        "number": "PO/18/11/2026/000010",
+        "poNumber": "CUST-PO-TEST-1"
+      },
+      "salesOrderPoNumber": "CUST-PO-TEST-1",
+      "quantity": 12.5,
+      "item": { "id": 4101, "no": "BRG-TEST-001", "name": "Cup Test 16oz" },
+      "itemUnit": { "id": 1, "name": "PCS" },
+      "warehouse": { "id": 2, "name": "GUDANG-TEST-A" },
+      "detailName": "Cup Test 16oz Motif A",
+      "detailNotes": "CATATAN-LIVE-TEST"
+    },
+    {
+      "id": 990002,
+      "salesOrderId": 95106,
+      "salesOrderDetailId": 106319,
+      "salesOrder": {
+        "id": 95106,
+        "number": "PO/18/11/2026/000010",
+        "poNumber": "CUST-PO-TEST-1"
+      },
+      "salesOrderPoNumber": "CUST-PO-TEST-1",
+      "quantity": 3,
+      "item": { "id": 4190, "no": "BRG-TEST-900", "name": "Lid Test 16oz" },
+      "itemUnit": { "id": 4, "name": "PACK" },
+      "warehouse": { "id": 2, "name": "GUDANG-TEST-A" },
+      "detailName": "Lid Test 16oz",
+      "detailNotes": ""
+    }
+  ]
+}

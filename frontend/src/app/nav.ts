@@ -3,11 +3,11 @@ import type { NavIconName } from "./icons";
 export type AppNavId =
   | "dashboard"
   | "inbox"
-  | "control"
-  | "tracking"
+  | "production-flow"
   | "schedule"
+  | "tracking"
   | "tasks"
-  | "samples"
+  | "buffer-stock"
   | "qc"
   | "delivery"
   | "reports"
@@ -18,16 +18,95 @@ export type AppNavItem = {
   path: string;
   icon: NavIconName;
   label: string;
-  /** Warna latar kotak ikon (sidebar rail). */
+  /** Warna latar kotak ikon (sidebar). */
   box: string;
   /** Warna simbol ikon. */
   fg: string;
   showcase?: boolean;
 };
 
+export type TeamTaskRoleId =
+  | "production-head"
+  | "designer"
+  | "helper"
+  | "screener"
+  | "operator"
+  | "driver";
+
+export type TeamTaskRole = {
+  id: TeamTaskRoleId;
+  path: string;
+  icon: NavIconName;
+  label: string;
+  box: string;
+  /** Warna ikon flyout — visual saja, bukan aturan bisnis. */
+  color: string;
+};
+
+/** Enam peran submenu Tugas Tim (EPV4-005). */
+export const TEAM_TASK_ROLES: TeamTaskRole[] = [
+  {
+    id: "production-head",
+    path: "/app/tasks/production-head",
+    icon: "crown",
+    label: "Kepala Produksi",
+    box: "#5a4a18",
+    color: "#e8c547",
+  },
+  {
+    id: "designer",
+    path: "/app/tasks/designer",
+    icon: "pen-tool",
+    label: "Designer",
+    box: "#1e4a62",
+    color: "#82C7EC",
+  },
+  {
+    id: "helper",
+    path: "/app/tasks/helper",
+    icon: "wrench",
+    label: "Helper",
+    box: "#624836",
+    color: "#F5B88D",
+  },
+  {
+    id: "screener",
+    path: "/app/tasks/screener",
+    icon: "scan",
+    label: "Screener",
+    box: "#463D63",
+    color: "#BEA8F5",
+  },
+  {
+    id: "operator",
+    path: "/app/tasks/operator",
+    icon: "cog",
+    label: "Operator",
+    box: "#16554c",
+    color: "#76D2C0",
+  },
+  {
+    id: "driver",
+    path: "/app/tasks/driver",
+    icon: "car",
+    label: "Driver",
+    box: "#663E53",
+    color: "#F1A8C8",
+  },
+];
+
+/** Entri Ringkasan di flyout Tugas Tim. */
+export const TEAM_TASKS_SUMMARY = {
+  path: "/app/tasks",
+  icon: "circle-dot" as const satisfies NavIconName,
+  label: "Ringkasan",
+  box: "#225548",
+  color: "#76D2C0",
+};
+
 /**
- * Menu Tahap 01 (struktur classic main) + visual hijau rail.
- * Tidak menyertakan modul Tahap 02 (Alur Produksi / Buffer Stock / peran Tugas Tim).
+ * Menu sidebar utama (icon-only).
+ * "Hasil Produksi & QC" sengaja tidak disertakan di navigasi sidebar.
  */
 export const APP_NAV: AppNavItem[] = [
   {
@@ -48,13 +127,21 @@ export const APP_NAV: AppNavItem[] = [
     showcase: true,
   },
   {
-    id: "control",
-    path: "/app/control",
+    id: "schedule",
+    path: "/app/schedule",
     icon: "chart-no-axes-combined",
-    label: "Kontrol Produksi",
+    label: "Jadwal Produksi",
     box: "#31583E",
     fg: "#94D4A2",
     showcase: true,
+  },
+  {
+    id: "production-flow",
+    path: "/app/production-flow",
+    icon: "workflow",
+    label: "Alur Produksi",
+    box: "#1F4F58",
+    fg: "#7ED4C8",
   },
   {
     id: "tracking",
@@ -66,14 +153,6 @@ export const APP_NAV: AppNavItem[] = [
     showcase: true,
   },
   {
-    id: "schedule",
-    path: "/app/schedule",
-    icon: "calendar-days",
-    label: "Jadwal Produksi",
-    box: "#1F4F58",
-    fg: "#7ED4C8",
-  },
-  {
     id: "tasks",
     path: "/app/tasks",
     icon: "clipboard-list",
@@ -82,20 +161,12 @@ export const APP_NAV: AppNavItem[] = [
     fg: "#82C7EC",
   },
   {
-    id: "samples",
-    path: "/app/samples",
-    icon: "badge-check",
-    label: "Approval Sampel",
+    id: "buffer-stock",
+    path: "/app/buffer-stock",
+    icon: "warehouse",
+    label: "Buffer Stock",
     box: "#4A3F2A",
     fg: "#E2C98A",
-  },
-  {
-    id: "qc",
-    path: "/app/qc",
-    icon: "circle-dot",
-    label: "Hasil Produksi & QC",
-    box: "#16554c",
-    fg: "#76D2C0",
   },
   {
     id: "delivery",
@@ -123,9 +194,43 @@ export const APP_NAV: AppNavItem[] = [
   },
 ];
 
+/** Metadata header untuk route yang tidak ada di sidebar. */
+const HIDDEN_NAV: Partial<Record<AppNavId, AppNavItem>> = {
+  qc: {
+    id: "qc",
+    path: "/app/qc",
+    icon: "badge-check",
+    label: "Hasil Produksi & QC",
+    box: "#31583E",
+    fg: "#94D4A2",
+  },
+};
+
+export function teamTaskRoleByPath(pathname: string): TeamTaskRole | undefined {
+  return TEAM_TASK_ROLES.find((r) => pathname === r.path);
+}
+
+export function isTasksSectionPath(pathname: string): boolean {
+  return pathname === "/app/tasks" || pathname.startsWith("/app/tasks/");
+}
+
 export function navByPath(pathname: string): AppNavItem {
+  const role = teamTaskRoleByPath(pathname);
+  if (role) {
+    return {
+      id: "tasks",
+      path: role.path,
+      icon: role.icon,
+      label: role.label,
+      box: role.box,
+      fg: role.color,
+    };
+  }
+  if (pathname === "/app/qc" || pathname.startsWith("/app/qc/")) {
+    return HIDDEN_NAV.qc!;
+  }
   const hit = APP_NAV.find(
     (n) => pathname === n.path || pathname.startsWith(n.path + "/"),
   );
-  return hit ?? APP_NAV.find((n) => n.id === "control")!;
+  return hit ?? APP_NAV.find((n) => n.id === "schedule")!;
 }

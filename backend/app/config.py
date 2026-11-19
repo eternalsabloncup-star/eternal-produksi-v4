@@ -80,6 +80,12 @@ class Settings(BaseSettings):
         alias="ACCURATE_HTTP_TIMEOUT_SECONDS",
         gt=0,
     )
+    # Kill switch sinkronisasi Surat Jalan Accurate → Mongo V4.
+    # Default OFF. Non-prod/prod hanya aktif setelah Owner/CEO menyalakan eksplisit.
+    sj_sync_enabled: bool = Field(
+        default=False,
+        validation_alias=AliasChoices("V4_SJ_SYNC_ENABLED", "SJ_SYNC_ENABLED"),
+    )
 
     @field_validator("mongodb_uri")
     @classmethod
@@ -149,11 +155,14 @@ class Settings(BaseSettings):
                 "X-Api-Signature",
                 "X-Session-ID (hanya jika session non-kosong)",
             ],
+            "sj_sync_enabled": bool(self.sj_sync_enabled),
             "accurate_paths": {
                 "api_token": "/api/api-token.do",
                 "open_db": "/api/open-db.do",
                 "so_list": "/accurate/api/sales-order/list.do",
                 "so_detail": "/accurate/api/sales-order/detail.do",
+                "do_list": "/accurate/api/delivery-order/list.do",
+                "do_detail": "/accurate/api/delivery-order/detail.do",
             },
         }
 

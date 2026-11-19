@@ -24,6 +24,8 @@ PERM_MANAGE_SETTINGS: Final = "settings.manage"
 PERM_VIEW_REPORTS: Final = "reports.view"
 PERM_VIEW_AUDIT_LOG: Final = "audit.view"
 PERM_OPERATIONS_FULL: Final = "operations.full"
+# Bypass Payment tidak terikat role tertentu — diberikan lewat Master.
+PERM_BYPASS_PAYMENT: Final = "payment.bypass"
 
 ALL_PERMISSIONS: Final[frozenset[str]] = frozenset(
     {
@@ -35,6 +37,7 @@ ALL_PERMISSIONS: Final[frozenset[str]] = frozenset(
         PERM_VIEW_REPORTS,
         PERM_VIEW_AUDIT_LOG,
         PERM_OPERATIONS_FULL,
+        PERM_BYPASS_PAYMENT,
     }
 )
 

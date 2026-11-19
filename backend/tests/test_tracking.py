@@ -226,7 +226,8 @@ def test_milestone_progress_not_used_as_production_percent(db: Database) -> None
     po = get_by_accurate_id(db, "95106")
     assert po is not None
     # Seed partial cetak task tanpa klaim order complete
-    db.create_collection("operational_tasks")
+    if "operational_tasks" not in db.list_collection_names():
+        db.create_collection("operational_tasks")
     db["operational_tasks"].insert_one(
         {
             "task_type": "cetak",
@@ -416,7 +417,8 @@ def test_design_gate_maps_approval_milestone(db: Database) -> None:
 
     po = get_by_accurate_id(db, "95106")
     assert po is not None
-    db.create_collection("po_gates")
+    if "po_gates" not in db.list_collection_names():
+        db.create_collection("po_gates")
     db["po_gates"].insert_one(
         {
             "accurate_po_id": "95106",
@@ -427,7 +429,8 @@ def test_design_gate_maps_approval_milestone(db: Database) -> None:
             },
         }
     )
-    db.create_collection("design_submissions")
+    if "design_submissions" not in db.list_collection_names():
+        db.create_collection("design_submissions")
     db["design_submissions"].insert_one(
         {
             "accurate_po_id": "95106",

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
+import pytest
 from pymongo.database import Database
 
 from app.integrations.accurate.sample_payload import SAMPLE_SALES_ORDER_STRUCTURE
@@ -178,24 +179,58 @@ def test_one_sj_one_success_counts_once(db: Database) -> None:
 
 
 def test_duplicate_success_events_still_count_once(db: Database) -> None:
+    """PR #6: indeks unik sukses per SJ; adapter juga dedupe per SJ di snapshot."""
+    from pymongo.errors import DuplicateKeyError
+
     _sync_po(db)
     _clear(db)
     po, _, _ = _progress(db)
     half = qty_po_total(po) / 2
     _insert_note(db, sj="SJ-DUP", po="95106", qty=half)
     _insert_success(db, sj="SJ-DUP", po="95106", attempt=1)
-    _insert_success(
-        db,
-        sj="SJ-DUP",
-        po="95106",
-        attempt=2,
-        photo_ids=["evid:delivery-photo:SJ-DUP:v3", "evid:delivery-photo:SJ-DUP:v4"],
-        sig_id="evid:delivery-signature:SJ-DUP:v2",
-    )
+    with pytest.raises(DuplicateKeyError):
+        _insert_success(
+            db,
+            sj="SJ-DUP",
+            po="95106",
+            attempt=2,
+            photo_ids=["evid:delivery-photo:SJ-DUP:v3", "evid:delivery-photo:SJ-DUP:v4"],
+            sig_id="evid:delivery-signature:SJ-DUP:v2",
+        )
     _, wf, progress = _progress(db)
     assert len(eligible_delivered_sj_qty(wf)) == 1
     assert progress["shipping"]["qty_delivered"] == half
     assert progress["order_complete"] is False
+
+    # Defense-in-depth: dua event sukses di snapshot in-memory → tetap 1 Qty.
+    import app.services.tracking_workflow_adapter as adapter
+
+    note = {"accurate_sj_id": "SJ-DUP", "accurate_po_id": "95106", "items": [{"qty": half}]}
+    evid_a = ("e-a1", "e-a2", "e-as")
+    evid_b = ("e-b1", "e-b2", "e-bs")
+    calls = {"n": 0}
+
+    def _fake_first(_note, _workflow):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            return {"attempt": 1, "status": "berhasil"}, evid_a
+        return {"attempt": 2, "status": "berhasil"}, evid_b
+
+    original = adapter.first_valid_success_event
+    adapter.first_valid_success_event = _fake_first  # type: ignore[assignment]
+    try:
+        rows = eligible_delivered_sj_qty(
+            {
+                "accurate_po_id": "95106",
+                "delivery_notes": [note, note],
+                "delivery_events_by_sj": {},
+                "evidence_by_id": {},
+            }
+        )
+        assert len(rows) == 1
+        assert rows[0]["qty"] == half
+    finally:
+        adapter.first_valid_success_event = original  # type: ignore[assignment]
 
 
 def test_failed_then_valid_success(db: Database) -> None:
@@ -543,20 +578,23 @@ def test_evidence_beyond_global_thousand_still_found(db: Database) -> None:
 
 
 def test_qty_cannot_exceed_unique_eligible_sj(db: Database) -> None:
+    from pymongo.errors import DuplicateKeyError
+
     _sync_po(db)
     _clear(db)
     po, _, _ = _progress(db)
     total = qty_po_total(po)
     _insert_note(db, sj="SJ-ONLY", po="95106", qty=total)
     _insert_success(db, sj="SJ-ONLY", po="95106", attempt=1)
-    _insert_success(
-        db,
-        sj="SJ-ONLY",
-        po="95106",
-        attempt=2,
-        photo_ids=["evid:delivery-photo:SJ-ONLY:v3", "evid:delivery-photo:SJ-ONLY:v4"],
-        sig_id="evid:delivery-signature:SJ-ONLY:v2",
-    )
+    with pytest.raises(DuplicateKeyError):
+        _insert_success(
+            db,
+            sj="SJ-ONLY",
+            po="95106",
+            attempt=2,
+            photo_ids=["evid:delivery-photo:SJ-ONLY:v3", "evid:delivery-photo:SJ-ONLY:v4"],
+            sig_id="evid:delivery-signature:SJ-ONLY:v2",
+        )
     _, wf, progress = _progress(db)
     delivered = progress["shipping"]["qty_delivered"]
     assert delivered == total
@@ -869,43 +907,22 @@ def test_failed_event_only_invalid(db: Database) -> None:
 
 
 def test_retry_same_evidence_no_double_count(db: Database) -> None:
-    """18: dua event sukses mengacu evidence yang sama → Qty sekali."""
+    """18: idempotensi PR #6 — satu sukses per SJ; Qty tidak double-count."""
+    from pymongo.errors import DuplicateKeyError
+
     _sync_po(db)
     _clear(db)
     po, _, _ = _progress(db)
     half = qty_po_total(po) / 2
     _insert_note(db, sj="SJ-SAME", po="95106", qty=half)
-    photos = [
-        "evid:delivery-photo:SJ-SAME:v1",
-        "evid:delivery-photo:SJ-SAME:v2",
-    ]
-    sig = "evid:delivery-signature:SJ-SAME:v1"
-    # Evidence di-attach ke attempt-1 (idempotensi PR #6 mengembalikan event yang sama).
-    event_id = "delivery:SJ-SAME:attempt-1"
-    for pid in photos:
-        _insert_evidence(
-            db,
-            evidence_id=pid,
-            scope="delivery-photo",
-            scope_id="SJ-SAME",
-            delivery_event_id=event_id,
-            delivery_attempt=1,
-        )
-    _insert_evidence(
-        db,
-        evidence_id=sig,
-        scope="delivery-signature",
-        scope_id="SJ-SAME",
-        delivery_event_id=event_id,
-        delivery_attempt=1,
-    )
-    for attempt in (1, 2):
+    photos, sig = _insert_success(db, sj="SJ-SAME", po="95106", attempt=1)
+    with pytest.raises(DuplicateKeyError):
         db["delivery_events"].insert_one(
             {
-                "delivery_event_id": f"delivery:SJ-SAME:attempt-{attempt}",
+                "delivery_event_id": "delivery:SJ-SAME:attempt-2",
                 "accurate_sj_id": "SJ-SAME",
                 "accurate_po_id": "95106",
-                "attempt": attempt,
+                "attempt": 2,
                 "status": "berhasil",
                 "recipient_name": "Penerima",
                 "photo_evidence_ids": photos,

@@ -114,6 +114,18 @@ export function mapHeaderToPoRow(doc: Record<string, unknown>): PoRow | null {
     userName: formatAccurateLabel(header.user_name || header.userName),
     bufferLabel: formatAccurateLabel(header.buffer_label || header.bufferLabel),
     notes: formatAccurateLabel(header.notes),
+    addressPicName: formatAccurateLabel(
+      header.address_pic_name || header.addressPicName,
+    ),
+    printUserName: formatAccurateLabel(
+      header.print_user_name || header.printUserName,
+    ),
+    createdById: formatAccurateLabel(
+      header.created_by_id || header.createdById,
+    ),
+    priorityLabel: formatAccurateLabel(
+      header.priority_label || header.priorityLabel,
+    ),
     totalQtyDisplay: items
       .map((i) => `${i.qty.toLocaleString("id-ID")} ${i.unit}`)
       .join(" + "),
