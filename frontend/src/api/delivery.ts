@@ -284,3 +284,63 @@ export async function fetchDeliveryDetail(
 ): Promise<DeliveryDetail> {
   return request(`/api/delivery/${encodeURIComponent(sjId)}`);
 }
+
+/** Alasan soft-delete wajib (≥3), selaras validasi backend. */
+export const SOFT_DELETE_REASON_MIN = 3;
+
+export function assertSoftDeleteReason(reason: string): string {
+  const trimmed = reason.trim();
+  if (trimmed.length < SOFT_DELETE_REASON_MIN) {
+    throw new DeliveryApiError(
+      `Alasan soft-delete wajib (min. ${SOFT_DELETE_REASON_MIN} karakter).`,
+      422,
+    );
+  }
+  return trimmed;
+}
+
+/** Pesan UI untuk status HTTP soft-delete yang umum. */
+export function softDeleteEvidenceErrorMessage(err: unknown): string {
+  if (err instanceof DeliveryApiError) {
+    const detail = err.message?.trim();
+    if (err.status === 403) {
+      return detail
+        ? `${detail} (403)`
+        : "Izin manage_evidence ditolak (403).";
+    }
+    if (err.status === 404) {
+      return detail
+        ? `${detail} (404)`
+        : "Bukti tidak ditemukan atau sudah di-soft-delete (404).";
+    }
+    if (err.status === 409) {
+      return detail ? `${detail} (409)` : "Konflik soft-delete (409).";
+    }
+    if (err.status === 0) {
+      return detail || "Koneksi gagal — soft-delete tidak dijalankan.";
+    }
+    return detail || `Soft-delete gagal (HTTP ${err.status}).`;
+  }
+  if (err instanceof Error) return err.message;
+  return "Soft-delete bukti gagal.";
+}
+
+/**
+ * Soft-delete bukti pengiriman — file/audit tetap; butuh manage_evidence.
+ * POST /api/delivery/evidence/soft-delete
+ * Sukses hanya setelah respons backend OK; bukan hard delete.
+ */
+export async function softDeleteDeliveryEvidence(
+  evidenceId: string,
+  reason: string,
+): Promise<{ evidence_id: string; deleted?: boolean }> {
+  const safeReason = assertSoftDeleteReason(reason);
+  const id = evidenceId.trim();
+  if (!id) {
+    throw new DeliveryApiError("evidence_id wajib.", 422);
+  }
+  return request("/api/delivery/evidence/soft-delete", {
+    method: "POST",
+    body: JSON.stringify({ evidence_id: id, reason: safeReason }),
+  });
+}

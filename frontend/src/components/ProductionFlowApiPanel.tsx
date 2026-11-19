@@ -4,6 +4,12 @@ import {
   type FlowNode,
   type ProductionFlow,
 } from "../api/analytics";
+import type { ProductionFlowStep } from "./ProductionFlowTrack";
+import { DesignWorkflowPanel } from "./DesignWorkflowPanel";
+import { PaymentWorkflowPanel } from "./PaymentWorkflowPanel";
+
+const DESIGN_NODE_IDS = new Set(["flow-design", "flow-approval-design"]);
+const PAYMENT_NODE_IDS = new Set(["flow-payment", "flow-approval-payment"]);
 
 function statusLabel(status: FlowNode["status"]): string {
   if (status === "selesai") return "Selesai";
@@ -12,8 +18,17 @@ function statusLabel(status: FlowNode["status"]): string {
   return "Menunggu";
 }
 
+type Props = {
+  /** Tahap terpilih dari track visual — menyorot / membuka rincian node. */
+  selectedStageId?: string;
+  onStageFocus?: (step: ProductionFlowStep) => void;
+};
+
 /** Alur Produksi 15 node — status dari state backend, bukan posisi visual. */
-export function ProductionFlowApiPanel() {
+export function ProductionFlowApiPanel({
+  selectedStageId,
+  onStageFocus,
+}: Props) {
   const [flows, setFlows] = useState<ProductionFlow[]>([]);
   const [activePo, setActivePo] = useState<string | null>(null);
   const [activeNode, setActiveNode] = useState<FlowNode | null>(null);
@@ -40,6 +55,12 @@ export function ProductionFlowApiPanel() {
   }, [load]);
 
   const flow = flows.find((f) => f.accurate_po_id === activePo) || flows[0] || null;
+
+  useEffect(() => {
+    if (!flow || !selectedStageId) return;
+    const node = flow.nodes.find((n) => n.id === selectedStageId);
+    if (node) setActiveNode(node);
+  }, [flow, selectedStageId]);
 
   return (
     <div data-testid="production-flow-api-panel">
@@ -87,30 +108,44 @@ export function ProductionFlowApiPanel() {
                 </tr>
               </thead>
               <tbody>
-                {flow.nodes.map((node, index) => (
-                  <tr
-                    key={node.id}
-                    className={node.status === "tidak_berlaku" ? "ep-row-muted" : undefined}
-                    onClick={() => setActiveNode(node)}
-                  >
-                    <td>{index + 1}</td>
-                    <td>{node.label}</td>
-                    <td>{statusLabel(node.status)}</td>
-                    <td>{node.detail}</td>
-                    <td>
-                      <button
-                        type="button"
-                        className="ep-btn"
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          setActiveNode(node);
-                        }}
-                      >
-                        Rincian
-                      </button>
-                    </td>
-                  </tr>
-                ))}
+                {flow.nodes.map((node, index) => {
+                  const highlighted = node.id === selectedStageId;
+                  return (
+                    <tr
+                      key={node.id}
+                      className={
+                        node.status === "tidak_berlaku"
+                          ? "ep-row-muted"
+                          : highlighted
+                            ? "ep-row-active"
+                            : undefined
+                      }
+                      data-selected={highlighted ? "true" : undefined}
+                      onClick={() => {
+                        setActiveNode(node);
+                        onStageFocus?.({ id: node.id, label: node.label });
+                      }}
+                    >
+                      <td>{index + 1}</td>
+                      <td>{node.label}</td>
+                      <td>{statusLabel(node.status)}</td>
+                      <td>{node.detail}</td>
+                      <td>
+                        <button
+                          type="button"
+                          className="ep-btn"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            setActiveNode(node);
+                            onStageFocus?.({ id: node.id, label: node.label });
+                          }}
+                        >
+                          Rincian
+                        </button>
+                      </td>
+                    </tr>
+                  );
+                })}
               </tbody>
             </table>
           </div>
@@ -144,6 +179,20 @@ export function ProductionFlowApiPanel() {
                     <dt>Sumber</dt>
                     <dd>State operasional MongoDB V4</dd>
                   </dl>
+                  {DESIGN_NODE_IDS.has(activeNode.id) ? (
+                    <DesignWorkflowPanel
+                      accuratePoId={flow.accurate_po_id}
+                      poNo={flow.po_no}
+                      onChanged={() => void load()}
+                    />
+                  ) : null}
+                  {PAYMENT_NODE_IDS.has(activeNode.id) ? (
+                    <PaymentWorkflowPanel
+                      accuratePoId={flow.accurate_po_id}
+                      poNo={flow.po_no}
+                      onChanged={() => void load()}
+                    />
+                  ) : null}
                 </div>
               </div>
             </div>

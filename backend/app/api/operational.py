@@ -16,8 +16,10 @@ from app.auth.permissions import PERM_MANAGE_SETTINGS, has_permission
 from app.db import get_db
 from app.domain.operational import OPERATIONAL_ROLES, TASK_ACTIONS
 from app.repositories import master_repository as master
+from app.repositories import product_master_repository as products
 from app.repositories import task_repository as tasks
 from app.services import task_engine
+from app.services.audit_log import append_audit_event
 from app.services.index_preflight import MissingRequiredIndexError
 
 router = APIRouter(prefix="/api", tags=["operational"])
@@ -31,6 +33,11 @@ class RoleActionsRequest(BaseModel):
     role: str = Field(min_length=1)
     task_type: str = Field(min_length=1)
     actions: list[str] = Field(default_factory=list)
+
+
+class ProductScreenRequest(BaseModel):
+    item_code: str = Field(min_length=1, max_length=120)
+    screen_size: str = Field(default="", max_length=120)
 
 
 class ConfirmTaskRequest(BaseModel):
@@ -143,6 +150,63 @@ def put_role_actions(
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, str(exc)) from exc
     except LookupError as exc:
         raise HTTPException(status.HTTP_404_NOT_FOUND, str(exc)) from exc
+
+
+@router.get("/master/products")
+def get_master_products(
+    auth: AuthContext = Depends(require_session),
+) -> dict[str, Any]:
+    """Daftar Master Produk (ukuran screen). Tanpa seed ukuran."""
+    db = get_db()
+    try:
+        items = products.list_products(db)
+    except MissingRequiredIndexError as exc:
+        mapped = _map_master_errors(exc)
+        assert mapped is not None
+        raise mapped from exc
+    return {
+        "items": items,
+        "screen_unset_label": products.SCREEN_UNSET,
+    }
+
+
+@router.put("/master/products/screen-size")
+def put_product_screen_size(
+    body: ProductScreenRequest,
+    auth: AuthContext = Depends(require_csrf),
+) -> dict[str, Any]:
+    """Atur ukuran screen per item_code — permission settings.manage."""
+    _require_settings_permission(auth)
+    db = get_db()
+    try:
+        doc = products.upsert_product_screen_size(
+            db,
+            item_code=body.item_code,
+            screen_size=body.screen_size,
+            actor_email=str(auth.user.get("email_normalized") or ""),
+        )
+    except MissingRequiredIndexError as exc:
+        mapped = _map_master_errors(exc)
+        assert mapped is not None
+        raise mapped from exc
+    except ValueError as exc:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, str(exc)) from exc
+    append_audit_event(
+        db,
+        action="master.product.screen_size.set",
+        actor_email=str(auth.user.get("email_normalized") or ""),
+        target_email=None,
+        detail={
+            "item_code": doc.get("item_code"),
+            "screen_size": doc.get("screen_size") or None,
+        },
+    )
+    return {
+        "item": doc,
+        "display_screen_size": products.screen_size_for_item(
+            db, str(doc.get("item_code") or "")
+        ),
+    }
 
 
 @router.get("/tasks")

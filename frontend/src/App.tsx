@@ -10,7 +10,6 @@ import { InboxPage } from "./pages/InboxPage";
 import { LoginPage } from "./pages/LoginPage";
 import { BufferStockPage } from "./pages/BufferStockPage";
 import { DeliveryPage } from "./pages/DeliveryPage";
-import { PlaceholderModulePage } from "./pages/PlaceholderModulePage";
 import { ProductionFlowPage } from "./pages/ProductionFlowPage";
 import { SettingsMasterPage } from "./pages/SettingsMasterPage";
 import { TeamTaskPage } from "./pages/TeamTaskPage";
@@ -96,13 +95,7 @@ export default function App() {
         />
         <Route
           path="qc"
-          element={
-            <PlaceholderModulePage
-              title="Hasil Produksi & QC"
-              subtitle="Hasil cetak dan QC — kerangka navigasi."
-              nextHint="Pemisahan qty cetak vs qty lolos QC + gate siap kirim."
-            />
-          }
+          element={<Navigate to="/app/tasks/helper" replace />}
         />
         <Route path="delivery" element={<DeliveryPage />} />
         <Route path="reports" element={<ReportsPage />} />

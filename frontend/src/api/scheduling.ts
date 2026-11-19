@@ -27,6 +27,8 @@ export type LineSchedule = {
   qty_allocated: number;
   qty_unallocated: number;
   qty_printed: number;
+  /** Dari Master Produk; kosong → "Belum diatur". */
+  screen_size?: string;
   allocations: Allocation[];
   gates: { design: GateState; payment: GateState };
   scheduling_unlocked: boolean;
@@ -85,6 +87,7 @@ export async function createAllocations(
   lineId: string,
   allocations: { operator_email: string; qty: number }[],
   idempotencyKey: string,
+  scheduleDate?: string,
 ): Promise<{ allocations: Allocation[]; duplicate: boolean }> {
   return request(
     `/api/scheduling/${encodeURIComponent(accuratePoId)}/lines/${encodeURIComponent(
@@ -92,7 +95,11 @@ export async function createAllocations(
     )}/allocations`,
     {
       method: "POST",
-      body: JSON.stringify({ allocations, idempotency_key: idempotencyKey }),
+      body: JSON.stringify({
+        allocations,
+        idempotency_key: idempotencyKey,
+        ...(scheduleDate ? { schedule_date: scheduleDate } : {}),
+      }),
     },
   );
 }

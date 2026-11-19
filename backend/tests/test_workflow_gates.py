@@ -260,11 +260,46 @@ def test_bypass_requires_permission_and_is_audited(db: Database) -> None:
         payment_service.bypass_payment_gate(
             db, OPERATOR, accurate_po_id=PO_ID, reason="coba bypass"
         )
+    # Super Admin lolos via can_act; bukan hardcode role Direktur/Holding.
     doc = payment_service.bypass_payment_gate(
         db, OWNER, accurate_po_id=PO_ID, reason="Disetujui Owner tertulis"
     )
     assert doc["payment"]["state"] == gates.GATE_OPEN
     assert db["audit_logs"].count_documents({"action": "payment.gate.bypass"}) == 1
+
+
+def test_bypass_via_master_grant_not_hardcoded_role(db: Database) -> None:
+    """RULE 04 — grant Master payment-bypass/approve membuka bypass untuk role operasional."""
+    from app.repositories import master_repository as master
+
+    _sync_po(db)
+    head = {
+        "email_normalized": "kp@eternal.local",
+        "role": "user",
+        "operational_role": "production-head",
+    }
+    with pytest.raises(payment_service.PaymentPermissionError):
+        payment_service.bypass_payment_gate(
+            db, head, accurate_po_id=PO_ID, reason="tanpa grant"
+        )
+    master.set_role_actions(
+        db,
+        role="production-head",
+        task_type="payment-bypass",
+        actions=["approve"],
+    )
+    with pytest.raises(ValueError, match="Alasan"):
+        payment_service.bypass_payment_gate(
+            db, head, accurate_po_id=PO_ID, reason="   "
+        )
+    doc = payment_service.bypass_payment_gate(
+        db, head, accurate_po_id=PO_ID, reason="Izin Master untuk KP"
+    )
+    assert doc["payment"]["state"] == gates.GATE_OPEN
+    assert (doc["payment"].get("detail") or {}).get("bypass") is True
+    assert db["audit_logs"].count_documents(
+        {"action": "payment.gate.bypass", "actor_email": "kp@eternal.local"}
+    ) == 1
 
 
 def test_bypass_is_not_reverted_by_later_reconciliation(db: Database) -> None:

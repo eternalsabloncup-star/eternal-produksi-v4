@@ -229,6 +229,27 @@ def test_sample_versioning_reject_then_approve(db: Database) -> None:
     assert rejected["status"] == samples.STATUS_REJECTED
     assert rejected["reject_reason"] == "Warna meleset"
 
+    # RULE 03 — penolakan mengembalikan tugas ke operator (bukan Designer).
+    sample_tasks = tasks.list_tasks(db, task_type="konfirmasi-sample")
+    sample_task = next(
+        t for t in sample_tasks if (t.get("ref") or {}).get("allocation_id") == alloc_a
+    )
+    assert sample_task["status"] == tasks.TASK_STATUS_OPEN
+    assert sample_task["assigned_role"] == "operator"
+    assert sample_task["context"].get("needs_resubmit") is True
+    assert sample_task["context"].get("reject_reason") == "Warna meleset"
+    approval_tasks = tasks.list_tasks(db, task_type="approval-sampel")
+    approval = next(
+        t for t in approval_tasks if (t.get("ref") or {}).get("allocation_id") == alloc_a
+    )
+    assert approval["status"] == tasks.TASK_STATUS_DONE
+    designer_open = [
+        t
+        for t in tasks.list_tasks(db, task_type="design")
+        if t.get("status") == tasks.TASK_STATUS_OPEN
+    ]
+    assert designer_open == []
+
     # Cetak tetap terkunci selama belum ada sampel approved.
     with pytest.raises(prod.ProductionGateError, match="Sampel"):
         prod.confirm_print(
@@ -249,6 +270,7 @@ def test_sample_versioning_reject_then_approve(db: Database) -> None:
     assert [s["version"] for s in all_versions] == [1, 2]
     assert all_versions[0]["status"] == samples.STATUS_REJECTED
     assert all_versions[1]["status"] == samples.STATUS_APPROVED
+    # Approval v1 tidak berlaku untuk sampel baru — v1 tetap rejected.
 
 
 def test_sample_approval_does_not_unlock_other_allocation(db: Database) -> None:

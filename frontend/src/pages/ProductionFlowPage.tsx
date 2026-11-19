@@ -23,7 +23,10 @@ export function ProductionFlowPage() {
           selectedId={selected.id}
           onSelect={setSelected}
         />
-        <ProductionFlowApiPanel />
+        <ProductionFlowApiPanel
+          selectedStageId={selected.id}
+          onStageFocus={setSelected}
+        />
       </div>
     );
   }

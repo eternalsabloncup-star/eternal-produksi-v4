@@ -30,6 +30,8 @@ type Props = {
   onConfirmLoading: () => void;
   onCancelLoading: () => void;
   onDiscrepancy: () => void;
+  /** Soft-delete bukti (audit tetap). */
+  onSoftDeleteEvidence?: (evidenceId: string, reason: string) => void;
   onClose: () => void;
 };
 
@@ -46,6 +48,7 @@ export function DeliverySjDetailModal({
   onConfirmLoading,
   onCancelLoading,
   onDiscrepancy,
+  onSoftDeleteEvidence,
   onClose,
 }: Props) {
   useEffect(() => {
@@ -296,6 +299,37 @@ export function DeliverySjDetailModal({
               <p className="ep-po-confirm-hint">
                 Bukti aktif: {photos.length} foto · {signatures.length} tanda tangan
               </p>
+              {onSoftDeleteEvidence && (photos.length > 0 || signatures.length > 0) ? (
+                <div className="ep-filterbar" data-testid="soft-delete-evidence">
+                  <span className="ep-po-confirm-hint">
+                    Soft delete menyembunyikan bukti dari daftar aktif; file &amp; audit
+                    tetap tersimpan.
+                  </span>
+                  {[...photos, ...signatures].map((ev) => (
+                    <button
+                      key={ev.evidence_id}
+                      type="button"
+                      className="ep-btn sm"
+                      disabled={busy}
+                      title={ev.filename || ev.evidence_id}
+                      onClick={() => {
+                        const reason = window.prompt(
+                          "Alasan soft-delete bukti (wajib, min. 3 karakter). File & audit tetap tersimpan.",
+                        );
+                        if (!reason || reason.trim().length < 3) {
+                          window.alert(
+                            "Soft-delete dibatalkan: alasan wajib minimal 3 karakter.",
+                          );
+                          return;
+                        }
+                        onSoftDeleteEvidence(ev.evidence_id, reason.trim());
+                      }}
+                    >
+                      Soft-delete {ev.filename || ev.evidence_id.slice(0, 8)}
+                    </button>
+                  ))}
+                </div>
+              ) : null}
             </>
           ) : null}
 

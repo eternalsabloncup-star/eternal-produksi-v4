@@ -50,10 +50,14 @@ export function resolveShellDataMode(
   if (operationalPrefixes.some((p) => pathname === p || pathname.startsWith(`${p}/`))) {
     return inboxMode === "api" ? "api" : "demo";
   }
-  // Modul workflow lokal Cursor — simulasi frontend, bukan Accurate/Mongo.
-  const demoPrefixes = ["/app/control", "/app/samples"];
-  if (demoPrefixes.some((p) => pathname === p || pathname.startsWith(`${p}/`))) {
-    return "demo";
+  // Alias legacy: /control dan /samples diarahkan ke schedule/buffer (App.tsx).
+  // Mode mengikuti sumber Inbox, bukan DEMO paksa.
+  if (pathname.startsWith("/app/control") || pathname.startsWith("/app/samples")) {
+    return inboxMode === "api" ? "api" : "demo";
+  }
+  // /app/qc dialihkan ke tugas Helper — indikator mengikuti operational tasks.
+  if (pathname.startsWith("/app/qc")) {
+    return inboxMode === "api" ? "api" : "demo";
   }
   return "shell";
 }

@@ -22,6 +22,8 @@ from app.repositories.po_repository import po_collection
 from app.services import production_service as production
 
 NOT_CONFIGURED = "Belum dikonfigurasi"
+# Identitas PO/line tidak lengkap — jangan anggap qty Ready = 0.
+READY_INCOMPLETE = "Data tidak lengkap"
 
 NODE_DONE = "selesai"
 NODE_RUNNING = "berjalan"
@@ -56,10 +58,38 @@ def is_buffer_po(po_doc: dict[str, Any]) -> bool:
 # --- Buffer Stock ----------------------------------------------------------
 
 
+def compute_ready_gudang(
+    *,
+    qty_printed: float,
+    qty_delivered_confirmed: float,
+) -> dict[str, Any]:
+    """Ready Gudang = Qty Sudah Cetak − Qty Konfirmasi Terkirim (Owner).
+
+    Tidak memakai qty SJ/Loading/jadwal. Nilai negatif = ketidaksesuaian jelas
+    (terkirim > cetak), bukan di-nol-kan diam-diam.
+    """
+    printed = float(qty_printed)
+    shipped = float(qty_delivered_confirmed)
+    ready = printed - shipped
+    return {
+        "qty_ready_warehouse": ready,
+        "ready_mismatch": ready < 0,
+        "qty_over_shipped": max(-ready, 0.0),
+    }
+
+
 def buffer_stock_rows(db: Database) -> dict[str, Any]:
     """Satu baris per item line pada PO beratribut Buffer."""
     rows: list[dict[str, Any]] = []
-    totals = {"ordered": 0.0, "printed": 0.0, "remaining": 0.0, "shipped": 0.0}
+    totals = {
+        "ordered": 0.0,
+        "printed": 0.0,
+        "remaining": 0.0,
+        "shipped": 0.0,
+        "ready": 0.0,
+    }
+    ready_incomplete_rows = 0
+    ready_mismatch_rows = 0
 
     for po_doc in po_collection(db).find({"origin": "accurate"}, {"_id": 0}):
         if not is_buffer_po(po_doc):
@@ -69,16 +99,35 @@ def buffer_stock_rows(db: Database) -> dict[str, Any]:
         for item in header.get("items") or []:
             if not isinstance(item, dict):
                 continue
-            line_id = str(item.get("accurate_line_id") or "")
+            line_id = str(item.get("accurate_line_id") or "").strip()
             ordered = float(item.get("qty") or 0)
+            identity_ok = bool(accurate_po_id) and bool(line_id)
             printed = (
                 production.printed_total_for_line(
                     db, accurate_po_id=accurate_po_id, accurate_line_id=line_id
                 )
-                if item.get("process_kind") == "Cetak"
+                if identity_ok and item.get("process_kind") == "Cetak"
                 else 0.0
             )
-            shipped = _delivered_qty_for_line(db, accurate_po_id, line_id)
+            shipped = (
+                _delivered_qty_for_line(db, accurate_po_id, line_id)
+                if identity_ok
+                else 0.0
+            )
+            if identity_ok:
+                ready_info = compute_ready_gudang(
+                    qty_printed=printed, qty_delivered_confirmed=shipped
+                )
+                ready_value: float | str = ready_info["qty_ready_warehouse"]
+                ready_mismatch = bool(ready_info["ready_mismatch"])
+                if ready_mismatch:
+                    ready_mismatch_rows += 1
+                totals["ready"] += float(ready_value)
+            else:
+                ready_value = READY_INCOMPLETE
+                ready_mismatch = False
+                ready_incomplete_rows += 1
+
             rows.append(
                 {
                     "accurate_po_id": accurate_po_id,
@@ -94,9 +143,10 @@ def buffer_stock_rows(db: Database) -> dict[str, Any]:
                     "qty_ordered": ordered,
                     "qty_printed": printed,
                     "qty_remaining": max(ordered - printed, 0),
-                    # Rumus saldo/mutasi gudang Buffer belum diputuskan Owner.
-                    "qty_ready_warehouse": NOT_CONFIGURED,
-                    "qty_shipped": shipped,
+                    # Owner: Ready = cetak terkonfirmasi − terkirim terkonfirmasi.
+                    "qty_ready_warehouse": ready_value,
+                    "ready_mismatch": ready_mismatch,
+                    "qty_shipped": shipped if identity_ok else READY_INCOMPLETE,
                     "buffer_status": NOT_CONFIGURED,
                     "sales_pic": header.get("seller") or NOT_CONFIGURED,
                     "process_kind": item.get("process_kind"),
@@ -105,7 +155,12 @@ def buffer_stock_rows(db: Database) -> dict[str, Any]:
             totals["ordered"] += ordered
             totals["printed"] += printed
             totals["remaining"] += max(ordered - printed, 0)
-            totals["shipped"] += shipped
+            if identity_ok:
+                totals["shipped"] += shipped
+
+    kpi_ready: float | str = totals["ready"]
+    if ready_incomplete_rows and not rows:
+        kpi_ready = READY_INCOMPLETE
 
     return {
         "items": rows,
@@ -113,14 +168,16 @@ def buffer_stock_rows(db: Database) -> dict[str, Any]:
             "total_buffer_ordered": totals["ordered"],
             "qty_printed": totals["printed"],
             "qty_remaining": totals["remaining"],
-            "qty_ready_warehouse": NOT_CONFIGURED,
+            "qty_ready_warehouse": kpi_ready,
             "qty_shipped": totals["shipped"],
+            "ready_mismatch_rows": ready_mismatch_rows,
+            "ready_incomplete_rows": ready_incomplete_rows,
         },
         "not_configured": [
-            "qty_ready_warehouse",
             "buffer_status",
             "outlet_warehouse",
         ],
+        "ready_formula": "qty_printed_confirmed - qty_delivery_success_confirmed",
         "source": "mongodb",
     }
 
@@ -128,14 +185,29 @@ def buffer_stock_rows(db: Database) -> dict[str, Any]:
 def _delivered_qty_for_line(
     db: Database, accurate_po_id: str, accurate_line_id: str
 ) -> float:
-    """Qty terkirim = item SJ pada pengiriman yang berstatus berhasil."""
+    """Qty terkirim = qty item pada SJ yang punya ≥1 event sukses.
+
+    - Hanya status berhasil (bukan gagal / loading / SJ dibuat saja).
+    - Satu SJ dihitung sekali meski ada retry/konfirmasi berulang.
+    - SJ yang sudah ``superseded_by`` tidak dihitung (hindari dobel revisi).
+    - Identitas line wajib cocok ``accurate_line_id`` (tidak ditebak nama barang).
+    """
+    if not accurate_po_id or not accurate_line_id:
+        return 0.0
     total = 0.0
+    seen_sj: set[str] = set()
     for note in deliveries.list_delivery_notes(db, accurate_po_id=accurate_po_id):
-        events = deliveries.list_delivery_events(db, note["accurate_sj_id"])
-        if not any(e["status"] == deliveries.DELIVERY_SUCCESS for e in events):
+        if note.get("superseded_by"):
             continue
+        sj_id = str(note.get("accurate_sj_id") or "")
+        if not sj_id or sj_id in seen_sj:
+            continue
+        events = deliveries.list_delivery_events(db, sj_id)
+        if not any(e.get("status") == deliveries.DELIVERY_SUCCESS for e in events):
+            continue
+        seen_sj.add(sj_id)
         for item in note.get("items") or []:
-            if str(item.get("accurate_line_id")) == accurate_line_id:
+            if str(item.get("accurate_line_id") or "") == accurate_line_id:
                 total += float(item.get("qty") or 0)
     return total
 

@@ -23,6 +23,8 @@ class UserPublic(BaseModel):
 class MeResponse(BaseModel):
     user: UserPublic
     csrf_token: str
+    # Capability UI (otorisasi tetap di backend).
+    capabilities: dict[str, bool] = Field(default_factory=dict)
 
 
 class MessageResponse(BaseModel):

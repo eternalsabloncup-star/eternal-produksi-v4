@@ -22,6 +22,8 @@ type AuthState = {
   loading: boolean;
   /** True when role is super_admin — full module access, no role-based menu hiding. */
   isSuperAdmin: boolean;
+  /** Capability dari /me (Master); bukan hardcode role. */
+  capabilities: Record<string, boolean>;
   login: (email: string, password: string) => Promise<void>;
   logout: () => Promise<void>;
   refresh: () => Promise<void>;
@@ -32,16 +34,19 @@ const AuthContext = createContext<AuthState | null>(null);
 export function AuthProvider({ children }: { children: ReactNode }) {
   const [user, setUser] = useState<UserPublic | null>(null);
   const [csrfToken, setCsrfToken] = useState<string | null>(null);
+  const [capabilities, setCapabilities] = useState<Record<string, boolean>>({});
   const [loading, setLoading] = useState(true);
 
   const applyMe = useCallback((me: MeResponse | null) => {
     if (!me) {
       setUser(null);
       setCsrfToken(null);
+      setCapabilities({});
       return;
     }
     setUser(me.user);
     setCsrfToken(me.csrf_token);
+    setCapabilities(me.capabilities ?? {});
   }, []);
 
   const refresh = useCallback(async () => {
@@ -91,11 +96,12 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       csrfToken,
       loading,
       isSuperAdmin: isSuperAdmin(user?.role),
+      capabilities,
       login,
       logout,
       refresh,
     }),
-    [user, csrfToken, loading, login, logout, refresh],
+    [user, csrfToken, loading, capabilities, login, logout, refresh],
   );
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;

@@ -2681,3 +2681,19 @@
     padding: 0 11px;
   }
 }
+
+/* Baris tabel operasional */
+.ep-row-danger td,
+.ep-text-danger {
+  color: var(--ep-red);
+}
+.ep-row-muted td {
+  opacity: 0.55;
+}
+.ep-row-active td {
+  background: var(--ep-primary-soft);
+}
+.ep-muted {
+  color: #6b7c8a;
+  font-style: italic;
+}
