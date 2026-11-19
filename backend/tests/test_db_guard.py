@@ -18,6 +18,9 @@ def test_extract_ports() -> None:
     assert 27017 in extract_mongo_ports(
         "mongodb://u:p@127.0.0.1:27017/?authSource=admin&replicaSet=rs0"
     )
+    assert 27019 in extract_mongo_ports(
+        "mongodb://u:p@127.0.0.1:27019/?authSource=eternal_v4_test_sj_activation"
+    )
 
 
 def test_block_legacy_port_outside_test() -> None:
@@ -48,31 +51,47 @@ def test_block_ops_db_name_even_on_27018() -> None:
     assert exc.value.code == "mongo_legacy_db_blocked"
 
 
+def test_block_production_port_27018_for_test_sync() -> None:
+    """27018 = V4 production — dilarang untuk jalur sync test meski nama DB test."""
+    with pytest.raises(UnsafeMongoTargetError) as exc:
+        assert_safe_mongo_sync_target(
+            uri=(
+                "mongodb://user:pass@127.0.0.1:27018/"
+                "?authSource=eternal_v4_test_manual"
+            ),
+            db_name="eternal_v4_test_manual",
+            app_env="development",
+        )
+    assert exc.value.code == "mongo_production_port_blocked"
+
+
 def test_block_non_test_db_on_safe_port() -> None:
     with pytest.raises(UnsafeMongoTargetError) as exc:
         assert_safe_mongo_sync_target(
-            uri="mongodb://127.0.0.1:27018",
+            uri="mongodb://127.0.0.1:27019",
             db_name="random_db",
             app_env="development",
         )
     assert exc.value.code == "mongo_non_test_db_blocked"
 
 
-def test_allow_isolated_test_on_27018() -> None:
+def test_allow_isolated_test_on_27019() -> None:
     assert_safe_mongo_sync_target(
         uri=(
-            "mongodb://user:pass@127.0.0.1:27018/"
-            "?authSource=eternal_v4_test_manual"
+            "mongodb://user:pass@127.0.0.1:27019/"
+            "?authSource=eternal_v4_test_sj_activation"
+            "&replicaSet=eternalV4TestRS"
         ),
-        db_name="eternal_v4_test_manual",
+        db_name="eternal_v4_test_sj_activation",
         app_env="development",
+        expected_auth_source="eternal_v4_test_sj_activation",
     )
 
 
 def test_auth_source_required_outside_test() -> None:
     with pytest.raises(UnsafeMongoTargetError) as exc:
         assert_safe_mongo_sync_target(
-            uri="mongodb://user:pass@127.0.0.1:27018/",
+            uri="mongodb://user:pass@127.0.0.1:27019/",
             db_name="eternal_v4_test_manual",
             app_env="development",
         )
@@ -82,7 +101,7 @@ def test_auth_source_required_outside_test() -> None:
 def test_auth_source_must_match_test_db() -> None:
     with pytest.raises(UnsafeMongoTargetError) as exc:
         assert_safe_mongo_sync_target(
-            uri="mongodb://user:pass@127.0.0.1:27018/?authSource=admin",
+            uri="mongodb://user:pass@127.0.0.1:27019/?authSource=admin",
             db_name="eternal_v4_test_manual",
             app_env="development",
         )

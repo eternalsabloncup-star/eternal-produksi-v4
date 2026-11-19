@@ -69,6 +69,14 @@ export type PoRow = {
   userName: string;
   bufferLabel: string;
   notes: string;
+  /** PIC alamat customer — bukan konfirmasi penerima aktual. */
+  addressPicName?: string;
+  /** User cetak Accurate (printUserName) — bukan creator. */
+  printUserName?: string;
+  /** ID pembuat Accurate (createdBy) — tanpa lookup nama. */
+  createdById?: string;
+  /** Prioritas dari charField4 / searchCharField4.name. */
+  priorityLabel?: string;
   /** Teks total kuantitas dari dokumen sumber (tanpa konversi satuan). */
   totalQtyDisplay: string;
   itemCount: number;

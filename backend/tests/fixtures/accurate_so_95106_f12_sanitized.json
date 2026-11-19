@@ -1,0 +1,83 @@
+{
+  "s": true,
+  "d": {
+    "id": 95106,
+    "number": "PO/18/11/2026/000010",
+    "transDate": "18/11/2026",
+    "shipDate": "21/11/2026",
+    "description": "CATATAN-SANITIZED\nPROMO-SANITIZED",
+    "masterSalesmanId": 150,
+    "printUserName": "print.user.sanitized",
+    "createdBy": 1162627,
+    "userPrinted": 1248273,
+    "charField3": "K",
+    "charField4": "Normal",
+    "charField5": "Non - Buffer",
+    "searchCharField3": { "id": "K", "name": "K" },
+    "searchCharField4": { "id": "Normal", "name": "Normal" },
+    "searchCharField5": { "id": "Non - Buffer", "name": "Non - Buffer" },
+    "toAddress": "ALAMAT-SANITIZED\nJl. Contoh No. 0, Kota Contoh 00000",
+    "paymentTerm": {
+      "id": 50,
+      "name": "TRANSFER BANK",
+      "cashOnDelivery": true
+    },
+    "shipment": {
+      "id": 150,
+      "name": "OUTLET",
+      "picName": null
+    },
+    "customer": {
+      "id": 9001,
+      "name": "PELANGGAN-SANITIZED",
+      "customerNo": "C.SANITIZED",
+      "salesman": {
+        "id": 150,
+        "number": "E.SANITIZED",
+        "name": "Sales Transaksi Sanitized"
+      },
+      "shipAddress": {
+        "id": 9002,
+        "name": "PELANGGAN-SANITIZED",
+        "picName": "PIC-SANITIZED",
+        "address": "ALAMAT-SANITIZED\nJl. Contoh No. 0, Kota Contoh 00000"
+      }
+    },
+    "detailItem": [
+      {
+        "id": 106318,
+        "quantity": "1000",
+        "salesmanName": "Sales Transaksi Sanitized",
+        "salesman1Id": 150,
+        "charField1": "Cetak",
+        "charField2": "PUTIH",
+        "searchCharField1": { "id": "Cetak", "name": "Cetak" },
+        "searchCharField2": { "id": "PUTIH", "name": "PUTIH" },
+        "detailName": "Item Cetak Sanitized",
+        "item": {
+          "id": 13300,
+          "no": "SKU-CETAK-SAN",
+          "name": "Item Cetak Sanitized"
+        },
+        "itemUnit": { "id": 50, "name": "PCS" }
+      },
+      {
+        "id": 106319,
+        "quantity": "1000",
+        "salesmanName": "Sales Transaksi Sanitized",
+        "salesman1Id": 150,
+        "charField1": "Tidak Cetak",
+        "charField2": "BENING",
+        "searchCharField1": { "id": "Tidak Cetak", "name": "Tidak Cetak" },
+        "searchCharField2": { "id": "BENING", "name": "BENING" },
+        "detailName": "Item Non-Cetak Sanitized",
+        "item": {
+          "id": 3400,
+          "no": "SKU-NON-SAN",
+          "name": "Item Non-Cetak Sanitized"
+        },
+        "itemUnit": { "id": 50, "name": "PCS" }
+      }
+    ]
+  }
+}

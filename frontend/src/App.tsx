@@ -1,10 +1,20 @@
 import { Navigate, Route, Routes } from "react-router-dom";
 import { AppShell } from "./app/AppShell";
+import { TEAM_TASK_ROLES } from "./app/nav";
 import { useAuth } from "./auth";
 import { ControlPage } from "./pages/ControlPage";
+import { DashboardPage } from "./pages/DashboardPage";
+import { DesignApprovalPage } from "./pages/DesignApprovalPage";
+import { ReportsPage } from "./pages/ReportsPage";
 import { InboxPage } from "./pages/InboxPage";
 import { LoginPage } from "./pages/LoginPage";
+import { BufferStockPage } from "./pages/BufferStockPage";
+import { DeliveryPage } from "./pages/DeliveryPage";
 import { PlaceholderModulePage } from "./pages/PlaceholderModulePage";
+import { ProductionFlowPage } from "./pages/ProductionFlowPage";
+import { SettingsMasterPage } from "./pages/SettingsMasterPage";
+import { TeamTaskPage } from "./pages/TeamTaskPage";
+import { TeamTasksSummaryPage } from "./pages/TeamTasksSummaryPage";
 
 function ProtectedRoute({ children }: { children: React.ReactNode }) {
   const { user, loading } = useAuth();
@@ -31,7 +41,7 @@ function PublicOnly({ children }: { children: React.ReactNode }) {
     );
   }
   if (user) {
-    return <Navigate to="/app/control" replace />;
+    return <Navigate to="/app/schedule" replace />;
   }
   return children;
 }
@@ -39,7 +49,7 @@ function PublicOnly({ children }: { children: React.ReactNode }) {
 export default function App() {
   return (
     <Routes>
-      <Route path="/" element={<Navigate to="/app/control" replace />} />
+      <Route path="/" element={<Navigate to="/app/schedule" replace />} />
       <Route
         path="/login"
         element={
@@ -48,6 +58,8 @@ export default function App() {
           </PublicOnly>
         }
       />
+      {/* Halaman customer — tanpa sesi internal V4. */}
+      <Route path="/approval/:token" element={<DesignApprovalPage />} />
       <Route
         path="/app"
         element={
@@ -56,48 +68,24 @@ export default function App() {
           </ProtectedRoute>
         }
       >
-        <Route index element={<Navigate to="control" replace />} />
-        <Route path="control" element={<ControlPage />} />
+        <Route index element={<Navigate to="schedule" replace />} />
+        <Route path="schedule" element={<ControlPage />} />
+        <Route path="control" element={<Navigate to="/app/schedule" replace />} />
         <Route path="inbox" element={<InboxPage />} />
-        <Route
-          path="dashboard"
-          element={
-            <PlaceholderModulePage
-              title="Dashboard"
-              subtitle="Ringkasan operasional — kerangka navigasi Task #004."
-              nextHint="KPI agregat lintas cabang dan antrean perhatian berbasis API."
-            />
-          }
-        />
-        <Route
-          path="schedule"
-          element={
-            <PlaceholderModulePage
-              title="Jadwal Produksi"
-              subtitle="Penjadwalan mesin — belum diimplementasikan."
-              nextHint="Timeline kapasitas, alokasi PO, validasi overbooking di backend."
-            />
-          }
-        />
-        <Route
-          path="tasks"
-          element={
-            <PlaceholderModulePage
-              title="Tugas Tim"
-              subtitle="Penugasan operator — kerangka saja."
-              nextHint="Tugas nyata dari status PO tanpa entri kosong/duplikat."
-            />
-          }
-        />
+        <Route path="dashboard" element={<DashboardPage />} />
+        <Route path="production-flow" element={<ProductionFlowPage />} />
+        <Route path="tasks" element={<TeamTasksSummaryPage />} />
+        {TEAM_TASK_ROLES.map((role) => (
+          <Route
+            key={role.id}
+            path={`tasks/${role.id}`}
+            element={<TeamTaskPage role={role} />}
+          />
+        ))}
+        <Route path="buffer-stock" element={<BufferStockPage />} />
         <Route
           path="samples"
-          element={
-            <PlaceholderModulePage
-              title="Approval Sampel"
-              subtitle="Persetujuan sampel — belum diimplementasikan."
-              nextHint="Gate approval sampel sebelum produksi, rule produk wajib sampel."
-            />
-          }
+          element={<Navigate to="/app/buffer-stock" replace />}
         />
         <Route
           path="qc"
@@ -109,38 +97,11 @@ export default function App() {
             />
           }
         />
-        <Route
-          path="delivery"
-          element={
-            <PlaceholderModulePage
-              title="Jadwal Pengiriman"
-              subtitle="Pengiriman — belum diimplementasikan."
-              nextHint="Bukti loading, surat jalan, foto, dan konfirmasi penerima."
-            />
-          }
-        />
-        <Route
-          path="reports"
-          element={
-            <PlaceholderModulePage
-              title="Laporan"
-              subtitle="Laporan operasional — kerangka saja."
-              nextHint="Laporan berbasis data API, bukan fixture DEMO."
-            />
-          }
-        />
-        <Route
-          path="settings"
-          element={
-            <PlaceholderModulePage
-              title="Pengaturan"
-              subtitle="Master data — pratinjau menu saja."
-              nextHint="Cabang, user/role, mesin, produk, shift, integrasi."
-            />
-          }
-        />
+        <Route path="delivery" element={<DeliveryPage />} />
+        <Route path="reports" element={<ReportsPage />} />
+        <Route path="settings" element={<SettingsMasterPage />} />
       </Route>
-      <Route path="*" element={<Navigate to="/app/control" replace />} />
+      <Route path="*" element={<Navigate to="/app/schedule" replace />} />
     </Routes>
   );
 }

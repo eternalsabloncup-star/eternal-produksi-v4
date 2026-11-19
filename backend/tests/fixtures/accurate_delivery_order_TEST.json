@@ -1,0 +1,64 @@
+{
+  "_label": "TEST — bukan payload Accurate asli",
+  "_source_note": "Struktur mengikuti columnDef + memorizeFieldDef.detailField.detailItem halaman Accurate DeliveryOrder (module DO). Seluruh nilai disintesis untuk pengujian; integrasi SJ live masih BLOCKED.",
+  "id": 770001,
+  "number": "TEST-SJ/18/11/2026/000021",
+  "transDate": "18/11/2026",
+  "customer": {
+    "id": 5501,
+    "name": "PELANGGAN-TEST A",
+    "customerNo": "C-TEST-001"
+  },
+  "customerNo": "C-TEST-001",
+  "toAddress": "ALAMAT-TEST\nJl. Uji Coba No. 0, Kota Test 00000",
+  "contactInfo": "KONTAK-TEST",
+  "poNumber": "PO-PELANGGAN-TEST-9",
+  "shipment": { "id": 3, "name": "EKSPEDISI-TEST" },
+  "description": "KETERANGAN-TEST",
+  "branch": { "id": 1, "name": "CABANG-TEST" },
+  "masterSalesman": { "id": 9, "name": "PENJUAL-TEST" },
+  "charField3": "ZONA-TEST",
+  "printedByUser": "user.cetak.test",
+  "deliveryPrintedTime": "18/11/2026 10:05:00",
+  "deliveryPackingNumber": "PACK-TEST-0001",
+  "createdByUserName": "user.pembuat.test",
+  "statusName": "Terkirim Sebagian",
+  "attachmentExist": false,
+  "detailItem": [
+    {
+      "id": 880001,
+      "seq": 1,
+      "salesOrderDetailId": 106318,
+      "salesOrder": { "id": 95106, "number": "TEST-PO/18/11/2026/000010" },
+      "item": { "id": 4101, "no": "BRG-TEST-001", "name": "Cup Test 16oz" },
+      "detailName": "Cup Test 16oz Motif A",
+      "quantity": 2000,
+      "itemUnit": { "id": 1, "name": "PCS" },
+      "warehouse": { "id": 2, "name": "GUDANG-TEST-A" },
+      "detailNotes": "CATATAN-ITEM-TEST-1"
+    },
+    {
+      "id": 880002,
+      "seq": 2,
+      "salesOrderDetailId": 106319,
+      "salesOrder": { "id": 95106, "number": "TEST-PO/18/11/2026/000010" },
+      "item": { "id": 4101, "no": "BRG-TEST-001", "name": "Cup Test 16oz" },
+      "detailName": "Cup Test 16oz Motif B",
+      "quantity": 500,
+      "itemUnit": { "id": 1, "name": "PCS" },
+      "warehouse": { "id": 2, "name": "GUDANG-TEST-A" },
+      "detailNotes": "CATATAN-ITEM-TEST-2"
+    },
+    {
+      "id": 880003,
+      "seq": 3,
+      "salesOrderDetailId": 106320,
+      "salesOrder": { "id": 95106, "number": "TEST-PO/18/11/2026/000010" },
+      "item": { "id": 4190, "no": "BRG-TEST-900", "name": "Lid Test 16oz" },
+      "detailName": "Lid Test 16oz",
+      "quantity": 20,
+      "itemUnit": { "id": 4, "name": "PACK" },
+      "warehouse": { "id": 2, "name": "GUDANG-TEST-A" }
+    }
+  ]
+}

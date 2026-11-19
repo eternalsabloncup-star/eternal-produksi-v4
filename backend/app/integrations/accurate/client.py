@@ -3,13 +3,13 @@
 Alur:
 1. Account base → POST /api/api-token.do (signed headers)
 2. open_db / ensure_db_session → (database host, session) — session boleh ""
-3. Sales Order di host database (bukan wajib sama dengan account base):
-   - /accurate/api/sales-order/list.do
-   - /accurate/api/sales-order/detail.do?id=
+3. Sales Order / Delivery Order di host database:
+   - /accurate/api/sales-order/list.do | detail.do?id=
+   - /accurate/api/delivery-order/list.do | detail.do?id=
 
 HTTP 308: update host + re-sign (jangan ikut redirect dengan signature basi).
 401: clear cache, buka ulang sesi sekali.
-Tidak menulis ke Accurate. Tidak memakai REST /sales-order/{id}.
+Tidak menulis ke Accurate (GET saja). Tidak memakai REST /{resource}/{id}.
 """
 
 from __future__ import annotations
@@ -36,6 +36,9 @@ PATH_API_TOKEN = "/api/api-token.do"
 PATH_OPEN_DB = "/api/open-db.do"  # mode OAuth / alternatif — bukan jalur API Token terbukti
 PATH_SO_LIST = "/accurate/api/sales-order/list.do"
 PATH_SO_DETAIL = "/accurate/api/sales-order/detail.do"
+# Delivery Order (Surat Jalan) — GET only; terbukti live di VPS Owner.
+PATH_DO_LIST = "/accurate/api/delivery-order/list.do"
+PATH_DO_DETAIL = "/accurate/api/delivery-order/detail.do"
 
 _MAX_ATTEMPTS = 3
 _RETRYABLE = {408, 425, 429, 500, 502, 503, 504}
@@ -286,15 +289,42 @@ class AccurateReadClient:
         return self.ensure_db_session(client)
 
     def _unwrap_detail(self, payload: dict[str, Any]) -> dict[str, Any]:
-        if "detailItem" in payload or ("id" in payload and "number" in payload):
-            return payload
-        for key in ("d", "data", "salesOrder"):
-            inner = payload.get(key)
-            if isinstance(inner, dict) and (
-                "detailItem" in inner or "id" in inner or "number" in inner
+        """Buka bungkus Accurate ``d`` / ``deliveryOrder`` / ``salesOrder`` objek.
+
+        Header DO live bisa punya ``salesOrder: false`` (boolean) — hanya
+        objek dict yang dipertimbangkan sebagai kandidat detail.
+        """
+        current: dict[str, Any] = payload
+        for _ in range(4):
+            if "detailItem" in current or (
+                "id" in current and "number" in current and "s" not in current
             ):
-                return inner
-        return payload
+                return current
+            next_inner: dict[str, Any] | None = None
+            for key in ("d", "data", "deliveryOrder", "salesOrder"):
+                inner = current.get(key)
+                if isinstance(inner, dict) and (
+                    "detailItem" in inner
+                    or "id" in inner
+                    or "number" in inner
+                    or "deliveryOrder" in inner
+                    or "d" in inner
+                ):
+                    next_inner = inner
+                    break
+            if next_inner is None:
+                return current
+            current = next_inner
+        return current
+
+    @staticmethod
+    def _unwrap_list_rows(payload: dict[str, Any]) -> list[dict[str, Any]]:
+        rows = payload.get("d") or payload.get("data") or payload.get("list") or []
+        if isinstance(rows, dict):
+            rows = rows.get("data") or rows.get("list") or []
+        if not isinstance(rows, list):
+            return []
+        return [r for r in rows if isinstance(r, dict)]
 
     def _request_on_db_host(
         self,
@@ -412,12 +442,25 @@ class AccurateReadClient:
         params: dict[str, Any] | None = None,
     ) -> list[dict[str, Any]]:
         data = self._request_on_db_host("GET", PATH_SO_LIST, params=params or {})
-        rows = data.get("d") or data.get("data") or data.get("list") or []
-        if isinstance(rows, dict):
-            rows = rows.get("data") or rows.get("list") or []
-        if not isinstance(rows, list):
-            return []
-        return [r for r in rows if isinstance(r, dict)]
+        return self._unwrap_list_rows(data)
 
     def fetch_sales_orders(self) -> list[dict[str, object]]:
         return self.fetch_sales_order_list()  # type: ignore[return-value]
+
+    def fetch_delivery_order_list(
+        self,
+        *,
+        params: dict[str, Any] | None = None,
+    ) -> list[dict[str, Any]]:
+        """GET delivery-order/list.do — read-only Surat Jalan."""
+        data = self._request_on_db_host("GET", PATH_DO_LIST, params=params or {})
+        return self._unwrap_list_rows(data)
+
+    def fetch_delivery_order_detail(self, accurate_id: str | int) -> dict[str, Any]:
+        """GET delivery-order/detail.do?id= — read-only Surat Jalan."""
+        data = self._request_on_db_host(
+            "GET",
+            PATH_DO_DETAIL,
+            params={"id": str(accurate_id)},
+        )
+        return self._unwrap_detail(data)

@@ -186,6 +186,15 @@ def test_build_client_does_not_need_mongo(monkeypatch: pytest.MonkeyPatch) -> No
     mod = _load_smoke_script()
     monkeypatch.delenv("MONGO_URL", raising=False)
     monkeypatch.delenv("MONGODB_URI", raising=False)
+    # V4_* diprioritaskan skrip — bersihkan agar uji hermetik di shell ber-env live.
+    for key in (
+        "V4_ACCURATE_ACCOUNT_BASE",
+        "V4_ACCURATE_BASE_URL",
+        "V4_ACCURATE_API_TOKEN",
+        "V4_ACCURATE_API_SIGNATURE_SECRET",
+        "V4_ACCURATE_DB_ID",
+    ):
+        monkeypatch.delenv(key, raising=False)
     monkeypatch.setenv("ACCURATE_ACCOUNT_BASE", "https://account.example")
     monkeypatch.setenv("ACCURATE_API_TOKEN", "t")
     monkeypatch.setenv("ACCURATE_API_SIGNATURE_SECRET", "s")

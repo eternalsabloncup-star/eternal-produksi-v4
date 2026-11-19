@@ -60,6 +60,11 @@ def test_sync_idempotent_no_duplicate(db: Database) -> None:
     assert db.name != "eternal_v4"
 
     first = sync_sales_order_payload(db, SAMPLE_SALES_ORDER_STRUCTURE)
+    # Field operasional V4 — sync tidak boleh menimpa.
+    db["accurate_sales_orders"].update_one(
+        {"accurate_id": "95106"},
+        {"$set": {"operational": {"inbox_status": "PO Masuk", "note": "keep-ops"}}},
+    )
     second = sync_sales_order_payload(db, SAMPLE_SALES_ORDER_STRUCTURE)
     third_payload = copy.deepcopy(SAMPLE_SALES_ORDER_STRUCTURE)
     third_payload["detailItem"][0]["charField2"] = "Merah Simulasi"
@@ -71,15 +76,20 @@ def test_sync_idempotent_no_duplicate(db: Database) -> None:
     assert first["duplicate_prevented"] is True
     assert second["duplicate_prevented"] is True
     assert third["duplicate_prevented"] is True
+    assert second["operational_preserved"] is True
+    assert third["operational_preserved"] is True
     assert count_by_accurate_id(db, "95106") == 1
 
     stored = get_by_accurate_id(db, "95106")
     assert stored is not None
     assert stored["po_no"] == "PO/18/11/2026/000010"
     assert stored["line_ids"] == ["106318", "106319"]
+    assert stored["operational"] == {"inbox_status": "PO Masuk", "note": "keep-ops"}
     header_items = stored["header"]["items"]
     assert header_items[0]["color"] == "Merah Simulasi"
     assert len(header_items) == 2
+    kinds = {i["process_kind"] for i in header_items}
+    assert kinds == {"Cetak", "Non-Cetak"}
 
 
 def test_mongo_url_alias_accepted(monkeypatch: pytest.MonkeyPatch) -> None:

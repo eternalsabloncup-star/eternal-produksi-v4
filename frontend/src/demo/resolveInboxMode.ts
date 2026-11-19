@@ -31,7 +31,28 @@ export function resolveShellDataMode(
   if (pathname.startsWith("/app/inbox")) {
     return inboxMode === "api" ? "api" : "demo";
   }
-  if (pathname.startsWith("/app/control")) {
+  // Master/Pengaturan membaca MongoDB V4 pada kedua mode.
+  if (pathname.startsWith("/app/settings")) {
+    return "api";
+  }
+  // Dashboard dan Laporan membaca read model MongoDB V4 pada kedua mode.
+  if (pathname.startsWith("/app/dashboard") || pathname.startsWith("/app/reports")) {
+    return "api";
+  }
+  // Modul operasional mengikuti mode Inbox: API nyata atau DEMO lokal.
+  const operationalPrefixes = [
+    "/app/tasks",
+    "/app/schedule",
+    "/app/delivery",
+    "/app/production-flow",
+    "/app/buffer-stock",
+  ];
+  if (operationalPrefixes.some((p) => pathname === p || pathname.startsWith(`${p}/`))) {
+    return inboxMode === "api" ? "api" : "demo";
+  }
+  // Modul workflow lokal Cursor — simulasi frontend, bukan Accurate/Mongo.
+  const demoPrefixes = ["/app/control", "/app/samples"];
+  if (demoPrefixes.some((p) => pathname === p || pathname.startsWith(`${p}/`))) {
     return "demo";
   }
   return "shell";
@@ -45,7 +66,7 @@ export function shellModeBadgeLabel(mode: ShellDataMode): string | null {
 
 export function shellModeFooterHint(mode: ShellDataMode): string {
   if (mode === "api") {
-    return "Eternal Production V4 · Inbox Accurate read-only dari MongoDB V4 (bukan DEMO).";
+    return "Eternal Production V4 · Data operasional dari MongoDB V4 (bukan DEMO).";
   }
   if (mode === "demo") {
     return "Eternal Production V4 · Modul ini memakai data DEMO browser — tidak menulis MongoDB.";
