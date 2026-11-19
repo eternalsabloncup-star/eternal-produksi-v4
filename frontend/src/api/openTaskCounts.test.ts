@@ -61,10 +61,11 @@ describe("formatOpenTaskBadge", () => {
     expect(formatOpenTaskBadge(0, "ready")).toBeNull();
   });
 
-  it("marks truncated ceiling", () => {
+  it("marks truncated counts as lower bounds", () => {
     expect(formatOpenTaskBadge(OPEN_TASK_FETCH_LIMIT, "truncated")).toBe(
       `${OPEN_TASK_FETCH_LIMIT}+`,
     );
+    expect(formatOpenTaskBadge(5, "truncated")).toBe("5+");
     expect(formatOpenTaskBadge(3, "ready")).toBe("3");
   });
 });

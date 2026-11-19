@@ -75,8 +75,9 @@ export function formatOpenTaskBadge(
   if (status === "loading") return "…";
   if (status === "error") return "?";
   if (count <= 0) return null;
-  if (status === "truncated" && count >= OPEN_TASK_FETCH_LIMIT) {
-    return `${OPEN_TASK_FETCH_LIMIT}+`;
+  // Truncated global fetch: per-role angka adalah batas bawah — selalu beri +.
+  if (status === "truncated") {
+    return `${count}+`;
   }
   return String(count);
 }
