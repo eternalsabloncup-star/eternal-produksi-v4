@@ -64,8 +64,12 @@ export function BufferStockApiPanel() {
       {
         label: "Ready Gudang",
         value: num(kpi?.qty_ready_warehouse ?? NOT_CONFIGURED),
-        foot: "NOT_CONFIGURED · bukan qty cetak/QC/Loading",
-        kind: "warn",
+        foot: "Qty cetak − qty terkirim terkonfirmasi",
+        kind:
+          typeof kpi?.qty_ready_warehouse === "number" &&
+          kpi.qty_ready_warehouse < 0
+            ? "warn"
+            : "",
       },
     ];
   }, [data]);
@@ -183,10 +187,23 @@ export function BufferStockApiPanel() {
         getFilterValue: (r) => String(r.qty_ready_warehouse),
         render: (r) => {
           const v = r.qty_ready_warehouse;
-          if (v === NOT_CONFIGURED || typeof v === "string") {
+          if (typeof v === "string") {
             return (
-              <span className="ep-muted" title="Kontrak mutasi gudang belum diputuskan Owner">
-                {String(v)}
+              <span
+                className="ep-muted"
+                title="Identitas PO/line tidak lengkap — tidak dianggap nol"
+              >
+                {v}
+              </span>
+            );
+          }
+          if (typeof v === "number" && v < 0) {
+            return (
+              <span
+                className="ep-text-danger"
+                title="Ketidaksesuaian: qty terkirim > qty cetak"
+              >
+                {num(v)}
               </span>
             );
           }
@@ -200,7 +217,8 @@ export function BufferStockApiPanel() {
         filterType: "number",
         defaultWidth: 130,
         getFilterValue: (r) => String(r.qty_shipped),
-        getSortValue: (r) => r.qty_shipped,
+        getSortValue: (r) =>
+          typeof r.qty_shipped === "number" ? r.qty_shipped : null,
         render: (r) => num(r.qty_shipped),
       },
       {
@@ -229,10 +247,19 @@ export function BufferStockApiPanel() {
     <div data-testid="buffer-stock-api-panel">
       <KpiSummary items={kpis} />
       {error ? <p className="ep-error">{error}</p> : null}
+      {data ? (
+        <p className="ep-po-confirm-hint" data-testid="ready-gudang-formula">
+          Ready Gudang = Qty Sudah Cetak − Qty Konfirmasi Terkirim (bukan SJ/Loading
+          saja).
+          {typeof data.kpi.ready_mismatch_rows === "number" &&
+          data.kpi.ready_mismatch_rows > 0
+            ? ` · ${data.kpi.ready_mismatch_rows} baris ketidaksesuaian (terkirim > cetak).`
+            : ""}
+        </p>
+      ) : null}
       {data && data.not_configured.length > 0 ? (
         <p className="ep-notice">
-          Kolom berikut menunggu keputusan Owner: {data.not_configured.join(", ")}. Ready
-          Gudang tidak disimulasikan.
+          Kolom berikut menunggu keputusan Owner: {data.not_configured.join(", ")}.
         </p>
       ) : null}
 

@@ -163,12 +163,42 @@ def test_buffer_stock_rows_use_real_po_number(db: Database) -> None:
     assert printed_row["qty_ordered"] == 1000
     assert printed_row["qty_printed"] == 400
     assert printed_row["qty_remaining"] == 600
-    # Rumus yang belum diputuskan Owner tidak dikarang.
-    assert printed_row["qty_ready_warehouse"] == read_models.NOT_CONFIGURED
+    # Owner: Ready = cetak − terkirim; belum ada delivery → Ready = cetak.
+    assert printed_row["qty_ready_warehouse"] == 400
+    assert printed_row["ready_mismatch"] is False
     assert printed_row["buffer_status"] == read_models.NOT_CONFIGURED
     assert printed_row["outlet_warehouse"] == read_models.NOT_CONFIGURED
-    assert result["kpi"]["qty_ready_warehouse"] == read_models.NOT_CONFIGURED
+    assert result["kpi"]["qty_ready_warehouse"] == 400
+    assert "qty_ready_warehouse" not in result["not_configured"]
     assert result["kpi"]["total_buffer_ordered"] == 1050
+    assert result["ready_formula"] == (
+        "qty_printed_confirmed - qty_delivery_success_confirmed"
+    )
+
+
+def test_compute_ready_gudang_owner_cases() -> None:
+    """Kasus angka Owner tanpa DB — murni rumus."""
+    assert read_models.compute_ready_gudang(
+        qty_printed=10_000, qty_delivered_confirmed=6_000
+    ) == {
+        "qty_ready_warehouse": 4_000,
+        "ready_mismatch": False,
+        "qty_over_shipped": 0.0,
+    }
+    # SJ/Loading dibuat belum terkirim → shipped 0 → Ready = cetak.
+    assert read_models.compute_ready_gudang(
+        qty_printed=10_000, qty_delivered_confirmed=0
+    )["qty_ready_warehouse"] == 10_000
+    # Parsial 3k+3k.
+    assert read_models.compute_ready_gudang(
+        qty_printed=10_000, qty_delivered_confirmed=6_000
+    )["qty_ready_warehouse"] == 4_000
+    mismatch = read_models.compute_ready_gudang(
+        qty_printed=100, qty_delivered_confirmed=150
+    )
+    assert mismatch["qty_ready_warehouse"] == -50
+    assert mismatch["ready_mismatch"] is True
+    assert mismatch["qty_over_shipped"] == 50
 
 
 def test_buffer_shipped_counts_only_successful_delivery(db: Database) -> None:
@@ -178,8 +208,13 @@ def test_buffer_shipped_counts_only_successful_delivery(db: Database) -> None:
     _sj(db, 300)
     delivery.confirm_loading(db, DRIVER, accurate_sj_id="SJ-F-1", idempotency_key="f-load")
 
-    before = read_models.buffer_stock_rows(db)["kpi"]["qty_shipped"]
-    assert before == 0
+    mid = read_models.buffer_stock_rows(db)
+    assert mid["kpi"]["qty_shipped"] == 0
+    printed_row = next(
+        r for r in mid["items"] if r["accurate_line_id"] == LINE_PRINT
+    )
+    # SJ + Loading belum terkirim → Ready tetap = qty cetak.
+    assert printed_row["qty_ready_warehouse"] == 300
 
     delivery.confirm_delivery_success(
         db,
@@ -189,8 +224,106 @@ def test_buffer_shipped_counts_only_successful_delivery(db: Database) -> None:
         photos=[("a.png", "image/png", PNG), ("b.png", "image/png", PNG)],
         signature=("s.png", "image/png", PNG),
     )
-    after = read_models.buffer_stock_rows(db)["kpi"]["qty_shipped"]
-    assert after == 300
+    after = read_models.buffer_stock_rows(db)
+    assert after["kpi"]["qty_shipped"] == 300
+    printed_after = next(
+        r for r in after["items"] if r["accurate_line_id"] == LINE_PRINT
+    )
+    assert printed_after["qty_ready_warehouse"] == 0
+
+
+def test_buffer_ready_partial_deliveries_and_no_double_count(db: Database) -> None:
+    po_doc = _seed(db, "Buffer")
+    _open_gates(db)
+    _run_production(db, po_doc, 400)
+
+    _sj(db, 150, sj_id="SJ-F-A")
+    delivery.confirm_loading(
+        db, DRIVER, accurate_sj_id="SJ-F-A", idempotency_key="f-load-a"
+    )
+    delivery.confirm_delivery_success(
+        db,
+        DRIVER,
+        accurate_sj_id="SJ-F-A",
+        recipient_name="Penerima A",
+        photos=[("a1.png", "image/png", PNG), ("a2.png", "image/png", PNG)],
+        signature=("as.png", "image/png", PNG),
+    )
+    # Konfirmasi berulang — tidak mengurangi dua kali.
+    again = delivery.confirm_delivery_success(
+        db,
+        DRIVER,
+        accurate_sj_id="SJ-F-A",
+        recipient_name="Penerima A",
+        photos=[("a1.png", "image/png", PNG), ("a2.png", "image/png", PNG)],
+        signature=("as.png", "image/png", PNG),
+    )
+    assert again["status"] == deliveries.DELIVERY_SUCCESS
+
+    _sj(db, 150, sj_id="SJ-F-B")
+    delivery.confirm_loading(
+        db, DRIVER, accurate_sj_id="SJ-F-B", idempotency_key="f-load-b"
+    )
+    delivery.confirm_delivery_success(
+        db,
+        DRIVER,
+        accurate_sj_id="SJ-F-B",
+        recipient_name="Penerima B",
+        photos=[("b1.png", "image/png", PNG), ("b2.png", "image/png", PNG)],
+        signature=("bs.png", "image/png", PNG),
+    )
+
+    result = read_models.buffer_stock_rows(db)
+    printed_row = next(
+        r for r in result["items"] if r["accurate_line_id"] == LINE_PRINT
+    )
+    assert printed_row["qty_printed"] == 400
+    assert printed_row["qty_shipped"] == 300
+    assert printed_row["qty_ready_warehouse"] == 100
+    # Line Non-Cetak tidak mencampur qty cetak/terkirim line Cetak.
+    non_print = next(
+        r for r in result["items"] if r["accurate_line_id"] == LINE_NON_PRINT
+    )
+    assert non_print["qty_printed"] == 0
+    assert non_print["qty_shipped"] == 0
+    assert non_print["qty_ready_warehouse"] == 0
+
+
+def test_buffer_ready_skips_superseded_sj(db: Database) -> None:
+    po_doc = _seed(db, "Buffer")
+    _open_gates(db)
+    _run_production(db, po_doc, 200)
+    _sj(db, 200, sj_id="SJ-OLD")
+    delivery.confirm_loading(
+        db, DRIVER, accurate_sj_id="SJ-OLD", idempotency_key="f-load-old"
+    )
+    delivery.confirm_delivery_success(
+        db,
+        DRIVER,
+        accurate_sj_id="SJ-OLD",
+        recipient_name="Penerima Old",
+        photos=[("o1.png", "image/png", PNG), ("o2.png", "image/png", PNG)],
+        signature=("os.png", "image/png", PNG),
+    )
+    before = next(
+        r
+        for r in read_models.buffer_stock_rows(db)["items"]
+        if r["accurate_line_id"] == LINE_PRINT
+    )
+    assert before["qty_shipped"] == 200
+    assert before["qty_ready_warehouse"] == 0
+
+    deliveries.mark_superseded(
+        db, accurate_sj_id="SJ-OLD", replacement_sj_id="SJ-NEW"
+    )
+    after = next(
+        r
+        for r in read_models.buffer_stock_rows(db)["items"]
+        if r["accurate_line_id"] == LINE_PRINT
+    )
+    # SJ superseded tidak dihitung — hindari dobel setelah revisi.
+    assert after["qty_shipped"] == 0
+    assert after["qty_ready_warehouse"] == 200
 
 
 # --- Alur Produksi ---------------------------------------------------------
