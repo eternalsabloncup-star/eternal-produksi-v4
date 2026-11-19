@@ -21,7 +21,32 @@ APPROVALS_COLLECTION = "design_approvals"
 
 APPROVAL_LINK_TTL_HOURS = 72
 
-_INDEXED_DATABASES: set[str] = set()
+REQUIRED_DESIGN_INDEX_SPECS: list[dict[str, Any]] = [
+    {
+        "collection": SUBMISSIONS_COLLECTION,
+        "keys": [("accurate_po_id", ASCENDING), ("version", DESCENDING)],
+        "name": "uniq_design_po_version",
+        "unique": True,
+    },
+    {
+        "collection": LINKS_COLLECTION,
+        "keys": [("token_hash", ASCENDING)],
+        "name": "uniq_design_link_token",
+        "unique": True,
+    },
+    {
+        "collection": LINKS_COLLECTION,
+        "keys": [("accurate_po_id", ASCENDING)],
+        "name": "idx_design_link_po",
+        "unique": False,
+    },
+    {
+        "collection": APPROVALS_COLLECTION,
+        "keys": [("accurate_po_id", ASCENDING), ("design_version", ASCENDING)],
+        "name": "uniq_design_approval_version",
+        "unique": True,
+    },
+]
 
 
 def submissions_collection(db: Database) -> Collection:
@@ -37,31 +62,40 @@ def approvals_collection(db: Database) -> Collection:
 
 
 def ensure_design_indexes(db: Database) -> list[str]:
-    created = [
-        submissions_collection(db).create_index(
-            [("accurate_po_id", ASCENDING), ("version", DESCENDING)],
-            name="uniq_design_po_version",
-            unique=True,
-        ),
-        links_collection(db).create_index(
-            [("token_hash", ASCENDING)], name="uniq_design_link_token", unique=True
-        ),
-        links_collection(db).create_index(
-            [("accurate_po_id", ASCENDING)], name="idx_design_link_po"
-        ),
-        approvals_collection(db).create_index(
-            [("accurate_po_id", ASCENDING), ("design_version", ASCENDING)],
-            name="uniq_design_approval_version",
-            unique=True,
-        ),
-    ]
-    _INDEXED_DATABASES.add(db.name)
+    """Buat indeks design — HANYA bootstrap/maintenance/test."""
+    created: list[str] = []
+    for spec in REQUIRED_DESIGN_INDEX_SPECS:
+        created.append(
+            db[spec["collection"]].create_index(
+                spec["keys"],
+                name=spec["name"],
+                unique=bool(spec.get("unique")),
+            )
+        )
+    from app.services.index_preflight import mark_index_specs_verified
+
+    mark_index_specs_verified(
+        [s["name"] for s in REQUIRED_DESIGN_INDEX_SPECS], db=db
+    )
     return created
 
 
+def require_design_indexes(db: Database) -> None:
+    """Fail-closed request path — tidak createIndex."""
+    from app.services.index_preflight import require_index_specs
+
+    require_index_specs(db, REQUIRED_DESIGN_INDEX_SPECS)
+
+
+def inspect_design_indexes(db: Database) -> dict[str, Any]:
+    from app.services.index_preflight import inspect_index_specs
+
+    return inspect_index_specs(db, REQUIRED_DESIGN_INDEX_SPECS)
+
+
 def _ensure_once(db: Database) -> None:
-    if db.name not in _INDEXED_DATABASES:
-        ensure_design_indexes(db)
+    """Alias request-path: require (bukan lazy createIndex)."""
+    require_design_indexes(db)
 
 
 def hash_token(raw_token: str) -> str:

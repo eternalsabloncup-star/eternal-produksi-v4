@@ -1,13 +1,13 @@
 # Eternal Live Tracking V4 — Laporan Modul
 
-**STATUS:** PR only — NO MERGE — NO DEPLOY — NO PRODUCTION DB MUTATION
+**STATUS:** PR #7 **sudah merged** ke `main` (`d32da70`). Deploy production tetap **manual / belum**.
 
 ## A. Audit existing & kontrak backend
 
 | Area | Temuan |
 |------|--------|
-| `main` | Foundation + auth + Accurate Inbox PO. Tidak ada workflow/delivery/PWA. |
-| PR #6 (open) | Gates, tasks, scheduling, **dan** delivery (`accurate_delivery_notes`, `loading_events`, `delivery_events`, `evidence_files`). |
+| `main` | Foundation + auth + Accurate Inbox + workflow/delivery (PR #6) + Live Tracking (PR #7). |
+| PR #6 (merged) | Gates, tasks, scheduling, delivery (`accurate_delivery_notes`, `loading_events`, `delivery_events`, `evidence_files`). |
 | Auth pattern | Session CSPRNG + SHA-256 hash, CSRF, rate limit — **direuse** untuk tracking link. |
 | Integrasi PR #6 | Adapter baca-saja koleksi kontrak PR #6 **tanpa mengimpor/menyalin** modulnya. `order_complete` memakai Qty diterima sah (`delivery_events=berhasil` + bukti aktif), bukan Qty SJ semata. |
 

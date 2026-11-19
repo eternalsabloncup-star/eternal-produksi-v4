@@ -39,11 +39,11 @@ def has_print_items(po_doc: dict[str, Any]) -> bool:
 
 
 def _assigned_role(
-    db: Database, task_type: str, fallback: str, *, session: Any | None = None
+    db: Database, task_type: str, fallback: str | None = None, *, session: Any | None = None
 ) -> str:
-    # Request path: read-only Master (tanpa seed/createIndex).
-    del session
-    return master.assigned_role_for(db, task_type) or fallback
+    """Request path: fail-closed Master — tanpa seed/createIndex/fallback role."""
+    del session, fallback
+    return master.require_task_type_assigned_role(db, task_type)
 
 
 def sync_design_gate_for_non_print_po(

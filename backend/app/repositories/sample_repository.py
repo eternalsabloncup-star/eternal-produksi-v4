@@ -15,7 +15,20 @@ STATUS_PENDING = "menunggu_approval"
 STATUS_APPROVED = "disetujui"
 STATUS_REJECTED = "ditolak"
 
-_INDEXED_DATABASES: set[str] = set()
+REQUIRED_SAMPLE_INDEX_SPECS: list[dict[str, Any]] = [
+    {
+        "collection": SAMPLES_COLLECTION,
+        "keys": [("allocation_id", ASCENDING), ("version", DESCENDING)],
+        "name": "uniq_sample_allocation_version",
+        "unique": True,
+    },
+    {
+        "collection": SAMPLES_COLLECTION,
+        "keys": [("accurate_line_id", ASCENDING), ("status", ASCENDING)],
+        "name": "idx_sample_line_status",
+        "unique": False,
+    },
+]
 
 
 def samples_collection(db: Database) -> Collection:
@@ -23,24 +36,39 @@ def samples_collection(db: Database) -> Collection:
 
 
 def ensure_sample_indexes(db: Database) -> list[str]:
-    created = [
-        samples_collection(db).create_index(
-            [("allocation_id", ASCENDING), ("version", DESCENDING)],
-            name="uniq_sample_allocation_version",
-            unique=True,
-        ),
-        samples_collection(db).create_index(
-            [("accurate_line_id", ASCENDING), ("status", ASCENDING)],
-            name="idx_sample_line_status",
-        ),
-    ]
-    _INDEXED_DATABASES.add(db.name)
+    """Buat indeks sample — HANYA bootstrap/maintenance/test."""
+    created: list[str] = []
+    for spec in REQUIRED_SAMPLE_INDEX_SPECS:
+        created.append(
+            db[spec["collection"]].create_index(
+                spec["keys"],
+                name=spec["name"],
+                unique=bool(spec.get("unique")),
+            )
+        )
+    from app.services.index_preflight import mark_index_specs_verified
+
+    mark_index_specs_verified(
+        [s["name"] for s in REQUIRED_SAMPLE_INDEX_SPECS], db=db
+    )
     return created
 
 
+def require_sample_indexes(db: Database) -> None:
+    from app.services.index_preflight import require_index_specs
+
+    require_index_specs(db, REQUIRED_SAMPLE_INDEX_SPECS)
+
+
+def inspect_sample_indexes(db: Database) -> dict[str, Any]:
+    from app.services.index_preflight import inspect_index_specs
+
+    return inspect_index_specs(db, REQUIRED_SAMPLE_INDEX_SPECS)
+
+
 def _ensure_once(db: Database) -> None:
-    if db.name not in _INDEXED_DATABASES:
-        ensure_sample_indexes(db)
+    """Alias request-path: require (bukan lazy createIndex)."""
+    require_sample_indexes(db)
 
 
 def latest_sample(db: Database, allocation_id: str) -> dict[str, Any] | None:

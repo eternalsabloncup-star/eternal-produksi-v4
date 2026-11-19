@@ -209,6 +209,10 @@ def submit_sample(
     if quota["qty_available"] <= 0:
         raise ProductionGateError("Kuota Persiapan Cup dari Helper belum tersedia.")
 
+    # Fail-closed Master SEBELUM evidence/GridFS — cegah orphan bila Master hilang.
+    sample_role = master.require_task_type_assigned_role(db, SAMPLE_TASK)
+    approval_role = master.require_task_type_assigned_role(db, APPROVAL_TASK)
+
     actor = str(user.get("email_normalized") or "")
     stored = evidence.store_evidence(
         db,
@@ -231,12 +235,11 @@ def submit_sample(
         submitted_by=actor,
     )
 
-    master.seed_master_defaults(db)
     tasks.upsert_task(
         db,
         task_type=SAMPLE_TASK,
         scope="po_line_allocation",
-        assigned_role=master.assigned_role_for(db, SAMPLE_TASK) or "operator",
+        assigned_role=sample_role,
         ref=_alloc_ref(alloc),
         label="Upload/Konfirmasi Sample",
         context={"latest_version": sample["version"], "status": sample["status"]},
@@ -245,7 +248,7 @@ def submit_sample(
         db,
         task_type=APPROVAL_TASK,
         scope="po_line_allocation",
-        assigned_role=master.assigned_role_for(db, APPROVAL_TASK) or "production-head",
+        assigned_role=approval_role,
         ref=_alloc_ref(alloc),
         label="Approval Sampel",
         context={
@@ -287,6 +290,10 @@ def decide_sample(
     _require_accepted_po(db, str(alloc["accurate_po_id"]))
     if not approved and not (reason or "").strip():
         raise ValueError("Alasan penolakan sampel wajib diisi.")
+
+    # Validasi Master cetak sebelum mutasi keputusan — cegah tugas parsial.
+    if approved:
+        master.require_task_type_assigned_role(db, PRINT_TASK)
 
     actor = str(user.get("email_normalized") or "")
     sample = samples.decide_sample(
@@ -330,12 +337,12 @@ def decide_sample(
 
 
 def _ensure_print_task(db: Database, alloc: dict[str, Any]) -> dict[str, Any]:
-    master.seed_master_defaults(db)
+    print_role = master.require_task_type_assigned_role(db, PRINT_TASK)
     return tasks.upsert_task(
         db,
         task_type=PRINT_TASK,
         scope="po_line_allocation",
-        assigned_role=master.assigned_role_for(db, PRINT_TASK) or "operator",
+        assigned_role=print_role,
         ref=_alloc_ref(alloc),
         qty_target=float(alloc["qty"]),
         label="Cetak",
@@ -374,7 +381,9 @@ def confirm_print(
             "Sampel untuk alokasi ini belum disetujui — cetak massal terkunci."
         )
 
+    # Master cetak + QC wajib sebelum mutasi/transaksi (hindari QC orphan).
     _ensure_print_task(db, alloc)
+    master.require_task_type_assigned_role(db, QC_TASK)
 
     # Retry/double-click dikenali sebelum transaksi dimulai.
     existing = tasks.find_confirmation(db, idempotency_key)
@@ -426,7 +435,7 @@ def confirm_print(
 
 def _sync_qc_task(db: Database, alloc: dict[str, Any]) -> dict[str, Any]:
     """Target QC = total hasil cetak terkonfirmasi seluruh operator pada line."""
-    master.seed_master_defaults(db)
+    qc_role = master.require_task_type_assigned_role(db, QC_TASK)
     accurate_po_id = str(alloc["accurate_po_id"])
     accurate_line_id = str(alloc["accurate_line_id"])
     printed = printed_total_for_line(
@@ -438,7 +447,7 @@ def _sync_qc_task(db: Database, alloc: dict[str, Any]) -> dict[str, Any]:
         db,
         task_type=QC_TASK,
         scope="po_line",
-        assigned_role=master.assigned_role_for(db, QC_TASK) or "helper",
+        assigned_role=qc_role,
         ref=_line_ref(alloc),
         qty_target=printed,
         label="QC & Packing",

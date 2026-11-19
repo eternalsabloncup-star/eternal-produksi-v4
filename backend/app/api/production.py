@@ -13,7 +13,9 @@ from app.repositories import sample_repository as samples
 from app.repositories import schedule_repository as schedules
 from app.repositories.po_repository import get_by_accurate_id
 from app.repositories.task_repository import TaskQuantityError
+from app.repositories import master_repository as master
 from app.services import production_service
+from app.services.index_preflight import MissingRequiredIndexError
 from app.services.task_engine import TaskPermissionError
 
 router = APIRouter(prefix="/api/production", tags=["production"])
@@ -44,6 +46,21 @@ def _po_or_404(accurate_po_id: str) -> dict[str, Any]:
 def _handle(exc: Exception) -> HTTPException:
     if isinstance(exc, TaskPermissionError):
         return HTTPException(status.HTTP_403_FORBIDDEN, str(exc))
+    if isinstance(exc, master.MissingMasterConfigError):
+        return HTTPException(
+            status.HTTP_503_SERVICE_UNAVAILABLE,
+            {"code": exc.code, "detail": str(exc)},
+        )
+    if isinstance(exc, MissingRequiredIndexError):
+        return HTTPException(
+            status.HTTP_503_SERVICE_UNAVAILABLE,
+            {
+                "code": exc.code,
+                "detail": str(exc),
+                "missing": exc.missing,
+                "conflict": exc.conflict,
+            },
+        )
     if isinstance(exc, production_service.ProductionGateError):
         return HTTPException(status.HTTP_409_CONFLICT, str(exc))
     if isinstance(exc, (production_service.ProductionQuantityError, TaskQuantityError)):

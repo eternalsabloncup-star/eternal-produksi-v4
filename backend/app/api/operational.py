@@ -1,6 +1,7 @@
 """API Master/Pengaturan + tugas operasional (Checkpoint A).
 
 Semua aksi tulis: terautentikasi, CSRF, divalidasi, berizin, idempoten, teraudit.
+Tidak ada seed Master otomatis / createIndex pada request path.
 """
 
 from __future__ import annotations
@@ -17,6 +18,7 @@ from app.domain.operational import OPERATIONAL_ROLES, TASK_ACTIONS
 from app.repositories import master_repository as master
 from app.repositories import task_repository as tasks
 from app.services import task_engine
+from app.services.index_preflight import MissingRequiredIndexError
 
 router = APIRouter(prefix="/api", tags=["operational"])
 
@@ -42,12 +44,39 @@ def _require_settings_permission(auth: AuthContext) -> None:
         raise HTTPException(status.HTTP_403_FORBIDDEN, "Akses ditolak")
 
 
+def _map_master_errors(exc: Exception) -> HTTPException | None:
+    if isinstance(exc, master.MissingMasterConfigError):
+        return HTTPException(
+            status.HTTP_503_SERVICE_UNAVAILABLE,
+            {
+                "code": getattr(exc, "code", "MISSING_MASTER_CONFIG"),
+                "detail": str(exc),
+            },
+        )
+    if isinstance(exc, MissingRequiredIndexError):
+        return HTTPException(
+            status.HTTP_503_SERVICE_UNAVAILABLE,
+            {
+                "code": getattr(exc, "code", "MISSING_REQUIRED_INDEX"),
+                "detail": str(exc),
+                "missing": getattr(exc, "missing", []),
+                "conflict": getattr(exc, "conflict", []),
+            },
+        )
+    return None
+
+
 @router.get("/master/task-types")
 def get_task_types(auth: AuthContext = Depends(require_session)) -> dict[str, Any]:
     db = get_db()
-    master.seed_master_defaults(db)
+    try:
+        items = master.list_task_types(db)
+    except (master.MissingMasterConfigError, MissingRequiredIndexError) as exc:
+        mapped = _map_master_errors(exc)
+        assert mapped is not None
+        raise mapped from exc
     return {
-        "items": master.list_task_types(db),
+        "items": items,
         "roles": list(OPERATIONAL_ROLES),
         "actions": list(TASK_ACTIONS),
     }
@@ -61,11 +90,14 @@ def put_task_type_role(
 ) -> dict[str, Any]:
     _require_settings_permission(auth)
     db = get_db()
-    master.seed_master_defaults(db)
     try:
         doc = task_engine.set_task_type_role(
             db, auth.user, task_type=task_type, role=body.role
         )
+    except (master.MissingMasterConfigError, MissingRequiredIndexError) as exc:
+        mapped = _map_master_errors(exc)
+        assert mapped is not None
+        raise mapped from exc
     except ValueError as exc:
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, str(exc)) from exc
     except LookupError as exc:
@@ -79,8 +111,13 @@ def get_role_actions(
     auth: AuthContext = Depends(require_session),
 ) -> dict[str, Any]:
     db = get_db()
-    master.seed_master_defaults(db)
-    return {"items": master.list_role_actions(db, role=role)}
+    try:
+        items = master.list_role_actions(db, role=role)
+    except (master.MissingMasterConfigError, MissingRequiredIndexError) as exc:
+        mapped = _map_master_errors(exc)
+        assert mapped is not None
+        raise mapped from exc
+    return {"items": items}
 
 
 @router.put("/master/role-actions")
@@ -90,7 +127,6 @@ def put_role_actions(
 ) -> dict[str, Any]:
     _require_settings_permission(auth)
     db = get_db()
-    master.seed_master_defaults(db)
     try:
         return task_engine.set_role_actions(
             db,
@@ -99,6 +135,10 @@ def put_role_actions(
             task_type=body.task_type,
             actions=body.actions,
         )
+    except (master.MissingMasterConfigError, MissingRequiredIndexError) as exc:
+        mapped = _map_master_errors(exc)
+        assert mapped is not None
+        raise mapped from exc
     except ValueError as exc:
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, str(exc)) from exc
     except LookupError as exc:
@@ -148,7 +188,6 @@ def post_task_confirm(
     auth: AuthContext = Depends(require_csrf),
 ) -> dict[str, Any]:
     db = get_db()
-    master.seed_master_defaults(db)
     try:
         result = task_engine.confirm_task(
             db,
@@ -158,6 +197,10 @@ def post_task_confirm(
             idempotency_key=body.idempotency_key,
             note=body.note,
         )
+    except (master.MissingMasterConfigError, MissingRequiredIndexError) as exc:
+        mapped = _map_master_errors(exc)
+        assert mapped is not None
+        raise mapped from exc
     except task_engine.TaskPermissionError as exc:
         raise HTTPException(status.HTTP_403_FORBIDDEN, str(exc)) from exc
     except LookupError as exc:

@@ -155,6 +155,11 @@ def create_allocations(
             f"Total alokasi {already + requested:g} melampaui Qty item line {qty_target:g}."
         )
 
+    # Fail-closed Master SEBELUM mutasi alokasi — cegah alokasi tanpa follow-up.
+    master.require_task_type_assigned_role(db, "persiapan-cup")
+    master.require_task_type_assigned_role(db, "screen")
+    master.require_task_type_assigned_role(db, "konfirmasi-sample")
+
     actor = str(user.get("email_normalized") or "")
     sched_date = schedule_date or date.today().isoformat()
     created: list[dict[str, Any]] = []
@@ -218,7 +223,11 @@ def _create_follow_up_tasks(
 
     Konfirmasi keduanya baru dilengkapi pada Checkpoint D.
     """
-    master.seed_master_defaults(db)
+    # Fail-closed Master sebelum membuat tugas turunan (tanpa seed/fallback).
+    prep_role = master.require_task_type_assigned_role(db, "persiapan-cup")
+    screen_role = master.require_task_type_assigned_role(db, "screen")
+    sample_role = master.require_task_type_assigned_role(db, "konfirmasi-sample")
+
     accurate_po_id = str(po_doc.get("accurate_id") or "")
     po_no = str(po_doc.get("po_no") or "")
     line_id = str(line.get("accurate_line_id") or "")
@@ -228,7 +237,7 @@ def _create_follow_up_tasks(
         db,
         task_type="persiapan-cup",
         scope="po_line",
-        assigned_role=master.assigned_role_for(db, "persiapan-cup") or "helper",
+        assigned_role=prep_role,
         ref=TaskRef(
             accurate_po_id=accurate_po_id,
             po_no=po_no,
@@ -254,7 +263,7 @@ def _create_follow_up_tasks(
             db,
             task_type="screen",
             scope="po_line_allocation",
-            assigned_role=master.assigned_role_for(db, "screen") or "screener",
+            assigned_role=screen_role,
             ref=alloc_ref,
             label="Screen",
             context={"operator_email": alloc["operator_email"], "qty_alokasi": alloc["qty"]},
@@ -267,7 +276,7 @@ def _create_follow_up_tasks(
             db,
             task_type="konfirmasi-sample",
             scope="po_line_allocation",
-            assigned_role=master.assigned_role_for(db, "konfirmasi-sample") or "operator",
+            assigned_role=sample_role,
             ref=alloc_ref,
             label="Upload/Konfirmasi Sample",
             context={"operator_email": alloc["operator_email"], "qty_alokasi": alloc["qty"]},
@@ -399,12 +408,12 @@ def scan_reschedule(
             skipped.append(f"{line_id}:tidak-ada-kekurangan")
             continue
 
+        reschedule_role = master.require_task_type_assigned_role(db, "penjadwalan-ulang")
         task = tasks.upsert_task(
             db,
             task_type="penjadwalan-ulang",
             scope="po_line",
-            assigned_role=master.assigned_role_for(db, "penjadwalan-ulang")
-            or "production-head",
+            assigned_role=reschedule_role,
             ref=TaskRef(
                 accurate_po_id=accurate_po_id,
                 po_no=str(po_doc.get("po_no") or ""),

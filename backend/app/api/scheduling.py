@@ -11,7 +11,9 @@ from app.auth.deps import AuthContext, require_csrf, require_session
 from app.db import get_db
 from app.repositories import schedule_repository as schedules
 from app.repositories.po_repository import get_by_accurate_id
+from app.repositories import master_repository as master
 from app.services import scheduling_service
+from app.services.index_preflight import MissingRequiredIndexError
 from app.services.task_engine import TaskPermissionError
 
 router = APIRouter(prefix="/api/scheduling", tags=["scheduling"])
@@ -97,6 +99,21 @@ def post_allocations(
         )
     except TaskPermissionError as exc:
         raise HTTPException(status.HTTP_403_FORBIDDEN, str(exc)) from exc
+    except master.MissingMasterConfigError as exc:
+        raise HTTPException(
+            status.HTTP_503_SERVICE_UNAVAILABLE,
+            {"code": exc.code, "detail": str(exc)},
+        ) from exc
+    except MissingRequiredIndexError as exc:
+        raise HTTPException(
+            status.HTTP_503_SERVICE_UNAVAILABLE,
+            {
+                "code": exc.code,
+                "detail": str(exc),
+                "missing": exc.missing,
+                "conflict": exc.conflict,
+            },
+        ) from exc
     except scheduling_service.ScheduleGateError as exc:
         raise HTTPException(status.HTTP_409_CONFLICT, str(exc)) from exc
     except scheduling_service.ScheduleQuantityError as exc:
@@ -160,3 +177,18 @@ def post_reschedule_scan(
         )
     except TaskPermissionError as exc:
         raise HTTPException(status.HTTP_403_FORBIDDEN, str(exc)) from exc
+    except master.MissingMasterConfigError as exc:
+        raise HTTPException(
+            status.HTTP_503_SERVICE_UNAVAILABLE,
+            {"code": exc.code, "detail": str(exc)},
+        ) from exc
+    except MissingRequiredIndexError as exc:
+        raise HTTPException(
+            status.HTTP_503_SERVICE_UNAVAILABLE,
+            {
+                "code": exc.code,
+                "detail": str(exc),
+                "missing": exc.missing,
+                "conflict": exc.conflict,
+            },
+        ) from exc
