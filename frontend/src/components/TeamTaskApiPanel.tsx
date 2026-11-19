@@ -17,6 +17,7 @@ import {
   type ProductionSample,
   type TaskConfirmation,
 } from "../api/operational";
+import { DesignWorkflowPanel } from "./DesignWorkflowPanel";
 
 type Props = {
   role: OperationalRole;
@@ -46,6 +47,7 @@ function shortfallLabel(taskType: string): string {
 const SAMPLE_UPLOAD_TASK = "konfirmasi-sample";
 const SAMPLE_APPROVAL_TASK = "approval-sampel";
 const DRIVER_TASK = "pengiriman";
+const DESIGN_TASK = "design";
 const COORDINATION_TASKS = new Set([
   "qty-loading-sj-berbeda",
   "pengiriman-gagal-koordinasi",
@@ -689,8 +691,19 @@ export function TeamTaskApiPanel({ role, roleLabel }: Props) {
                 </div>
               ) : null}
 
-              {selected.qty_target !== undefined && selected.task_type !== DRIVER_TASK &&
-              !COORDINATION_TASKS.has(selected.task_type) ? (
+              {selected.task_type === DESIGN_TASK && selected.ref.accurate_po_id ? (
+                <DesignWorkflowPanel
+                  accuratePoId={selected.ref.accurate_po_id}
+                  poNo={selected.ref.po_no}
+                  onChanged={() => void reloadAfterAction(selected)}
+                />
+              ) : null}
+
+              {selected.qty_target !== undefined &&
+              selected.task_type !== DRIVER_TASK &&
+              selected.task_type !== DESIGN_TASK &&
+              !COORDINATION_TASKS.has(selected.task_type) &&
+              !isSampleTask ? (
                 <div className="ep-filterbar">
                   <label htmlFor="qty-confirm">Qty</label>
                   <input

@@ -4,6 +4,11 @@ import {
   type FlowNode,
   type ProductionFlow,
 } from "../api/analytics";
+import { DesignWorkflowPanel } from "./DesignWorkflowPanel";
+import { PaymentWorkflowPanel } from "./PaymentWorkflowPanel";
+
+const DESIGN_NODE_IDS = new Set(["flow-design", "flow-approval-design"]);
+const PAYMENT_NODE_IDS = new Set(["flow-payment", "flow-approval-payment"]);
 
 function statusLabel(status: FlowNode["status"]): string {
   if (status === "selesai") return "Selesai";
@@ -144,6 +149,20 @@ export function ProductionFlowApiPanel() {
                     <dt>Sumber</dt>
                     <dd>State operasional MongoDB V4</dd>
                   </dl>
+                  {DESIGN_NODE_IDS.has(activeNode.id) ? (
+                    <DesignWorkflowPanel
+                      accuratePoId={flow.accurate_po_id}
+                      poNo={flow.po_no}
+                      onChanged={() => void load()}
+                    />
+                  ) : null}
+                  {PAYMENT_NODE_IDS.has(activeNode.id) ? (
+                    <PaymentWorkflowPanel
+                      accuratePoId={flow.accurate_po_id}
+                      poNo={flow.po_no}
+                      onChanged={() => void load()}
+                    />
+                  ) : null}
                 </div>
               </div>
             </div>
