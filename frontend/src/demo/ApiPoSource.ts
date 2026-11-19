@@ -21,10 +21,53 @@ export class PoApiError extends Error {
   }
 }
 
+function resolveAcceptance(doc: Record<string, unknown>): {
+  status: string;
+  acceptedBy: string | null;
+  acceptedAt: string | null;
+  inboxStatus: string;
+} {
+  const acceptance =
+    doc.acceptance && typeof doc.acceptance === "object" && !Array.isArray(doc.acceptance)
+      ? (doc.acceptance as Record<string, unknown>)
+      : {};
+  const operational =
+    doc.operational && typeof doc.operational === "object" && !Array.isArray(doc.operational)
+      ? (doc.operational as Record<string, unknown>)
+      : {};
+  const nested =
+    operational.acceptance &&
+    typeof operational.acceptance === "object" &&
+    !Array.isArray(operational.acceptance)
+      ? (operational.acceptance as Record<string, unknown>)
+      : {};
+  const status = String(acceptance.status || nested.status || "pending");
+  const inbox =
+    formatAccurateLabel(acceptance.inbox_status) ||
+    formatAccurateLabel(operational.inbox_status) ||
+    (status === "accepted" ? "PO Diterima" : "PO Baru");
+  return {
+    status,
+    acceptedBy: acceptance.accepted_by
+      ? String(acceptance.accepted_by)
+      : nested.accepted_by
+        ? String(nested.accepted_by)
+        : null,
+    acceptedAt: acceptance.accepted_at
+      ? String(acceptance.accepted_at)
+      : nested.accepted_at
+        ? String(nested.accepted_at)
+        : null,
+    inboxStatus: inbox,
+  };
+}
+
 function resolveInboxStatus(
   doc: Record<string, unknown>,
   header: Record<string, unknown>,
 ): string {
+  const acceptance = resolveAcceptance(doc);
+  if (acceptance.status === "accepted") return acceptance.inboxStatus;
   const operational =
     doc.operational && typeof doc.operational === "object" && !Array.isArray(doc.operational)
       ? (doc.operational as Record<string, unknown>)
@@ -35,7 +78,7 @@ function resolveInboxStatus(
     if (label) return label;
   }
   // Status awal jujur — bukan progres produksi/QC/jadwal.
-  return "PO Baru";
+  return acceptance.inboxStatus || "PO Baru";
 }
 
 export function mapHeaderToPoRow(doc: Record<string, unknown>): PoRow | null {
@@ -79,6 +122,7 @@ export function mapHeaderToPoRow(doc: Record<string, unknown>): PoRow | null {
   const paymentTerms = formatAccurateLabel(header.payment_terms || header.paymentTerms);
   const expedition = formatAccurateLabel(header.expedition || header.shipment);
   const poDate = formatAccurateLabel(header.po_date || header.poDate);
+  const acceptance = resolveAcceptance(doc);
   return {
     id: poNo,
     poNo,
@@ -89,6 +133,9 @@ export function mapHeaderToPoRow(doc: Record<string, unknown>): PoRow | null {
     ),
     accurateId,
     origin: "accurate",
+    acceptanceStatus: acceptance.status,
+    acceptedBy: acceptance.acceptedBy,
+    acceptedAt: acceptance.acceptedAt,
     customer,
     product: items[0]?.name || "",
     qty: items.reduce((s, i) => s + (Number.isFinite(i.qty) ? i.qty : 0), 0),

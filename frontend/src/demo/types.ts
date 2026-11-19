@@ -81,6 +81,10 @@ export type PoRow = {
   totalQtyDisplay: string;
   itemCount: number;
   items: PoLineItem[];
+  /** Gate Terima PO (backend) — pending sampai Kepala Produksi menerima. */
+  acceptanceStatus?: "pending" | "accepted" | string;
+  acceptedBy?: string | null;
+  acceptedAt?: string | null;
 };
 
 export type PoFilters = {

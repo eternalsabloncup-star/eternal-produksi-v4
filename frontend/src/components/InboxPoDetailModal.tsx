@@ -1,4 +1,6 @@
 import { useEffect, useState } from "react";
+import { acceptPo, PoAcceptError } from "../api/poAcceptance";
+import { useAuth } from "../auth";
 import type { PoRow } from "../demo/types";
 import { formatDateDisplay } from "../lib/formatDate";
 import { ConfirmationSuccessOverlay } from "./ConfirmationSuccessOverlay";
@@ -7,66 +9,117 @@ function formatQty(n: number): string {
   return n.toLocaleString("id-ID");
 }
 
+function canAcceptPoRole(role: string | undefined, operationalRole: string | null | undefined): boolean {
+  if (role === "super_admin" || role === "admin") return true;
+  return operationalRole === "production-head";
+}
+
 type Props = {
   row: PoRow | null;
   open: boolean;
   onClose: () => void;
+  /** Dipanggil setelah backend mengonfirmasi penerimaan (bukan sebelum API). */
+  onAccepted?: (row: PoRow) => void;
 };
 
-/** Popup rincian PO Inbox + Konfirmasi DEMO (local state saja). */
-export function InboxPoDetailModal({ row, open, onClose }: Props) {
-  const [demoConfirmed, setDemoConfirmed] = useState(false);
+type AcceptPhase = "idle" | "loading" | "success" | "error";
+
+/** Popup rincian PO Inbox + gate Terima PO (backend). */
+export function InboxPoDetailModal({ row, open, onClose, onAccepted }: Props) {
+  const { user } = useAuth();
+  const [phase, setPhase] = useState<AcceptPhase>("idle");
+  const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [successOpen, setSuccessOpen] = useState(false);
+  const [localRow, setLocalRow] = useState<PoRow | null>(row);
 
   useEffect(() => {
-    if (!open) {
-      setDemoConfirmed(false);
-      setSuccessOpen(false);
-      return;
-    }
-    setDemoConfirmed(false);
+    setLocalRow(row);
+    setPhase("idle");
+    setErrorMsg(null);
     setSuccessOpen(false);
-  }, [open, row?.id]);
+  }, [open, row?.id, row?.accurateId, row?.acceptanceStatus]);
 
   useEffect(() => {
     if (!open) return;
     function onKey(e: KeyboardEvent) {
       if (e.key !== "Escape") return;
-      if (successOpen) return; // overlay menangani Escape
+      if (successOpen) return;
       onClose();
     }
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
   }, [open, onClose, successOpen]);
 
-  if (!open || !row) return null;
+  if (!open || !localRow) return null;
 
-  const orderStatus = row.urgent ? "Urgent" : "Normal";
+  const accepted = localRow.acceptanceStatus === "accepted";
+  const mayAccept = canAcceptPoRole(user?.role, user?.operational_role);
+  const showAccept =
+    localRow.origin === "accurate" && Boolean(localRow.accurateId) && mayAccept;
+  const acceptDisabled =
+    phase === "loading" || phase === "success" || accepted || !mayAccept;
+
+  const orderStatus = localRow.urgent ? "Urgent" : "Normal";
   const fields: [string, string][] = [
-    ["Nomor PO", row.poNo || row.id],
-    ["Tanggal PO", formatDateDisplay(row.poDate)],
-    ["Pelanggan", row.customer || "—"],
-    ["Nama Penerima", row.recipient || "—"],
-    ["PIC Alamat", row.addressPicName || "—"],
-    ["Alamat", row.address || "—"],
-    ["Syarat Pembayaran", row.paymentTerms || "—"],
-    ["User Pembuat", row.userName || "—"],
-    ["User Cetak", row.printUserName || "—"],
-    ["ID Pembuat", row.createdById || "—"],
-    ["Ekspedisi", row.expedition || "—"],
-    ["Estimasi Pengiriman", formatDateDisplay(row.etaShip)],
-    ["Zona Pengiriman", row.shipZone || "—"],
-    ["Penjual", row.seller || "—"],
-    ["Prioritas", row.priorityLabel || "—"],
+    ["Nomor PO", localRow.poNo || localRow.id],
+    ["Tanggal PO", formatDateDisplay(localRow.poDate)],
+    ["Pelanggan", localRow.customer || "—"],
+    ["Nama Penerima", localRow.recipient || "—"],
+    ["PIC Alamat", localRow.addressPicName || "—"],
+    ["Alamat", localRow.address || "—"],
+    ["Syarat Pembayaran", localRow.paymentTerms || "—"],
+    ["User Pembuat", localRow.userName || "—"],
+    ["User Cetak", localRow.printUserName || "—"],
+    ["ID Pembuat", localRow.createdById || "—"],
+    ["Ekspedisi", localRow.expedition || "—"],
+    ["Estimasi Pengiriman", formatDateDisplay(localRow.etaShip)],
+    ["Zona Pengiriman", localRow.shipZone || "—"],
+    ["Penjual", localRow.seller || "—"],
+    ["Prioritas", localRow.priorityLabel || "—"],
     ["Status Pesanan", orderStatus],
-    ["Buffer/Non-Buffer", row.bufferLabel || "—"],
-    ["Keterangan", row.notes || "—"],
-    ["Jumlah Item", String(row.itemCount ?? row.items?.length ?? 0)],
-    ["Total Kuantitas", row.totalQtyDisplay || "—"],
-    ["Asal Data", row.origin === "accurate" ? "Accurate" : "DEMO"],
+    [
+      "Status Inbox",
+      accepted ? "PO Diterima" : localRow.status || "PO Baru",
+    ],
+    ["Buffer/Non-Buffer", localRow.bufferLabel || "—"],
+    ["Keterangan", localRow.notes || "—"],
+    ["Jumlah Item", String(localRow.itemCount ?? localRow.items?.length ?? 0)],
+    ["Total Kuantitas", localRow.totalQtyDisplay || "—"],
+    ["Asal Data", localRow.origin === "accurate" ? "Accurate" : "DEMO"],
   ];
 
-  const items = row.items || [];
+  const items = localRow.items || [];
+
+  async function onTerimaPo() {
+    if (acceptDisabled || !localRow?.accurateId) return;
+    setPhase("loading");
+    setErrorMsg(null);
+    try {
+      const res = await acceptPo(localRow.accurateId);
+      const next: PoRow = {
+        ...localRow,
+        acceptanceStatus: res.acceptance.status || "accepted",
+        acceptedBy: res.acceptance.accepted_by ?? user?.email ?? null,
+        acceptedAt: res.acceptance.accepted_at
+          ? String(res.acceptance.accepted_at)
+          : null,
+        status: res.acceptance.inbox_status || "PO Diterima",
+      };
+      setLocalRow(next);
+      setPhase("success");
+      setSuccessOpen(true);
+      onAccepted?.(next);
+    } catch (err) {
+      setPhase("error");
+      setErrorMsg(
+        err instanceof PoAcceptError
+          ? err.message
+          : err instanceof Error
+            ? err.message
+            : "Gagal menerima PO.",
+      );
+    }
+  }
 
   return (
     <div
@@ -80,26 +133,36 @@ export function InboxPoDetailModal({ row, open, onClose }: Props) {
         role="dialog"
         aria-modal="true"
         aria-label={
-          demoConfirmed ? "PO Berhasil Dikonfirmasi" : `Rincian ${row.id}`
+          accepted ? "PO Berhasil Diterima" : `Rincian ${localRow.id}`
         }
         onClick={(e) => e.stopPropagation()}
       >
         <div className="ep-modal-head">
           <div>
             <div className="ep-modal-kicker">
-              Rincian PO · {row.origin === "accurate" ? "Accurate" : "DEMO"}
+              Rincian PO · {localRow.origin === "accurate" ? "Accurate" : "DEMO"}
             </div>
-            <h2>{row.id}</h2>
+            <h2>{localRow.id}</h2>
             <div className="ep-sub">
-              {row.customer}
+              {localRow.customer}
               <span className="ep-flow-meta-sep" aria-hidden>
                 ·
               </span>
               <span
-                className={`ep-pill ep-pill-status ${row.urgent ? "order-urgent" : "order-normal"}`}
+                className={`ep-pill ep-pill-status ${localRow.urgent ? "order-urgent" : "order-normal"}`}
               >
                 {orderStatus}
               </span>
+              {accepted ? (
+                <>
+                  <span className="ep-flow-meta-sep" aria-hidden>
+                    ·
+                  </span>
+                  <span className="ep-pill ep-pill-status order-normal">
+                    PO Diterima
+                  </span>
+                </>
+              ) : null}
             </div>
           </div>
           <button type="button" className="ep-x" onClick={onClose} aria-label="Tutup">
@@ -134,12 +197,12 @@ export function InboxPoDetailModal({ row, open, onClose }: Props) {
                 {items.length === 0 ? (
                   <tr>
                     <td colSpan={6}>
-                      <div className="ep-empty">Tidak ada item (DEMO).</div>
+                      <div className="ep-empty">Tidak ada item.</div>
                     </td>
                   </tr>
                 ) : (
                   items.map((it) => (
-                    <tr key={it.lineId || `${row.sourcePoId}:${it.code}`}>
+                    <tr key={it.lineId || `${localRow.sourcePoId}:${it.code}`}>
                       <td>{it.code}</td>
                       <td>{it.name}</td>
                       <td>
@@ -158,39 +221,50 @@ export function InboxPoDetailModal({ row, open, onClose }: Props) {
 
         <div className="ep-modal-foot">
           <span className="ep-po-confirm-hint">
-            {row.origin === "accurate"
-              ? "Accurate read-only · tidak ada mutasi dari Inbox"
-              : "Aksi DEMO · tidak permanen"}
+            {localRow.origin === "accurate"
+              ? accepted
+                ? "PO sudah diterima — workflow Eternal aktif"
+                : "Accurate read-only · Terima PO mengaktifkan workflow Eternal"
+              : "Sumber DEMO — Terima PO hanya untuk PO Accurate"}
           </span>
           <div className="ep-modal-foot-actions">
             <button type="button" className="ep-btn" onClick={onClose}>
               Tutup
             </button>
-            {row.origin === "demo" ? (
+            {showAccept ? (
               <button
                 type="button"
-                className="ep-btn primary"
-                disabled={demoConfirmed}
-                onClick={() => {
-                  setDemoConfirmed(true);
-                  setSuccessOpen(true);
-                }}
+                className={`ep-btn primary${phase === "loading" ? " is-busy" : ""}`}
+                disabled={acceptDisabled}
+                aria-busy={phase === "loading"}
+                onClick={() => void onTerimaPo()}
               >
-                Konfirmasi PO
+                {phase === "loading" ? (
+                  <>
+                    <span className="ep-btn-spinner" aria-hidden />
+                    Memproses...
+                  </>
+                ) : accepted || phase === "success" ? (
+                  "PO Diterima"
+                ) : (
+                  "Terima PO"
+                )}
               </button>
             ) : null}
           </div>
+          {phase === "error" && errorMsg ? (
+            <p className="ep-error" role="alert">
+              {errorMsg}
+            </p>
+          ) : null}
         </div>
 
-        {row.origin === "demo" ? (
-          <ConfirmationSuccessOverlay
-            open={successOpen}
-            title="PO Berhasil Dikonfirmasi"
-            message="Simulasi konfirmasi berhasil"
-            demo
-            onClose={() => setSuccessOpen(false)}
-          />
-        ) : null}
+        <ConfirmationSuccessOverlay
+          open={successOpen}
+          title="PO berhasil diterima"
+          message="Workflow produksi Eternal diaktifkan sesuai respons server."
+          onClose={() => setSuccessOpen(false)}
+        />
       </div>
     </div>
   );

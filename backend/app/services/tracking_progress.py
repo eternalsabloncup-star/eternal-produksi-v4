@@ -136,10 +136,19 @@ def _evaluate_one(
         )
 
     if mid == "order_verified":
-        # Tidak ada kontrak verifikasi — jangan mengarang Completed.
+        from app.services.po_acceptance import acceptance_block, is_po_accepted
+
+        if is_po_accepted(po_doc):
+            block = acceptance_block(po_doc)
+            return (
+                "completed",
+                "PO diterima Kepala Produksi — workflow Eternal aktif.",
+                _ts(block.get("accepted_at")),
+                gaps,
+            )
         return (
             "pending",
-            "Menunggu event verifikasi pesanan yang sah.",
+            "Menunggu penerimaan PO oleh Kepala Produksi.",
             None,
             gaps,
         )

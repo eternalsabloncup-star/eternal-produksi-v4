@@ -95,6 +95,8 @@ def _seed_users(db: Database) -> None:
 
 def _seed_packed(db: Database, qty: float = 200) -> None:
     upsert_sales_order(db, normalize_sales_order(SAMPLE_SALES_ORDER_STRUCTURE))
+    from tests.po_accept_helpers import mark_po_accepted
+    mark_po_accepted(db)
     for gate in ("design", "payment"):
         gates.set_gate(
             db, accurate_po_id=PO_ID, gate=gate, state=gates.GATE_OPEN, reason="uji api E"

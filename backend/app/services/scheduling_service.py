@@ -118,6 +118,13 @@ def create_allocations(
     schedule_date: str | None = None,
 ) -> dict[str, Any]:
     """Konfirmasi jadwal: bagi Qty item line ke satu/beberapa operator."""
+    from app.services.po_acceptance import PoAcceptanceError, require_po_accepted
+
+    try:
+        require_po_accepted(po_doc)
+    except PoAcceptanceError as exc:
+        raise ScheduleGateError(str(exc)) from exc
+
     require_action(db, user, task_type="penjadwalan", action="confirm")
     if not idempotency_key.strip():
         raise ValueError("idempotency_key wajib diisi.")

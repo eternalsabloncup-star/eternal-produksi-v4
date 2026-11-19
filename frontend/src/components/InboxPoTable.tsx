@@ -391,6 +391,14 @@ export function InboxPoTable({ tableId }: Props) {
         open={Boolean(selected)}
         row={selected}
         onClose={() => setSelected(null)}
+        onAccepted={(next) => {
+          setSelected(next);
+          setRows((prev) =>
+            prev.map((r) =>
+              r.accurateId && r.accurateId === next.accurateId ? next : r,
+            ),
+          );
+        }}
       />
     </>
   );
