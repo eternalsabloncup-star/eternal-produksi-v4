@@ -1,117 +1,109 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useParams } from "react-router-dom";
 import {
-  MILESTONE_STATE_LABEL,
   fetchPublicTracking,
   formatQty,
   formatTs,
-  type MilestoneState,
-  type TrackingMilestone,
+  type TrackingDocumentCategory,
   type TrackingPayload,
 } from "../../api/tracking";
+import { NavIcon, type NavIconName } from "../../app/icons";
+import { SnakeProgress } from "./SnakeProgress";
+import {
+  OWNER_DOC_SLOTS,
+  buildSnakeStages,
+  formatItemLine,
+  type OwnerDocSlot,
+} from "./snakeMapping";
 import "../../styles/tracking.css";
 
-type TabId = "ringkasan" | "timeline" | "dokumen" | "bantuan";
+const DOC_ICONS: Record<string, NavIconName> = {
+  design: "pen-tool",
+  payment: "wallet",
+  invoice: "file-text",
+  sj: "clipboard-list",
+  ship: "truck",
+};
 
-function badgeClass(state: MilestoneState | string): string {
-  if (state === "completed" || state === "Selesai") return "is-ok";
-  if (state === "in_progress" || state === "Dalam Proses" || state === "Berjalan")
-    return "is-run";
-  if (state === "attention_required" || state === "Perlu Perhatian") return "is-attn";
-  if (state === "not_applicable") return "is-na";
-  return "is-wait";
-}
-
-function ProgressBar({ ratio, label }: { ratio: number | null; label: string }) {
-  const pct = ratio === null ? null : Math.round(Math.min(1, Math.max(0, ratio)) * 100);
-  return (
-    <div className="elt-progress-block">
-      <div className="elt-progress-labels">
-        <span>{label}</span>
-        <span>{pct === null ? "Belum tersedia" : `${pct}%`}</span>
-      </div>
-      <div className="elt-bar" role="progressbar" aria-valuenow={pct ?? 0} aria-valuemin={0} aria-valuemax={100}>
-        <i style={{ width: `${pct ?? 0}%`, opacity: pct === null ? 0.25 : 1 }} />
-      </div>
-    </div>
-  );
-}
-
-function MilestoneRow({
-  m,
-  open,
-  onToggle,
-}: {
-  m: TrackingMilestone;
-  open: boolean;
-  onToggle: () => void;
-}) {
-  return (
-    <li className={`elt-step is-${m.state}`}>
-      <span className="elt-node" aria-hidden>
-        {m.state === "completed" ? "✓" : m.seq}
-      </span>
-      <div className="elt-step-body">
-        <div className="elt-step-head">
-          <button type="button" onClick={onToggle} aria-expanded={open}>
-            <div className="elt-step-title">{m.label}</div>
-            <div className="elt-step-time">{formatTs(m.timestamp)}</div>
-          </button>
-          <span className={`elt-badge ${badgeClass(m.state)}`}>
-            {MILESTONE_STATE_LABEL[m.state]}
-          </span>
-        </div>
-        {open ? <p className="elt-step-detail">{m.detail}</p> : null}
-      </div>
-    </li>
-  );
-}
+type Panel = "main" | "detail" | "timeline" | "help" | "doc";
 
 function ensureTrackingPwaMeta() {
   const head = document.head;
-  let manifest = head.querySelector('link[rel="manifest"][data-elt]') as HTMLLinkElement | null;
-  if (!manifest) {
-    manifest = document.createElement("link");
+  if (!head.querySelector('link[rel="manifest"][data-elt]')) {
+    const manifest = document.createElement("link");
     manifest.rel = "manifest";
     manifest.href = "/tracking/manifest.webmanifest";
     manifest.dataset.elt = "1";
     head.appendChild(manifest);
   }
-  let theme = head.querySelector('meta[name="theme-color"][data-elt]') as HTMLMetaElement | null;
-  if (!theme) {
-    theme = document.createElement("meta");
+  if (!head.querySelector('meta[name="theme-color"][data-elt]')) {
+    const theme = document.createElement("meta");
     theme.name = "theme-color";
     theme.content = "#1a4d3e";
     theme.dataset.elt = "1";
     head.appendChild(theme);
   }
   if ("serviceWorker" in navigator) {
-    void navigator.serviceWorker
-      .register("/tracking/sw.js", { scope: "/t/" })
-      .catch(() => {
-        /* offline fallback opsional — jangan blok UI */
-      });
+    void navigator.serviceWorker.register("/tracking/sw.js", { scope: "/t/" }).catch(() => {});
   }
+}
+
+function statusBadgeClass(label: string): string {
+  const t = label.toLowerCase();
+  if (t.includes("selesai")) return "is-ok";
+  if (t.includes("perhatian")) return "is-attn";
+  if (t.includes("menunggu") || t.includes("order masuk")) return "is-wait";
+  return "is-run";
+}
+
+function resolveDocSlot(docs: TrackingDocumentCategory[], slot: OwnerDocSlot) {
+  if (slot.apiCategories.length === 0) {
+    return {
+      status: "waiting" as const,
+      reason: "gap" in slot ? String(slot.gap) : "Belum tersedia",
+      items: [] as Array<Record<string, unknown>>,
+      canView: false,
+    };
+  }
+  const hit = docs.find((d) => slot.apiCategories.includes(d.category));
+  if (!hit) {
+    return {
+      status: "waiting" as const,
+      reason: "Belum tersedia",
+      items: [],
+      canView: false,
+    };
+  }
+  const canView =
+    hit.status === "available" &&
+    hit.items.some((it) => it.preview_allowed === true);
+  return {
+    status: hit.status,
+    reason: hit.reason || hit.note || null,
+    items: hit.items,
+    canView,
+  };
+}
+
+function docStatusText(status: string): string {
+  if (status === "available") return "Tersedia";
+  if (status === "locked") return "Terkunci";
+  return "Belum tersedia";
 }
 
 export function LiveTrackingPage() {
   const { customerSlug = "", poSlug = "", token = "" } = useParams();
-  const [tab, setTab] = useState<TabId>("ringkasan");
   const [data, setData] = useState<TrackingPayload | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [stale, setStale] = useState(false);
-  const [openIds, setOpenIds] = useState<Set<string>>(() => new Set());
-  const [shareNote, setShareNote] = useState<string | null>(null);
-  const mounted = useRef(true);
+  const [panel, setPanel] = useState<Panel>("main");
+  const [docKey, setDocKey] = useState<string | null>(null);
+  const [toast, setToast] = useState<string | null>(null);
 
   useEffect(() => {
-    mounted.current = true;
     ensureTrackingPwaMeta();
-    document.title = "Eternal Live Tracking";
-    return () => {
-      mounted.current = false;
-    };
+    document.title = "Live Tracking Pesanan — Eternal Packaging";
   }, []);
 
   useEffect(() => {
@@ -128,12 +120,10 @@ export function LiveTrackingPage() {
         setError(null);
         setStale(false);
         setLoading(false);
-        if (!isPoll) {
-          const active = payload.progress.active_milestone?.id;
-          setOpenIds(new Set(active ? [active] : []));
-        }
-        const interval = payload.polling?.interval_ms || 30000;
-        timer = window.setTimeout(() => void load(true), interval);
+        timer = window.setTimeout(
+          () => void load(true),
+          payload.polling?.interval_ms || 30000,
+        );
       } catch (err) {
         if (cancelled) return;
         if (isPoll && hasData) {
@@ -153,6 +143,31 @@ export function LiveTrackingPage() {
     };
   }, [customerSlug, poSlug, token]);
 
+  const snake = useMemo(
+    () => (data ? buildSnakeStages(data.milestones) : []),
+    [data],
+  );
+
+  const mappingGaps = useMemo(
+    () => snake.filter((s) => s.gap).map((s) => `${s.label}: ${s.gap}`),
+    [snake],
+  );
+
+  function flash(msg: string) {
+    setToast(msg);
+    window.setTimeout(() => setToast(null), 1800);
+  }
+
+  async function copyPo() {
+    if (!data?.order.po_no) return;
+    try {
+      await navigator.clipboard.writeText(data.order.po_no);
+      flash("Nomor PO disalin");
+    } catch {
+      flash("Gagal menyalin");
+    }
+  }
+
   async function onShare() {
     const url = window.location.href;
     try {
@@ -165,28 +180,27 @@ export function LiveTrackingPage() {
         return;
       }
       await navigator.clipboard.writeText(url);
-      setShareNote("Link disalin");
-      window.setTimeout(() => setShareNote(null), 2000);
+      flash("Link disalin");
     } catch {
-      setShareNote("Tidak dapat membagikan");
-      window.setTimeout(() => setShareNote(null), 2000);
+      flash("Tidak dapat membagikan");
     }
   }
 
   if (loading) {
     return (
       <div className="elt-root" aria-busy="true">
-        <header className="elt-header">
-          <div className="elt-brand">
-            <div className="elt-brand-name">Eternal Packaging</div>
-            <div className="elt-brand-sub">Live Tracking</div>
+        <header className="elt-topbar">
+          <div className="elt-topbar-inner">
+            <span className="elt-logo" aria-hidden />
+            <span className="elt-topbar-brand">ETERNAL PACKAGING</span>
           </div>
+          <h1 className="elt-page-title">Live Tracking Pesanan</h1>
         </header>
-        <section className="elt-section">
+        <div className="elt-body">
           <div className="elt-skel" />
           <div className="elt-skel" />
           <div className="elt-skel" />
-        </section>
+        </div>
       </div>
     );
   }
@@ -194,190 +208,327 @@ export function LiveTrackingPage() {
   if (error || !data) {
     return (
       <div className="elt-root">
-        <div className="elt-error">
-          <h1>Link tidak valid</h1>
-          <p>{error || "Pelacakan tidak ditemukan, kedaluwarsa, atau sudah dicabut."}</p>
+        <header className="elt-topbar">
+          <div className="elt-topbar-inner">
+            <span className="elt-logo" aria-hidden />
+            <span className="elt-topbar-brand">ETERNAL PACKAGING</span>
+          </div>
+          <h1 className="elt-page-title">Live Tracking Pesanan</h1>
+        </header>
+        <div className="elt-body">
+          <div className="elt-error">
+            <h2>Link tidak valid</h2>
+            <p>{error || "Pelacakan tidak ditemukan, kedaluwarsa, atau sudah dicabut."}</p>
+          </div>
         </div>
       </div>
     );
   }
 
-  const produced = data.progress.production.qty_produced;
-  const qc = data.progress.production.qty_qc_passed;
-  const shipped = data.progress.shipping.qty_shipped;
-  const remaining = data.progress.shipping.qty_remaining;
-  const qtyPo = data.progress.production.qty_po;
+  const items = data.order.summary.items || [];
+  const itemLine = formatItemLine(items);
+  const qtyLabel = `${formatQty(data.progress.production.qty_po)} pcs`;
+  const estimasi =
+    data.order.eta_ship?.trim() ||
+    (data.order.status_label ? data.order.status_label : "Belum tersedia");
+
+  const activeDoc = docKey
+    ? OWNER_DOC_SLOTS.find((s) => s.key === docKey) ?? null
+    : null;
+  const activeDocResolved = activeDoc
+    ? resolveDocSlot(data.documents, activeDoc)
+    : null;
 
   return (
     <div className="elt-root">
-      <header className="elt-header">
-        <div className="elt-brand-row">
-          <div className="elt-brand">
-            <div className="elt-brand-name">Eternal Packaging</div>
-            <div className="elt-brand-sub">{data.order.customer}</div>
-          </div>
-          <button type="button" className="elt-share" onClick={() => void onShare()}>
-            {shareNote || "Bagikan"}
+      <header className="elt-topbar">
+        <div className="elt-topbar-inner">
+          <span className="elt-logo" aria-hidden>
+            S
+          </span>
+          <span className="elt-topbar-brand">ETERNAL PACKAGING</span>
+          <button
+            type="button"
+            className="elt-share-quiet"
+            onClick={() => void onShare()}
+            aria-label="Bagikan link pelacakan"
+          >
+            Bagikan
           </button>
         </div>
-        <div className="elt-meta">
-          <div className="elt-po">{data.order.po_no}</div>
-          <div className="elt-status-row">
-            <span className={`elt-badge ${badgeClass(data.order.status_label)}`}>
-              {data.order.status_label}
-            </span>
-            <span className={`elt-updated${stale ? " elt-stale" : ""}`}>
-              {stale
-                ? "Koneksi bermasalah — menampilkan data terakhir"
-                : `Diperbarui ${formatTs(data.order.last_updated_at || data.generated_at)}`}
-            </span>
-          </div>
-        </div>
+        <h1 className="elt-page-title">Live Tracking Pesanan</h1>
       </header>
 
-      {tab === "ringkasan" ? (
-        <section className="elt-section" aria-label="Ringkasan pesanan">
-          <h2 className="elt-section-title">Ringkasan</h2>
-          <div className="elt-summary">
-            <div className="elt-stat is-wide">
-              <span>Pelanggan</span>
-              <strong>{data.order.customer}</strong>
+      <div className="elt-body">
+        {stale ? (
+          <p className="elt-stale" role="status">
+            Koneksi bermasalah — menampilkan data terakhir.
+          </p>
+        ) : null}
+        {toast ? (
+          <p className="elt-toast" role="status">
+            {toast}
+          </p>
+        ) : null}
+
+        {/* B — PO card: pelanggan dominan → PO → ITEM/QTY/ESTIMASI */}
+        <section className="elt-card" aria-label="Informasi PO">
+          <div className="elt-po-head">
+            <div className="elt-po-customer">
+              <div className="elt-kicker">PELANGGAN / OUTLET</div>
+              <h2 className="elt-customer-name">{data.order.customer || "—"}</h2>
             </div>
-            <div className="elt-stat">
-              <span>Tanggal masuk</span>
-              <strong>{data.order.po_date || "—"}</strong>
+            <span className={`elt-status-pill ${statusBadgeClass(data.order.status_label)}`}>
+              {data.order.status_label}
+            </span>
+          </div>
+
+          <div className="elt-po-number-block">
+            <div className="elt-kicker">NO. PO</div>
+            <div className="elt-po-row">
+              <strong className="elt-po-no">{data.order.po_no}</strong>
+              <button
+                type="button"
+                className="elt-icon-btn"
+                onClick={() => void copyPo()}
+                aria-label="Salin nomor PO"
+                title="Salin nomor PO"
+              >
+                <svg width="16" height="16" viewBox="0 0 16 16" aria-hidden>
+                  <rect x="5" y="5" width="8" height="9" rx="1.5" fill="none" stroke="currentColor" strokeWidth="1.4" />
+                  <rect x="3" y="2" width="8" height="9" rx="1.5" fill="none" stroke="currentColor" strokeWidth="1.4" />
+                </svg>
+              </button>
             </div>
-            <div className="elt-stat">
-              <span>Total Qty PO</span>
-              <strong>{formatQty(qtyPo)}</strong>
+          </div>
+
+          <hr className="elt-divider" />
+
+          <div className="elt-po-grid">
+            <div className="elt-po-grid-item is-wide">
+              <div className="elt-kicker">ITEM</div>
+              <div className="elt-value">{itemLine}</div>
             </div>
-            <div className="elt-stat">
-              <span>Qty diproduksi</span>
-              <strong>{formatQty(produced)}</strong>
+            <div>
+              <div className="elt-kicker">QTY</div>
+              <div className="elt-value">{qtyLabel}</div>
             </div>
-            <div className="elt-stat">
-              <span>Qty lolos QC</span>
-              <strong>{formatQty(qc)}</strong>
+            <div>
+              <div className="elt-kicker">ESTIMASI</div>
+              <div className="elt-value">{estimasi}</div>
             </div>
-            <div className="elt-stat">
-              <span>Qty dikirim</span>
-              <strong>{formatQty(shipped)}</strong>
-            </div>
-            <div className="elt-stat">
-              <span>Qty belum dikirim</span>
-              <strong>{formatQty(remaining)}</strong>
-            </div>
-            {data.order.eta_ship ? (
-              <div className="elt-stat is-wide">
-                <span>Estimasi kirim (sumber PO)</span>
-                <strong>{data.order.eta_ship}</strong>
+          </div>
+        </section>
+
+        {/* C — Snake */}
+        <section className="elt-card" aria-label="Progress pesanan">
+          <div className="elt-card-head">
+            <h2 className="elt-card-title">Progress Pesanan</h2>
+            <button
+              type="button"
+              className="elt-text-link"
+              onClick={() => setPanel("timeline")}
+            >
+              Lihat Timeline
+            </button>
+          </div>
+          <SnakeProgress stages={snake} />
+        </section>
+
+        {/* D — Documents 3+2 */}
+        <section className="elt-card" aria-label="Dokumen pesanan">
+          <h2 className="elt-card-title">Dokumen Pesanan</h2>
+          <div className="elt-doc-grid">
+            {OWNER_DOC_SLOTS.map((slot) => {
+              const resolved = resolveDocSlot(data.documents, slot);
+              return (
+                <article key={slot.key} className="elt-doc-tile">
+                  <div className="elt-doc-icon" aria-hidden>
+                    <NavIcon name={DOC_ICONS[slot.key] ?? "file-text"} size={18} strokeWidth={2} />
+                  </div>
+                  <h3>{slot.title}</h3>
+                  <p className={`elt-doc-status is-${resolved.status}`}>
+                    ○ {docStatusText(resolved.status)}
+                  </p>
+                  <button
+                    type="button"
+                    className="elt-text-link"
+                    disabled={!resolved.canView}
+                    onClick={() => {
+                      if (!resolved.canView) return;
+                      setDocKey(slot.key);
+                      setPanel("doc");
+                    }}
+                  >
+                    Lihat
+                  </button>
+                </article>
+              );
+            })}
+          </div>
+        </section>
+
+        {/* Footer actions */}
+        <div className="elt-actions" role="group" aria-label="Aksi">
+          <button type="button" onClick={() => setPanel("detail")}>
+            Detail Pesanan
+          </button>
+          <button type="button" onClick={() => setPanel("timeline")}>
+            Lihat Timeline
+          </button>
+          <button type="button" onClick={() => setPanel("help")}>
+            Bantuan
+          </button>
+        </div>
+
+        <p className="elt-copyright">© Eternal Packaging</p>
+        <p className="elt-updated-foot">
+          Diperbarui {formatTs(data.order.last_updated_at || data.generated_at)}
+        </p>
+      </div>
+
+      {/* Panels */}
+      {panel !== "main" ? (
+        <div className="elt-panel" role="dialog" aria-modal="true">
+          <div className="elt-panel-bar">
+            <button type="button" className="elt-text-link" onClick={() => setPanel("main")}>
+              ← Kembali
+            </button>
+            <strong>
+              {panel === "detail"
+                ? "Detail Pesanan"
+                : panel === "timeline"
+                  ? "Timeline Peristiwa"
+                  : panel === "help"
+                    ? "Bantuan"
+                    : activeDoc?.title || "Dokumen"}
+            </strong>
+            <span />
+          </div>
+          <div className="elt-panel-body">
+            {panel === "detail" ? (
+              <>
+                <p className="elt-kicker">KPI & ringkasan Qty (dari API)</p>
+                <dl className="elt-dl">
+                  <div>
+                    <dt>Tanggal masuk</dt>
+                    <dd>{data.order.po_date || "—"}</dd>
+                  </div>
+                  <div>
+                    <dt>Total Qty PO</dt>
+                    <dd>{formatQty(data.progress.production.qty_po)}</dd>
+                  </div>
+                  <div>
+                    <dt>Qty diproduksi (tervalidasi)</dt>
+                    <dd>{formatQty(data.progress.production.qty_produced)}</dd>
+                  </div>
+                  <div>
+                    <dt>Qty lolos QC</dt>
+                    <dd>{formatQty(data.progress.production.qty_qc_passed)}</dd>
+                  </div>
+                  <div>
+                    <dt>Qty dikirim</dt>
+                    <dd>{formatQty(data.progress.shipping.qty_shipped)}</dd>
+                  </div>
+                  <div>
+                    <dt>Qty belum dikirim</dt>
+                    <dd>{formatQty(data.progress.shipping.qty_remaining)}</dd>
+                  </div>
+                  <div>
+                    <dt>Milestone selesai</dt>
+                    <dd>{data.progress.milestone.label}</dd>
+                  </div>
+                </dl>
+                <p className="elt-note">
+                  Catatan Qty: progres Cetak memakai target task baris Cetak (bukan
+                  total Qty seluruh PO). Contoh fixture: Qty PO 1.050; task cetak
+                  400/1.000 — scope item Cetak, bukan kesalahan format tampilan.
+                </p>
+                <h3 className="elt-subhead">Item</h3>
+                <ul className="elt-item-list">
+                  {items.map((it) => (
+                    <li key={`${it.item_code}-${it.item_name}`}>
+                      <strong>{it.item_name}</strong>
+                      <span>
+                        {formatQty(it.qty)} {it.unit}
+                        {it.process_kind ? ` · ${it.process_kind}` : ""}
+                        {it.color ? ` · ${it.color}` : ""}
+                      </span>
+                    </li>
+                  ))}
+                </ul>
+              </>
+            ) : null}
+
+            {panel === "timeline" ? (
+              <>
+                <p className="elt-note">
+                  Riwayat dari event milestone backend (bukan duplikasi snake).
+                </p>
+                <ol className="elt-event-list">
+                  {data.milestones.map((m) => (
+                    <li key={m.id} className={`is-${m.state}`}>
+                      <div className="elt-event-head">
+                        <strong>
+                          {m.seq}. {m.label}
+                        </strong>
+                        <span>{m.state}</span>
+                      </div>
+                      <p>{m.detail}</p>
+                      <time>{formatTs(m.timestamp)}</time>
+                    </li>
+                  ))}
+                </ol>
+                {mappingGaps.length ? (
+                  <>
+                    <h3 className="elt-subhead">Gap mapping snake → backend</h3>
+                    <ul className="elt-gap-list">
+                      {mappingGaps.map((g) => (
+                        <li key={g}>{g}</li>
+                      ))}
+                    </ul>
+                  </>
+                ) : null}
+              </>
+            ) : null}
+
+            {panel === "help" ? (
+              <div className="elt-help-block">
+                <h2>{data.help.title}</h2>
+                <p>{data.help.hours}</p>
+                <p>
+                  Email:{" "}
+                  <a
+                    href={`mailto:${data.help.email}?subject=PO%20${encodeURIComponent(data.order.po_no)}`}
+                  >
+                    {data.help.email}
+                  </a>
+                </p>
+                <p>{data.help.note}</p>
               </div>
             ) : null}
-          </div>
 
-          <div style={{ marginTop: 16 }}>
-            <ProgressBar
-              ratio={data.progress.milestone.ratio}
-              label={`Milestone ${data.progress.milestone.label}`}
-            />
-            <ProgressBar ratio={data.progress.production.ratio} label="Progres produksi (Qty)" />
-            <ProgressBar ratio={data.progress.shipping.ratio} label="Progres pengiriman (Qty)" />
-          </div>
-        </section>
-      ) : null}
-
-      {tab === "timeline" ? (
-        <section className="elt-section" aria-label="Timeline 15 tahap">
-          <h2 className="elt-section-title">Timeline</h2>
-          <ol className="elt-timeline">
-            {data.milestones.map((m) => (
-              <MilestoneRow
-                key={m.id}
-                m={m}
-                open={openIds.has(m.id)}
-                onToggle={() =>
-                  setOpenIds((prev) => {
-                    const next = new Set(prev);
-                    if (next.has(m.id)) next.delete(m.id);
-                    else next.add(m.id);
-                    return next;
-                  })
-                }
-              />
-            ))}
-          </ol>
-        </section>
-      ) : null}
-
-      {tab === "dokumen" ? (
-        <section className="elt-section" aria-label="Dokumen">
-          <h2 className="elt-section-title">Dokumen</h2>
-          <div className="elt-docs">
-            {data.documents.map((doc) => (
-              <article key={doc.category} className="elt-doc">
-                <div className="elt-doc-head">
-                  <h3>{doc.label}</h3>
-                  <span className={`elt-badge ${badgeClass(doc.status === "available" ? "completed" : doc.status === "locked" ? "attention_required" : "pending")}`}>
-                    {doc.status === "available"
-                      ? "Tersedia"
-                      : doc.status === "locked"
-                        ? "Terkunci"
-                        : "Menunggu"}
-                  </span>
-                </div>
-                {doc.reason ? <p className="elt-step-detail">{doc.reason}</p> : null}
-                {doc.note ? <p className="elt-step-detail">{doc.note}</p> : null}
-                {doc.items.length > 0 ? (
-                  <ul className="elt-doc-list">
-                    {doc.items.map((item, idx) => (
-                      <li key={String(item.id || idx)}>
-                        <span>{String(item.number || item.id || "Dokumen")}</span>
-                        <span>{String(item.date || item.confirmed_at || "")}</span>
+            {panel === "doc" && activeDoc && activeDocResolved ? (
+              <>
+                {!activeDocResolved.canView ? (
+                  <p className="elt-note">
+                    {activeDocResolved.reason || "Dokumen tidak tersedia atau akses ditolak."}
+                  </p>
+                ) : (
+                  <ul className="elt-item-list">
+                    {activeDocResolved.items.map((it, idx) => (
+                      <li key={String(it.id || idx)}>
+                        <strong>{String(it.number || it.id || "Dokumen")}</strong>
+                        <span>{String(it.date || it.confirmed_at || "")}</span>
                       </li>
                     ))}
                   </ul>
-                ) : null}
-              </article>
-            ))}
+                )}
+              </>
+            ) : null}
           </div>
-        </section>
+        </div>
       ) : null}
-
-      {tab === "bantuan" ? (
-        <section className="elt-section" aria-label="Bantuan">
-          <div className="elt-help">
-            <h2>{data.help.title}</h2>
-            <p>{data.help.hours}</p>
-            <p>
-              Email:{" "}
-              <a href={`mailto:${data.help.email}?subject=PO%20${encodeURIComponent(data.order.po_no)}`}>
-                {data.help.email}
-              </a>
-            </p>
-            <p>{data.help.note}</p>
-          </div>
-        </section>
-      ) : null}
-
-      <nav className="elt-nav" aria-label="Navigasi pelacakan">
-        {(
-          [
-            ["ringkasan", "Ringkasan"],
-            ["timeline", "Timeline"],
-            ["dokumen", "Dokumen"],
-            ["bantuan", "Bantuan"],
-          ] as const
-        ).map(([id, label]) => (
-          <button
-            key={id}
-            type="button"
-            className={tab === id ? "is-active" : undefined}
-            onClick={() => setTab(id)}
-          >
-            {label}
-          </button>
-        ))}
-      </nav>
     </div>
   );
 }
