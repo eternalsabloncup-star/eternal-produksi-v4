@@ -63,13 +63,35 @@ def permissions_for_role(role: str | None) -> frozenset[str]:
 
 
 def has_permission(user_or_role: dict[str, Any] | str | None, permission: str) -> bool:
+    """Resolve module permission.
+
+    Prefer denormalized ``effective_module_permissions`` on the user document
+    (custom roles + refreshed system-role grants). Fall back to hard-coded
+    ``_ROLE_GRANTS`` for legacy users without the field.
+    """
     if isinstance(user_or_role, dict):
         role = user_or_role.get("role")
+        if is_super_admin(role):
+            return True
+        effective = user_or_role.get("effective_module_permissions")
+        if isinstance(effective, list):
+            return permission in effective
     else:
         role = user_or_role
     if is_super_admin(role):
         return True
     return permission in permissions_for_role(role)
+
+
+SENSITIVE_MODULE_PERMISSIONS: Final[frozenset[str]] = frozenset(
+    {
+        PERM_MANAGE_USERS,
+        PERM_MANAGE_ROLES,
+        PERM_MANAGE_SETTINGS,
+        PERM_OPERATIONS_FULL,
+        PERM_BYPASS_PAYMENT,
+    }
+)
 
 
 def branch_filter_applies(user: dict[str, Any]) -> bool:
