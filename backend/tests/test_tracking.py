@@ -248,77 +248,159 @@ def test_milestone_progress_not_used_as_production_percent(db: Database) -> None
     assert progress["completion_blocked_reason"]
 
 
-def test_order_complete_requires_shipped_qty(db: Database) -> None:
+def _seed_pr6_delivery(
+    db: Database,
+    *,
+    accurate_sj_id: str,
+    qty: float,
+    superseded_by: str | None = None,
+    with_loading: bool = False,
+    with_success: bool = False,
+    soft_delete_evidence: bool = False,
+) -> None:
+    """Fixture bentuk dokumen mengikuti kontrak PR #6 (tanpa mengimpor modulnya)."""
+    for name in (
+        "accurate_delivery_notes",
+        "loading_events",
+        "delivery_events",
+        "evidence_files",
+    ):
+        if name not in db.list_collection_names():
+            db.create_collection(name)
+
+    db["accurate_delivery_notes"].insert_one(
+        {
+            "accurate_sj_id": accurate_sj_id,
+            "accurate_po_id": "95106",
+            "sj_no": f"SJ/{accurate_sj_id}",
+            "items": [{"accurate_line_id": "line-1", "qty": qty, "item_name": "Cup"}],
+            "superseded_by": superseded_by,
+        }
+    )
+    if with_loading:
+        db["loading_events"].insert_one(
+            {
+                "loading_id": f"loading:{accurate_sj_id}:v1",
+                "accurate_sj_id": accurate_sj_id,
+                "accurate_po_id": "95106",
+                "status": "aktif",
+            }
+        )
+    if with_success:
+        photo_ids = [f"evid:delivery-photo:{accurate_sj_id}:v1", f"evid:delivery-photo:{accurate_sj_id}:v2"]
+        sig_id = f"evid:delivery-signature:{accurate_sj_id}:v1"
+        db["delivery_events"].insert_one(
+            {
+                "delivery_event_id": f"delivery:{accurate_sj_id}:attempt-1",
+                "accurate_sj_id": accurate_sj_id,
+                "accurate_po_id": "95106",
+                "attempt": 1,
+                "status": "berhasil",
+                "recipient_name": "Penerima Uji",
+                "photo_evidence_ids": photo_ids,
+                "signature_evidence_id": sig_id,
+                "created_at": datetime.now(timezone.utc),
+            }
+        )
+        for eid in photo_ids + [sig_id]:
+            scope = "delivery-signature" if "signature" in eid else "delivery-photo"
+            db["evidence_files"].insert_one(
+                {
+                    "evidence_id": eid,
+                    "scope": scope,
+                    "scope_id": accurate_sj_id,
+                    "deleted_at": datetime.now(timezone.utc) if soft_delete_evidence else None,
+                }
+            )
+
+
+def test_order_complete_requires_validated_delivery_qty(db: Database) -> None:
+    """Selesai hanya jika Qty diterima sah (bukan sekadar Qty SJ)."""
     _sync_po(db)
     from app.repositories.po_repository import get_by_accurate_id
+    from app.services.tracking_progress import qty_po_total
 
     po = get_by_accurate_id(db, "95106")
     assert po is not None
-    db.create_collection("delivery_notes")
-    # Partial SJ — jangan double count revisi
-    db["delivery_notes"].insert_many(
-        [
-            {
-                "accurate_po_id": "95106",
-                "sj_no": "SJ-1",
-                "accurate_delivery_note_id": "dn-1",
-                "qty_shipped_net": 400,
-                "status": "delivered",
-            },
-            {
-                "accurate_po_id": "95106",
-                "sj_no": "SJ-1-REV",
-                "accurate_delivery_note_id": "dn-1b",
-                "qty_shipped_net": 400,
-                "is_superseded": True,
-            },
-            {
-                "accurate_po_id": "95106",
-                "sj_no": "SJ-2",
-                "accurate_delivery_note_id": "dn-2",
-                "qty_shipped_net": 200,
-                "status": "delivered",
-                "soft_deleted": True,  # harus diabaikan adapter
-            },
-        ]
-    )
+    total = qty_po_total(po)
+
+    # SJ dibuat, belum Loading → belum selesai
+    _seed_pr6_delivery(db, accurate_sj_id="SJ-A", qty=total, with_loading=False, with_success=False)
     wf = load_workflow_snapshot(db, "95106")
-    # soft_deleted filtered → only 400 from dn-1 (dn-1b superseded, dn-2 soft deleted)
-    assert len(wf["delivery_notes"]) == 2  # superseded still in list but qty helper skips
-    milestones = evaluate_milestones(po, wf)
-    progress = compute_progress(milestones, po, wf)
-    assert progress["shipping"]["qty_shipped"] == 400
+    progress = compute_progress(evaluate_milestones(po, wf), po, wf)
+    assert progress["shipping"]["qty_delivered"] == 0.0
     assert progress["order_complete"] is False
 
-    # Full ship
-    db["delivery_notes"].insert_one(
+    # Loading selesai, belum delivered → belum selesai
+    db["loading_events"].insert_one(
         {
+            "loading_id": "loading:SJ-A:v1",
+            "accurate_sj_id": "SJ-A",
             "accurate_po_id": "95106",
-            "sj_no": "SJ-3",
-            "accurate_delivery_note_id": "dn-3",
-            "qty_shipped_net": 3600,  # sample total qty ~4000? check sample
-            "status": "delivered",
+            "status": "aktif",
         }
     )
-    # Recalculate with enough qty
-    from app.services.tracking_progress import qty_po_total
+    wf = load_workflow_snapshot(db, "95106")
+    progress = compute_progress(evaluate_milestones(po, wf), po, wf)
+    assert progress["shipping"]["qty_delivered"] == 0.0
+    assert progress["order_complete"] is False
+    by_id = {m["id"]: m for m in evaluate_milestones(po, wf)}
+    assert by_id["ready_to_ship"]["state"] == "completed"
+    assert by_id["order_complete"]["state"] != "completed"
 
-    total = qty_po_total(po)
-    db["delivery_notes"].delete_many({})
-    db["delivery_notes"].insert_one(
-        {
-            "accurate_po_id": "95106",
-            "sj_no": "SJ-FULL",
-            "accurate_delivery_note_id": "dn-full",
-            "qty_shipped_net": total,
-            "status": "delivered",
-        }
+    # Pengiriman parsial → belum selesai
+    for name in ("accurate_delivery_notes", "loading_events", "delivery_events", "evidence_files"):
+        db[name].delete_many({})
+    half = total / 2
+    _seed_pr6_delivery(
+        db, accurate_sj_id="SJ-P1", qty=half, with_loading=True, with_success=True
     )
-    wf2 = load_workflow_snapshot(db, "95106")
-    m2 = evaluate_milestones(po, wf2)
-    p2 = compute_progress(m2, po, wf2)
-    assert p2["order_complete"] is True
-    assert p2["shipping"]["qty_shipped"] == total
+    wf = load_workflow_snapshot(db, "95106")
+    progress = compute_progress(evaluate_milestones(po, wf), po, wf)
+    assert progress["shipping"]["qty_delivered"] == half
+    assert progress["order_complete"] is False
+
+    # SJ direvisi/dibatalkan (superseded) → tidak double-count
+    _seed_pr6_delivery(
+        db,
+        accurate_sj_id="SJ-OLD",
+        qty=total,
+        superseded_by="SJ-P1",
+        with_loading=True,
+        with_success=True,
+    )
+    wf = load_workflow_snapshot(db, "95106")
+    progress = compute_progress(evaluate_milestones(po, wf), po, wf)
+    assert progress["shipping"]["qty_delivered"] == half
+    assert progress["order_complete"] is False
+
+    # Bukti soft-deleted → tidak dihitung
+    for name in ("accurate_delivery_notes", "loading_events", "delivery_events", "evidence_files"):
+        db[name].delete_many({})
+    _seed_pr6_delivery(
+        db,
+        accurate_sj_id="SJ-SOFT",
+        qty=total,
+        with_loading=True,
+        with_success=True,
+        soft_delete_evidence=True,
+    )
+    wf = load_workflow_snapshot(db, "95106")
+    progress = compute_progress(evaluate_milestones(po, wf), po, wf)
+    assert progress["shipping"]["qty_delivered"] == 0.0
+    assert progress["order_complete"] is False
+
+    # Semua Qty diterima dengan bukti valid → selesai
+    for name in ("accurate_delivery_notes", "loading_events", "delivery_events", "evidence_files"):
+        db[name].delete_many({})
+    _seed_pr6_delivery(
+        db, accurate_sj_id="SJ-FULL", qty=total, with_loading=True, with_success=True
+    )
+    wf = load_workflow_snapshot(db, "95106")
+    progress = compute_progress(evaluate_milestones(po, wf), po, wf)
+    assert progress["shipping"]["qty_delivered"] == total
+    assert progress["order_complete"] is True
+    assert progress["shipping"]["source"] == "delivery_events+accurate_delivery_notes"
 
 
 def test_design_gate_maps_approval_milestone(db: Database) -> None:

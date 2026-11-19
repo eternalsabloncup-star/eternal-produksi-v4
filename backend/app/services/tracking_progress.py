@@ -16,7 +16,10 @@ from app.domain.tracking_milestones import (
 )
 from app.services.tracking_workflow_adapter import (
     as_utc,
+    eligible_delivered_sj_qty,
     gate_state,
+    note_has_active_delivery_success,
+    note_has_active_loading,
     task_aggregate,
 )
 
@@ -233,7 +236,11 @@ def _evaluate_one(
         return "pending", "Belum ada bukti penyelesaian produksi.", None, gaps
 
     if mid == "shipping_prep":
-        notes = workflow.get("delivery_notes") or []
+        notes = [
+            n
+            for n in (workflow.get("delivery_notes") or [])
+            if not n.get("superseded_by")
+        ]
         if notes:
             return (
                 "completed",
@@ -246,105 +253,112 @@ def _evaluate_one(
         return "pending", "Belum ada surat jalan untuk PO ini.", None, gaps
 
     if mid == "ready_to_ship":
-        notes = workflow.get("delivery_notes") or []
-        ready = [n for n in notes if n.get("ready_to_ship") or n.get("status") in ("siap_kirim", "ready")]
-        if ready:
-            return "completed", "Barang ditandai siap dikirim.", _ts(ready[-1].get("updated_at")), gaps
-        if not avail.get("delivery_notes"):
-            return "pending", "Event siap kirim belum tersedia.", None, gaps
+        # Kontrak PR#6: Loading aktif = siap/sedang dimuat.
+        notes = [
+            n
+            for n in (workflow.get("delivery_notes") or [])
+            if not n.get("superseded_by")
+        ]
+        loaded = [n for n in notes if note_has_active_loading(n, workflow)]
+        if loaded:
+            return (
+                "completed",
+                "Loading aktif tercatat untuk surat jalan.",
+                _ts(datetime.now(timezone.utc)),
+                gaps,
+            )
+        if not avail.get("delivery_notes") and not avail.get("loading_events"):
+            return "pending", "Event Loading belum tersedia.", None, gaps
         if notes:
-            return "in_progress", "SJ ada; belum ditandai siap kirim.", None, gaps
-        return "pending", "Menunggu penanda siap kirim.", None, gaps
+            return "in_progress", "SJ ada; Loading belum dikonfirmasi.", None, gaps
+        return "pending", "Menunggu Loading.", None, gaps
 
     if mid == "in_transit":
+        notes = [
+            n
+            for n in (workflow.get("delivery_notes") or [])
+            if not n.get("superseded_by")
+        ]
+        loaded = [n for n in notes if note_has_active_loading(n, workflow)]
+        delivered = [n for n in notes if note_has_active_delivery_success(n, workflow)]
+        # Sudah loading, belum ada penerimaan sah → dalam perjalanan.
+        if loaded and not delivered:
+            return "in_progress", "Barang sudah Loading; menunggu konfirmasi diterima.", None, gaps
+        if delivered and any(note_has_active_loading(n, workflow) for n in notes if n not in delivered):
+            return "in_progress", "Sebagian SJ masih dalam perjalanan.", None, gaps
         agg = task_aggregate(tasks_by_type.get("pengiriman") or [])
-        notes = workflow.get("delivery_notes") or []
-        transit = [n for n in notes if n.get("status") in ("in_transit", "dalam_pengiriman", "shipped")]
-        if transit:
-            return "in_progress", "Pengiriman sedang berjalan.", _ts(transit[-1].get("updated_at")), gaps
         st, detail, ts = _state_from_task(
-            agg, source_available=bool(avail.get("tasks") or avail.get("delivery_notes"))
+            agg,
+            source_available=bool(
+                avail.get("tasks")
+                or avail.get("delivery_notes")
+                or avail.get("delivery_events")
+            ),
         )
         return st, detail, ts, gaps
 
     if mid == "delivered":
-        evidence = workflow.get("delivery_evidence") or []
         notes = workflow.get("delivery_notes") or []
-        delivered_notes = [n for n in notes if n.get("status") in ("delivered", "diterima")]
-        if evidence or delivered_notes:
-            src = evidence[-1] if evidence else delivered_notes[-1]
+        delivered_notes = [
+            n for n in notes if note_has_active_delivery_success(n, workflow)
+        ]
+        if delivered_notes:
             return (
                 "completed",
-                "Bukti penerimaan / status diterima tercatat.",
-                _ts(src.get("confirmed_at") or src.get("updated_at") or src.get("created_at")),
-                gaps,
-            )
-        if not avail.get("delivery_evidence") and not avail.get("delivery_notes"):
-            return "pending", "Bukti pengiriman belum tersedia di backend.", None, gaps
-        return "pending", "Belum ada konfirmasi barang diterima.", None, gaps
-
-    if mid == "order_complete":
-        # Gate ketat: butuh qty delivered >= qty PO. Tanpa ledger pengiriman → jangan selesai.
-        qty_total = qty_po_total(po_doc)
-        shipped = _qty_shipped_validated(workflow)
-        if shipped is None:
-            return (
-                "pending",
-                "Gate final menunggu Qty terkirim tervalidasi.",
-                None,
-                gaps,
-            )
-        if qty_total > 0 and shipped + 1e-9 >= qty_total:
-            return (
-                "completed",
-                f"Qty terkirim {shipped} memenuhi Qty PO {qty_total}.",
+                "Konfirmasi pengiriman berhasil dengan bukti aktif.",
                 _ts(datetime.now(timezone.utc)),
                 gaps,
             )
-        if shipped > 0:
+        if not avail.get("delivery_events") and not avail.get("delivery_notes"):
+            return "pending", "Bukti pengiriman belum tersedia di backend.", None, gaps
+        return "pending", "Belum ada konfirmasi barang diterima yang sah.", None, gaps
+
+    if mid == "order_complete":
+        # Gate ketat: Qty diterima sah (delivery_events=berhasil + bukti aktif) >= Qty PO.
+        qty_total = qty_po_total(po_doc)
+        delivered_qty = _qty_delivered_validated(workflow)
+        if delivered_qty is None:
             return (
-                "in_progress",
-                f"Qty terkirim {shipped} dari {qty_total} — belum lengkap.",
+                "pending",
+                "Gate final menunggu Qty diterima tervalidasi.",
                 None,
                 gaps,
             )
-        return "pending", "Kewajiban pengiriman belum terpenuhi.", None, gaps
+        if qty_total > 0 and delivered_qty + 1e-9 >= qty_total:
+            return (
+                "completed",
+                f"Qty diterima {delivered_qty} memenuhi Qty PO {qty_total}.",
+                _ts(datetime.now(timezone.utc)),
+                gaps,
+            )
+        if delivered_qty > 0:
+            return (
+                "in_progress",
+                f"Qty diterima {delivered_qty} dari {qty_total} — belum lengkap.",
+                None,
+                gaps,
+            )
+        return "pending", "Kewajiban penerimaan barang belum terpenuhi.", None, gaps
 
     return "unknown", "Pemetaan milestone belum dikenali.", None, gaps
 
 
-def _qty_shipped_validated(workflow: dict[str, Any]) -> float | None:
-    """Jumlah Qty terkirim sah tanpa double-count revisi/soft-delete.
+def _qty_delivered_validated(workflow: dict[str, Any]) -> float | None:
+    """Qty diterima sah dari kontrak PR#6 — bukan sekadar Qty SJ.
 
-    Prefer field ``qty_shipped_net`` pada delivery note bila ada; else jumlah
-    ``qty`` pada note aktif. Return None jika sumber tidak ada.
+    Join wajib: SJ aktif milik PO → event ``berhasil`` (po/sj cocok, penerima
+    terisi) → ≥2 foto + 1 tanda tangan aktif dengan ``scope``/``scope_id`` cocok.
+    Dedupe per ``accurate_sj_id``; evidence ID tidak boleh mengesahkan >1 SJ.
+
+    Return None jika koleksi sumber belum tersedia.
     """
     avail = workflow.get("availability") or {}
-    if not avail.get("delivery_notes"):
+    if not avail.get("delivery_notes") or not avail.get("delivery_events"):
         return None
-    notes = workflow.get("delivery_notes") or []
-    if not notes:
+    if not avail.get("delivery_evidence"):
+        # Tanpa koleksi evidence, tidak ada cara membuktikan penerimaan sah.
         return 0.0
-    total = 0.0
-    seen_keys: set[str] = set()
-    for note in notes:
-        # Revisi: pakai identity stabil; skip superseded.
-        if note.get("superseded_by") or note.get("is_superseded"):
-            continue
-        key = str(
-            note.get("accurate_delivery_note_id")
-            or note.get("sj_no")
-            or note.get("id")
-            or id(note)
-        )
-        if key in seen_keys:
-            continue
-        seen_keys.add(key)
-        if "qty_shipped_net" in note:
-            total += float(note.get("qty_shipped_net") or 0)
-        else:
-            total += float(note.get("qty") or note.get("qty_total") or 0)
-    return total
+    return float(sum(row["qty"] for row in eligible_delivered_sj_qty(workflow)))
 
 
 def compute_progress(
@@ -370,18 +384,18 @@ def compute_progress(
     qc_agg = task_aggregate(tasks_by_type.get("qc-packing") or [])
     qty_qc = float(qc_agg.get("qty_confirmed") or 0) if qc_agg.get("present") else None
 
-    qty_shipped = _qty_shipped_validated(workflow)
+    qty_delivered = _qty_delivered_validated(workflow)
     qty_remaining = None
-    if qty_shipped is not None and qty_total is not None:
-        qty_remaining = max(0.0, qty_total - qty_shipped)
+    if qty_delivered is not None and qty_total is not None:
+        qty_remaining = max(0.0, qty_total - qty_delivered)
 
     production_ratio = None
     if qty_produced is not None and qty_total > 0:
         production_ratio = min(1.0, qty_produced / qty_total)
 
     shipping_ratio = None
-    if qty_shipped is not None and qty_total > 0:
-        shipping_ratio = min(1.0, qty_shipped / qty_total)
+    if qty_delivered is not None and qty_total > 0:
+        shipping_ratio = min(1.0, qty_delivered / qty_total)
 
     active = None
     for m in milestones:
@@ -413,10 +427,15 @@ def compute_progress(
             "source": "operational_tasks" if qty_produced is not None else None,
         },
         "shipping": {
-            "qty_shipped": qty_shipped,
+            "qty_shipped": qty_delivered,
+            "qty_delivered": qty_delivered,
             "qty_remaining": qty_remaining,
             "ratio": round(shipping_ratio, 4) if shipping_ratio is not None else None,
-            "source": "delivery_notes" if qty_shipped is not None else None,
+            "source": (
+                "delivery_events+accurate_delivery_notes"
+                if qty_delivered is not None
+                else None
+            ),
         },
         "active_milestone": active,
         "order_complete": order_complete,

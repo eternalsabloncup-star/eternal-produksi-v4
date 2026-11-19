@@ -7,9 +7,9 @@
 | Area | Temuan |
 |------|--------|
 | `main` | Foundation + auth + Accurate Inbox PO. Tidak ada workflow/delivery/PWA. |
-| PR #6 (open) | Gates design/payment, design approval links (hash token), task engine, scheduling. **Belum** ada delivery ledger/SJ backend di tip branch saat audit. |
+| PR #6 (open) | Gates, tasks, scheduling, **dan** delivery (`accurate_delivery_notes`, `loading_events`, `delivery_events`, `evidence_files`). |
 | Auth pattern | Session CSPRNG + SHA-256 hash, CSRF, rate limit — **direuse** untuk tracking link. |
-| Integrasi PR #6 | Adapter baca-saja koleksi (`po_gates`, `operational_tasks`, `design_*`, `delivery_notes`, …) **tanpa mengimpor/menyalin** modul PR #6. Saat PR #6 merge, milestone otomatis menyala. |
+| Integrasi PR #6 | Adapter baca-saja koleksi kontrak PR #6 **tanpa mengimpor/menyalin** modulnya. `order_complete` memakai Qty diterima sah (`delivery_events=berhasil` + bukti aktif), bukan Qty SJ semata. |
 
 ## B. Desain
 

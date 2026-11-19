@@ -217,8 +217,17 @@ def _build_documents(
 ) -> list[dict[str, Any]]:
     has_financial = "financial" in scopes or view == "internal"
     header = _header(po_doc)
-    notes = workflow.get("delivery_notes") or []
+    notes = [
+        n
+        for n in (workflow.get("delivery_notes") or [])
+        if not n.get("superseded_by")
+    ]
     evidence = workflow.get("delivery_evidence") or []
+    success_events = [
+        e
+        for e in (workflow.get("delivery_events") or [])
+        if e.get("status") == "berhasil"
+    ]
     payments = workflow.get("payments") or []
     avail = workflow.get("availability") or {}
 
@@ -268,11 +277,13 @@ def _build_documents(
             ),
             "items": [
                 {
-                    "id": str(n.get("accurate_delivery_note_id") or n.get("sj_no") or i),
+                    "id": str(n.get("accurate_sj_id") or n.get("sj_no") or i),
                     "number": n.get("sj_no") or n.get("number"),
-                    "date": n.get("date") or n.get("sj_date"),
-                    "qty": n.get("qty_shipped_net") or n.get("qty") or n.get("qty_total"),
-                    "status": n.get("status") or "recorded",
+                    "date": n.get("ship_date") or n.get("sj_date") or n.get("date"),
+                    "qty": sum(float(it.get("qty") or 0) for it in (n.get("items") or []))
+                    or n.get("qty")
+                    or n.get("qty_total"),
+                    "status": n.get("revision_status") or "recorded",
                     "preview_allowed": True,
                     "download_allowed": view == "internal",
                 }
@@ -308,24 +319,22 @@ def _build_documents(
         {
             "category": "delivery_proof",
             "label": "Bukti Surat Jalan / Bukti Pengiriman",
-            "status": "available" if evidence else "waiting",
+            "status": "available" if success_events else "waiting",
             "items": [
                 {
-                    "id": str(e.get("id") or i),
-                    "number": e.get("sj_no"),
-                    "confirmed_at": e.get("confirmed_at"),
-                    "recipient_name": e.get("recipient_name")
-                    if view == "internal" or e.get("show_recipient_public")
-                    else None,
-                    "has_photo": bool(e.get("photo_ref") or e.get("has_photo")),
-                    "has_signature": bool(e.get("signature_ref") or e.get("has_signature")),
+                    "id": str(e.get("delivery_event_id") or e.get("id") or i),
+                    "number": e.get("accurate_sj_id"),
+                    "confirmed_at": e.get("created_at"),
+                    "recipient_name": e.get("recipient_name") if view == "internal" else None,
+                    "has_photo": bool(e.get("photo_evidence_ids")),
+                    "has_signature": bool(e.get("signature_evidence_id")),
                     "preview_allowed": True,
                     "download_allowed": view == "internal",
                 }
-                for i, e in enumerate(evidence)
+                for i, e in enumerate(success_events)
             ],
             "note": None
-            if evidence or avail.get("delivery_evidence")
+            if success_events or avail.get("delivery_events") or evidence
             else "Bukti pengiriman belum tersedia di backend saat ini.",
         },
     ]

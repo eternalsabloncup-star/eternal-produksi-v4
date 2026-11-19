@@ -1,4 +1,9 @@
-"""Tracking link tokens — opaque CSPRNG, hash-only storage, revoke/regenerate/expiry."""
+"""Tracking link tokens — opaque CSPRNG, hash-only storage, revoke/regenerate/expiry.
+
+Index policy (fail-closed):
+- Request path → ``require_tracking_indexes`` (listIndexes only; never createIndex).
+- Maintenance/bootstrap/test → ``ensure_tracking_indexes`` (explicit createIndex).
+"""
 
 from __future__ import annotations
 
@@ -22,12 +27,57 @@ _TOKEN_LENGTH = 22
 
 DocumentScope = Literal[
     "operational",  # PO summary, SJ, bukti pengiriman (bila diizinkan)
-    "financial",  # faktur + penerimaan — butuh auth khusus
+    "financial",  # faktur + pembayaran — butuh auth khusus
 ]
 
 DEFAULT_PUBLIC_SCOPES: tuple[DocumentScope, ...] = ("operational",)
 
-_INDEXED: set[str] = set()
+# Cache verifikasi spek per DB name — diisi setelah ensure_* atau require sukses.
+_VERIFIED_SPECS: dict[str, frozenset[str]] = {}
+
+REQUIRED_TRACKING_INDEX_SPECS: list[dict[str, Any]] = [
+    {
+        "collection": COLLECTION,
+        "keys": [("token_hash", ASCENDING)],
+        "name": "uniq_tracking_token_hash",
+        "unique": True,
+    },
+    {
+        "collection": COLLECTION,
+        "keys": [("accurate_po_id", ASCENDING), ("status", ASCENDING)],
+        "name": "idx_tracking_po_status",
+        "unique": False,
+    },
+    {
+        "collection": COLLECTION,
+        "keys": [("customer_slug", ASCENDING), ("po_slug", ASCENDING)],
+        "name": "idx_tracking_slugs",
+        "unique": False,
+    },
+    {
+        "collection": EVENTS_COLLECTION,
+        "keys": [("token_hash", ASCENDING), ("created_at", ASCENDING)],
+        "name": "idx_tracking_events_token",
+        "unique": False,
+    },
+]
+
+
+class MissingRequiredTrackingIndexError(RuntimeError):
+    """Indeks tracking wajib hilang/salah spek — request ditolak (fail-closed)."""
+
+    code = "MISSING_REQUIRED_INDEX"
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        missing: list[str] | None = None,
+        conflict: list[dict[str, Any]] | None = None,
+    ) -> None:
+        super().__init__(message)
+        self.missing = list(missing or [])
+        self.conflict = list(conflict or [])
 
 
 def links_collection(db: Database) -> Collection:
@@ -38,31 +88,127 @@ def events_collection(db: Database) -> Collection:
     return db[EVENTS_COLLECTION]
 
 
+def clear_tracking_index_verification_cache(db_name: str | None = None) -> None:
+    if db_name is None:
+        _VERIFIED_SPECS.clear()
+    else:
+        _VERIFIED_SPECS.pop(db_name, None)
+
+
+def mark_tracking_index_specs_verified(db_name: str, names: list[str]) -> None:
+    prev = _VERIFIED_SPECS.get(db_name, frozenset())
+    _VERIFIED_SPECS[db_name] = prev | frozenset(names)
+
+
+def _normalize_key_list(keys: Any) -> list[tuple[str, int]]:
+    out: list[tuple[str, int]] = []
+    if isinstance(keys, list):
+        for item in keys:
+            if isinstance(item, (list, tuple)) and len(item) >= 2:
+                out.append((str(item[0]), int(item[1])))
+            elif isinstance(item, dict):
+                for k, v in item.items():
+                    out.append((str(k), int(v)))
+    elif isinstance(keys, dict):
+        for k, v in keys.items():
+            out.append((str(k), int(v)))
+    return out
+
+
+def _index_matches_spec(existing: dict[str, Any], spec: dict[str, Any]) -> bool:
+    if existing.get("name") != spec["name"]:
+        return False
+    if bool(existing.get("unique")) != bool(spec.get("unique")):
+        return False
+    if _normalize_key_list(existing.get("key")) != [
+        (k, int(v)) for k, v in spec["keys"]
+    ]:
+        return False
+    return True
+
+
+def inspect_tracking_index_specs(db: Database) -> dict[str, Any]:
+    """Bandingkan indeks aktual vs spek — tanpa createIndex."""
+    present: list[str] = []
+    missing: list[str] = []
+    conflict: list[dict[str, Any]] = []
+    by_coll: dict[str, list[dict[str, Any]]] = {}
+
+    for spec in REQUIRED_TRACKING_INDEX_SPECS:
+        coll_name = str(spec["collection"])
+        if coll_name not in by_coll:
+            by_coll[coll_name] = list(db[coll_name].list_indexes())
+        indexes = by_coll[coll_name]
+        match = next((ix for ix in indexes if ix.get("name") == spec["name"]), None)
+        if match is None:
+            missing.append(spec["name"])
+            continue
+        if _index_matches_spec(match, spec):
+            present.append(spec["name"])
+        else:
+            conflict.append(
+                {
+                    "name": spec["name"],
+                    "collection": coll_name,
+                    "expected_unique": bool(spec.get("unique")),
+                    "actual_unique": bool(match.get("unique")),
+                    "expected_keys": [(k, int(v)) for k, v in spec["keys"]],
+                    "actual_keys": _normalize_key_list(match.get("key")),
+                }
+            )
+
+    return {
+        "ok": not missing and not conflict,
+        "writes": False,
+        "db_name": db.name,
+        "required": [s["name"] for s in REQUIRED_TRACKING_INDEX_SPECS],
+        "present": present,
+        "missing": missing,
+        "conflict": conflict,
+    }
+
+
+def require_tracking_indexes(db: Database) -> None:
+    """Fail-closed pada request path. Tidak pernah createIndex."""
+    names = frozenset(str(s["name"]) for s in REQUIRED_TRACKING_INDEX_SPECS)
+    cached = _VERIFIED_SPECS.get(db.name, frozenset())
+    if names <= cached:
+        return
+
+    report = inspect_tracking_index_specs(db)
+    if report["missing"] or report["conflict"]:
+        raise MissingRequiredTrackingIndexError(
+            "Indeks tracking wajib belum tersedia atau spek tidak cocok. "
+            "Jalankan maintenance ensure_tracking_indexes setelah persetujuan Owner "
+            f"(missing={report['missing']}, conflict="
+            f"{[c.get('name') for c in report['conflict']]}).",
+            missing=report["missing"],
+            conflict=report["conflict"],
+        )
+    mark_tracking_index_specs_verified(db.name, list(names))
+
+
 def ensure_tracking_indexes(db: Database) -> list[str]:
-    created = [
-        links_collection(db).create_index(
-            [("token_hash", ASCENDING)], name="uniq_tracking_token_hash", unique=True
-        ),
-        links_collection(db).create_index(
-            [("accurate_po_id", ASCENDING), ("status", ASCENDING)],
-            name="idx_tracking_po_status",
-        ),
-        links_collection(db).create_index(
-            [("customer_slug", ASCENDING), ("po_slug", ASCENDING)],
-            name="idx_tracking_slugs",
-        ),
-        events_collection(db).create_index(
-            [("token_hash", ASCENDING), ("created_at", ASCENDING)],
-            name="idx_tracking_events_token",
-        ),
-    ]
-    _INDEXED.add(db.name)
+    """Buat indeks tracking — HANYA maintenance/bootstrap/test eksplisit."""
+    created: list[str] = []
+    for spec in REQUIRED_TRACKING_INDEX_SPECS:
+        coll = db[spec["collection"]]
+        created.append(
+            coll.create_index(
+                spec["keys"],
+                name=spec["name"],
+                unique=bool(spec.get("unique")),
+            )
+        )
+    mark_tracking_index_specs_verified(
+        db.name, [s["name"] for s in REQUIRED_TRACKING_INDEX_SPECS]
+    )
     return created
 
 
 def _ensure_once(db: Database) -> None:
-    if db.name not in _INDEXED:
-        ensure_tracking_indexes(db)
+    """Alias request-path: verify-only (bukan lazy createIndex)."""
+    require_tracking_indexes(db)
 
 
 def utcnow() -> datetime:

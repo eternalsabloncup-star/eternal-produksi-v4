@@ -12,10 +12,23 @@ from app.auth.permissions import PERM_OPERATIONS_FULL, has_permission
 from app.auth.rate_limit import LoginRateLimiter
 from app.config import get_settings
 from app.db import get_db
+from app.repositories.tracking_link_repository import MissingRequiredTrackingIndexError
 from app.services import tracking_service as tracking
 from app.services.tracking_service import TrackingForbidden, TrackingNotFound
 
 router = APIRouter(tags=["tracking"])
+
+
+def _http_from_index_error(exc: MissingRequiredTrackingIndexError) -> HTTPException:
+    return HTTPException(
+        status.HTTP_503_SERVICE_UNAVAILABLE,
+        detail={
+            "code": exc.code,
+            "message": str(exc),
+            "missing": exc.missing,
+            "conflict": exc.conflict,
+        },
+    )
 
 _tracking_limiter: LoginRateLimiter | None = None
 
@@ -93,6 +106,8 @@ def get_public_tracking(
             po_slug=po_slug,
             raw_token=token,
         )
+    except MissingRequiredTrackingIndexError as exc:
+        raise _http_from_index_error(exc) from exc
     except TrackingNotFound:
         limiter.register_failure(key)
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Link pelacakan tidak valid.")
@@ -116,6 +131,8 @@ def get_internal_tracking(
     _no_store(response)
     try:
         return tracking.internal_tracking_view(get_db(), accurate_po_id=accurate_po_id)
+    except MissingRequiredTrackingIndexError as exc:
+        raise _http_from_index_error(exc) from exc
     except TrackingNotFound as exc:
         raise HTTPException(status.HTTP_404_NOT_FOUND, exc.message) from exc
 
@@ -130,6 +147,8 @@ def list_links(
     _no_store(response)
     try:
         rows = tracking.list_tracking_links(get_db(), accurate_po_id)
+    except MissingRequiredTrackingIndexError as exc:
+        raise _http_from_index_error(exc) from exc
     except TrackingNotFound as exc:
         raise HTTPException(status.HTTP_404_NOT_FOUND, exc.message) from exc
     return {"items": rows, "accurate_po_id": accurate_po_id}
@@ -152,6 +171,8 @@ def post_generate_link(
             actor_email=auth.user.get("email_normalized"),
             ttl_seconds=ttl,
         )
+    except MissingRequiredTrackingIndexError as exc:
+        raise _http_from_index_error(exc) from exc
     except TrackingNotFound as exc:
         raise HTTPException(status.HTTP_404_NOT_FOUND, exc.message) from exc
     return result
@@ -174,6 +195,8 @@ def post_regenerate_link(
             actor_email=auth.user.get("email_normalized"),
             ttl_seconds=ttl,
         )
+    except MissingRequiredTrackingIndexError as exc:
+        raise _http_from_index_error(exc) from exc
     except TrackingNotFound as exc:
         raise HTTPException(status.HTTP_404_NOT_FOUND, exc.message) from exc
 
@@ -194,6 +217,8 @@ def post_revoke_link(
             actor_email=auth.user.get("email_normalized"),
             reason=body.reason if body else None,
         )
+    except MissingRequiredTrackingIndexError as exc:
+        raise _http_from_index_error(exc) from exc
     except TrackingNotFound as exc:
         raise HTTPException(status.HTTP_404_NOT_FOUND, exc.message) from exc
     return {"link": doc}
