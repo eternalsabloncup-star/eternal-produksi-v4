@@ -32,7 +32,8 @@ DocumentScope = Literal[
 
 DEFAULT_PUBLIC_SCOPES: tuple[DocumentScope, ...] = ("operational",)
 
-# Cache verifikasi spek per DB name — diisi setelah ensure_* atau require sukses.
+# Cache verifikasi spek — kunci = target Mongo (host:port) + db + client id.
+# Jangan pakai db.name saja: dua target berbeda bisa berbagi nama database.
 _VERIFIED_SPECS: dict[str, frozenset[str]] = {}
 
 REQUIRED_TRACKING_INDEX_SPECS: list[dict[str, Any]] = [
@@ -88,16 +89,51 @@ def events_collection(db: Database) -> Collection:
     return db[EVENTS_COLLECTION]
 
 
-def clear_tracking_index_verification_cache(db_name: str | None = None) -> None:
-    if db_name is None:
+def tracking_index_cache_key(db: Database) -> str:
+    """Identitas isolasi: nodes Mongo + nama DB + id client PyMongo.
+
+    Dua database bernama sama pada host/port atau client berbeda tidak berbagi cache.
+    """
+    client = db.client
+    nodes: list[str] = []
+    address = getattr(client, "address", None)
+    if address and len(address) >= 2:
+        nodes.append(f"{address[0]}:{address[1]}")
+    raw_nodes = getattr(client, "nodes", None) or set()
+    for item in sorted(raw_nodes):
+        if isinstance(item, tuple) and len(item) >= 2:
+            nodes.append(f"{item[0]}:{item[1]}")
+        else:
+            nodes.append(str(item))
+    # Unik, urutan stabil.
+    uniq: list[str] = []
+    seen: set[str] = set()
+    for n in nodes:
+        if n not in seen:
+            seen.add(n)
+            uniq.append(n)
+    if not uniq:
+        uniq.append("unknown-host")
+    return f"{','.join(uniq)}#{db.name}#cid:{id(client)}"
+
+
+def clear_tracking_index_verification_cache(
+    db: Database | None = None,
+    *,
+    cache_key: str | None = None,
+) -> None:
+    """Hapus cache. Tanpa argumen → clear semua. Utamakan objek ``db``."""
+    if db is None and cache_key is None:
         _VERIFIED_SPECS.clear()
-    else:
-        _VERIFIED_SPECS.pop(db_name, None)
+        return
+    key = cache_key or tracking_index_cache_key(db)  # type: ignore[arg-type]
+    _VERIFIED_SPECS.pop(key, None)
 
 
-def mark_tracking_index_specs_verified(db_name: str, names: list[str]) -> None:
-    prev = _VERIFIED_SPECS.get(db_name, frozenset())
-    _VERIFIED_SPECS[db_name] = prev | frozenset(names)
+def mark_tracking_index_specs_verified(db: Database, names: list[str]) -> None:
+    key = tracking_index_cache_key(db)
+    prev = _VERIFIED_SPECS.get(key, frozenset())
+    _VERIFIED_SPECS[key] = prev | frozenset(names)
 
 
 def _normalize_key_list(keys: Any) -> list[tuple[str, int]]:
@@ -171,7 +207,7 @@ def inspect_tracking_index_specs(db: Database) -> dict[str, Any]:
 def require_tracking_indexes(db: Database) -> None:
     """Fail-closed pada request path. Tidak pernah createIndex."""
     names = frozenset(str(s["name"]) for s in REQUIRED_TRACKING_INDEX_SPECS)
-    cached = _VERIFIED_SPECS.get(db.name, frozenset())
+    cached = _VERIFIED_SPECS.get(tracking_index_cache_key(db), frozenset())
     if names <= cached:
         return
 
@@ -185,7 +221,7 @@ def require_tracking_indexes(db: Database) -> None:
             missing=report["missing"],
             conflict=report["conflict"],
         )
-    mark_tracking_index_specs_verified(db.name, list(names))
+    mark_tracking_index_specs_verified(db, list(names))
 
 
 def ensure_tracking_indexes(db: Database) -> list[str]:
@@ -201,7 +237,7 @@ def ensure_tracking_indexes(db: Database) -> list[str]:
             )
         )
     mark_tracking_index_specs_verified(
-        db.name, [s["name"] for s in REQUIRED_TRACKING_INDEX_SPECS]
+        db, [s["name"] for s in REQUIRED_TRACKING_INDEX_SPECS]
     )
     return created
 

@@ -71,15 +71,31 @@ def _insert_evidence(
     scope: str,
     scope_id: str,
     deleted: bool = False,
+    delivery_commit: str | None = "committed",
+    delivery_event_id: str | None = None,
+    delivery_attempt: int | None = None,
+    context_extra: dict | None = None,
+    omit_context: bool = False,
 ) -> None:
-    db["evidence_files"].insert_one(
-        {
-            "evidence_id": evidence_id,
-            "scope": scope,
-            "scope_id": scope_id,
-            "deleted_at": datetime.now(timezone.utc) if deleted else None,
-        }
-    )
+    """Shape mendekati store_evidence + attach_evidence_to_delivery (PR #6)."""
+    doc: dict = {
+        "evidence_id": evidence_id,
+        "scope": scope,
+        "scope_id": scope_id,
+        "deleted_at": datetime.now(timezone.utc) if deleted else None,
+    }
+    if not omit_context:
+        context: dict = {"accurate_sj_id": scope_id}
+        if delivery_commit is not None:
+            context["delivery_commit"] = delivery_commit
+        if delivery_event_id is not None:
+            context["delivery_event_id"] = delivery_event_id
+        if delivery_attempt is not None:
+            context["delivery_attempt"] = int(delivery_attempt)
+        if context_extra:
+            context.update(context_extra)
+        doc["context"] = context
+    db["evidence_files"].insert_one(doc)
 
 
 def _insert_success(
@@ -93,15 +109,17 @@ def _insert_success(
     recipient_name: str | None = "Penerima Uji",
     write_evidence: bool = True,
     soft_delete_evidence: bool = False,
+    delivery_commit: str = "committed",
 ) -> tuple[list[str], str]:
     photos = photo_ids or [
         f"evid:delivery-photo:{sj}:v1",
         f"evid:delivery-photo:{sj}:v2",
     ]
     signature = sig_id or f"evid:delivery-signature:{sj}:v1"
+    event_id = f"delivery:{sj}:attempt-{attempt}"
     db["delivery_events"].insert_one(
         {
-            "delivery_event_id": f"delivery:{sj}:attempt-{attempt}",
+            "delivery_event_id": event_id,
             "accurate_sj_id": sj,
             "accurate_po_id": po,
             "attempt": attempt,
@@ -120,6 +138,9 @@ def _insert_success(
                 scope="delivery-photo",
                 scope_id=sj,
                 deleted=soft_delete_evidence,
+                delivery_commit=delivery_commit,
+                delivery_event_id=event_id,
+                delivery_attempt=attempt,
             )
         _insert_evidence(
             db,
@@ -127,6 +148,9 @@ def _insert_success(
             scope="delivery-signature",
             scope_id=sj,
             deleted=soft_delete_evidence,
+            delivery_commit=delivery_commit,
+            delivery_event_id=event_id,
+            delivery_attempt=attempt,
         )
     return photos, signature
 
@@ -217,7 +241,7 @@ def test_two_valid_partial_sj_complete_po(db: Database) -> None:
 
 
 def test_cross_sj_evidence_scope_id_mismatch_rejected(db: Database) -> None:
-    """Evidence milik SJ-X tidak mengesahkan SJ-Y (scope_id wajib cocok)."""
+    """Evidence milik SJ-X tidak mengesahkan SJ-Y (scope_id / event_id wajib cocok)."""
     _sync_po(db)
     _clear(db)
     po, _, _ = _progress(db)
@@ -226,10 +250,23 @@ def test_cross_sj_evidence_scope_id_mismatch_rejected(db: Database) -> None:
     shared_sig = "evid:delivery-signature:SHARED:v1"
     _insert_note(db, sj="SJ-X", po="95106", qty=half)
     _insert_note(db, sj="SJ-Y", po="95106", qty=half)
+    event_x = "delivery:SJ-X:attempt-1"
     for pid in shared_photos:
-        _insert_evidence(db, evidence_id=pid, scope="delivery-photo", scope_id="SJ-X")
+        _insert_evidence(
+            db,
+            evidence_id=pid,
+            scope="delivery-photo",
+            scope_id="SJ-X",
+            delivery_event_id=event_x,
+            delivery_attempt=1,
+        )
     _insert_evidence(
-        db, evidence_id=shared_sig, scope="delivery-signature", scope_id="SJ-X"
+        db,
+        evidence_id=shared_sig,
+        scope="delivery-signature",
+        scope_id="SJ-X",
+        delivery_event_id=event_x,
+        delivery_attempt=1,
     )
     for sj, name in (("SJ-X", "A"), ("SJ-Y", "B")):
         db["delivery_events"].insert_one(
@@ -323,12 +360,16 @@ def test_missing_photos_signature_recipient(db: Database) -> None:
         evidence_id="evid:delivery-photo:SJ-BAD:v1",
         scope="delivery-photo",
         scope_id="SJ-BAD",
+        delivery_event_id="delivery:SJ-BAD:attempt-1",
+        delivery_attempt=1,
     )
     _insert_evidence(
         db,
         evidence_id="evid:delivery-signature:SJ-BAD:v1",
         scope="delivery-signature",
         scope_id="SJ-BAD",
+        delivery_event_id="delivery:SJ-BAD:attempt-1",
+        delivery_attempt=1,
     )
     _, _, progress = _progress(db)
     assert progress["shipping"]["qty_delivered"] == 0.0
@@ -355,7 +396,12 @@ def test_missing_photos_signature_recipient(db: Database) -> None:
         "evid:delivery-photo:SJ-NOSIG:v2",
     ):
         _insert_evidence(
-            db, evidence_id=pid, scope="delivery-photo", scope_id="SJ-NOSIG"
+            db,
+            evidence_id=pid,
+            scope="delivery-photo",
+            scope_id="SJ-NOSIG",
+            delivery_event_id="delivery:SJ-NOSIG:attempt-1",
+            delivery_attempt=1,
         )
     _, _, progress = _progress(db)
     assert progress["shipping"]["qty_delivered"] == 0.0
@@ -393,6 +439,109 @@ def test_superseded_and_replacement(db: Database) -> None:
     assert progress["order_complete"] is True
 
 
+def test_pending_evidence_not_counted(db: Database) -> None:
+    """Staging PR #6: context.delivery_commit=pending bukan bukti penerimaan sah."""
+    _sync_po(db)
+    _clear(db)
+    po, _, _ = _progress(db)
+    total = qty_po_total(po)
+    _insert_note(db, sj="SJ-PEND", po="95106", qty=total)
+    photos = [
+        "evid:delivery-photo:SJ-PEND:v1",
+        "evid:delivery-photo:SJ-PEND:v2",
+    ]
+    sig = "evid:delivery-signature:SJ-PEND:v1"
+    db["delivery_events"].insert_one(
+        {
+            "delivery_event_id": "delivery:SJ-PEND:attempt-1",
+            "accurate_sj_id": "SJ-PEND",
+            "accurate_po_id": "95106",
+            "attempt": 1,
+            "status": "berhasil",
+            "recipient_name": "Penerima",
+            "photo_evidence_ids": photos,
+            "signature_evidence_id": sig,
+        }
+    )
+    for pid in photos:
+        _insert_evidence(
+            db,
+            evidence_id=pid,
+            scope="delivery-photo",
+            scope_id="SJ-PEND",
+            delivery_commit="pending",
+            delivery_event_id="delivery:SJ-PEND:attempt-1",
+            delivery_attempt=1,
+        )
+    _insert_evidence(
+        db,
+        evidence_id=sig,
+        scope="delivery-signature",
+        scope_id="SJ-PEND",
+        delivery_commit="pending",
+        delivery_event_id="delivery:SJ-PEND:attempt-1",
+        delivery_attempt=1,
+    )
+    _, _, progress = _progress(db)
+    assert progress["shipping"]["qty_delivered"] == 0.0
+    assert progress["order_complete"] is False
+
+
+def test_committed_evidence_counted(db: Database) -> None:
+    _sync_po(db)
+    _clear(db)
+    po, _, _ = _progress(db)
+    total = qty_po_total(po)
+    _insert_note(db, sj="SJ-COM", po="95106", qty=total)
+    _insert_success(db, sj="SJ-COM", po="95106")
+    _, _, progress = _progress(db)
+    assert progress["shipping"]["qty_delivered"] == total
+    assert progress["order_complete"] is True
+
+
+def test_abandoned_staging_soft_deleted_not_counted(db: Database) -> None:
+    """Recovery PR #6: staging gagal di-soft-delete — tidak dihitung."""
+    _sync_po(db)
+    _clear(db)
+    po, _, _ = _progress(db)
+    total = qty_po_total(po)
+    _insert_note(db, sj="SJ-ABD", po="95106", qty=total)
+    _insert_success(db, sj="SJ-ABD", po="95106", soft_delete_evidence=True)
+    # Soft-deleted rows tetap membawa delivery_commit pending/committed — tetap ditolak.
+    db["evidence_files"].update_many(
+        {},
+        {"$set": {"context.delivery_commit": "pending"}},
+    )
+    _, _, progress = _progress(db)
+    assert progress["shipping"]["qty_delivered"] == 0.0
+
+
+def test_evidence_beyond_global_thousand_still_found(db: Database) -> None:
+    """Evidence yang direferensikan event tetap ditemukan meski ada >1000 dokumen lain."""
+    _sync_po(db)
+    _clear(db)
+    po, _, _ = _progress(db)
+    total = qty_po_total(po)
+    _ensure_colls(db)
+    # Isi noise di luar referensi event.
+    noise = [
+        {
+            "evidence_id": f"evid:delivery-photo:NOISE:{i}",
+            "scope": "delivery-photo",
+            "scope_id": "NOISE",
+            "deleted_at": None,
+        }
+        for i in range(1005)
+    ]
+    db["evidence_files"].insert_many(noise)
+    _insert_note(db, sj="SJ-LATE", po="95106", qty=total)
+    _insert_success(db, sj="SJ-LATE", po="95106")
+    _, wf, progress = _progress(db)
+    assert "evid:delivery-photo:SJ-LATE:v1" in wf["evidence_by_id"]
+    assert progress["shipping"]["qty_delivered"] == total
+    assert progress["order_complete"] is True
+
+
 def test_qty_cannot_exceed_unique_eligible_sj(db: Database) -> None:
     _sync_po(db)
     _clear(db)
@@ -413,3 +562,480 @@ def test_qty_cannot_exceed_unique_eligible_sj(db: Database) -> None:
     assert delivered == total
     assert delivered == sum(r["qty"] for r in eligible_delivered_sj_qty(wf))
     assert delivered <= total + 1e-9
+
+
+# --- Matrix final PR #6 × PR #7 (focused) ---
+
+
+def test_evidence_missing_delivery_commit_rejected(db: Database) -> None:
+    """03: tanpa delivery_commit → tidak dihitung (fail-closed)."""
+    _sync_po(db)
+    _clear(db)
+    po, _, _ = _progress(db)
+    total = qty_po_total(po)
+    _insert_note(db, sj="SJ-NOCM", po="95106", qty=total)
+    photos = [
+        "evid:delivery-photo:SJ-NOCM:v1",
+        "evid:delivery-photo:SJ-NOCM:v2",
+    ]
+    sig = "evid:delivery-signature:SJ-NOCM:v1"
+    event_id = "delivery:SJ-NOCM:attempt-1"
+    db["delivery_events"].insert_one(
+        {
+            "delivery_event_id": event_id,
+            "accurate_sj_id": "SJ-NOCM",
+            "accurate_po_id": "95106",
+            "attempt": 1,
+            "status": "berhasil",
+            "recipient_name": "Penerima",
+            "photo_evidence_ids": photos,
+            "signature_evidence_id": sig,
+        }
+    )
+    for pid in photos:
+        _insert_evidence(
+            db,
+            evidence_id=pid,
+            scope="delivery-photo",
+            scope_id="SJ-NOCM",
+            delivery_commit=None,
+            delivery_event_id=event_id,
+            delivery_attempt=1,
+            context_extra={},  # accurate_sj_id tetap; delivery_commit dihilangkan
+        )
+        # hapus key delivery_commit yang tidak di-set karena None
+        db["evidence_files"].update_one(
+            {"evidence_id": pid},
+            {"$unset": {"context.delivery_commit": ""}},
+        )
+    _insert_evidence(
+        db,
+        evidence_id=sig,
+        scope="delivery-signature",
+        scope_id="SJ-NOCM",
+        delivery_commit=None,
+        delivery_event_id=event_id,
+        delivery_attempt=1,
+    )
+    db["evidence_files"].update_one(
+        {"evidence_id": sig},
+        {"$unset": {"context.delivery_commit": ""}},
+    )
+    _, _, progress = _progress(db)
+    assert progress["shipping"]["qty_delivered"] == 0.0
+    assert progress["order_complete"] is False
+
+
+def test_wrong_delivery_event_id_rejected(db: Database) -> None:
+    """05: committed tetapi delivery_event_id salah → ditolak."""
+    _sync_po(db)
+    _clear(db)
+    po, _, _ = _progress(db)
+    total = qty_po_total(po)
+    _insert_note(db, sj="SJ-EID", po="95106", qty=total)
+    photos = [
+        "evid:delivery-photo:SJ-EID:v1",
+        "evid:delivery-photo:SJ-EID:v2",
+    ]
+    sig = "evid:delivery-signature:SJ-EID:v1"
+    db["delivery_events"].insert_one(
+        {
+            "delivery_event_id": "delivery:SJ-EID:attempt-1",
+            "accurate_sj_id": "SJ-EID",
+            "accurate_po_id": "95106",
+            "attempt": 1,
+            "status": "berhasil",
+            "recipient_name": "Penerima",
+            "photo_evidence_ids": photos,
+            "signature_evidence_id": sig,
+        }
+    )
+    for pid in photos + [sig]:
+        scope = "delivery-signature" if "signature" in pid else "delivery-photo"
+        _insert_evidence(
+            db,
+            evidence_id=pid,
+            scope=scope,
+            scope_id="SJ-EID",
+            delivery_event_id="delivery:SJ-EID:attempt-99",
+            delivery_attempt=1,
+        )
+    _, _, progress = _progress(db)
+    assert progress["shipping"]["qty_delivered"] == 0.0
+
+
+def test_wrong_context_sj_rejected(db: Database) -> None:
+    """06: committed tetapi context.accurate_sj_id salah → ditolak."""
+    _sync_po(db)
+    _clear(db)
+    po, _, _ = _progress(db)
+    total = qty_po_total(po)
+    _insert_note(db, sj="SJ-WSJ", po="95106", qty=total)
+    photos = [
+        "evid:delivery-photo:SJ-WSJ:v1",
+        "evid:delivery-photo:SJ-WSJ:v2",
+    ]
+    sig = "evid:delivery-signature:SJ-WSJ:v1"
+    event_id = "delivery:SJ-WSJ:attempt-1"
+    db["delivery_events"].insert_one(
+        {
+            "delivery_event_id": event_id,
+            "accurate_sj_id": "SJ-WSJ",
+            "accurate_po_id": "95106",
+            "attempt": 1,
+            "status": "berhasil",
+            "recipient_name": "Penerima",
+            "photo_evidence_ids": photos,
+            "signature_evidence_id": sig,
+        }
+    )
+    for pid in photos + [sig]:
+        scope = "delivery-signature" if "signature" in pid else "delivery-photo"
+        _insert_evidence(
+            db,
+            evidence_id=pid,
+            scope=scope,
+            scope_id="SJ-WSJ",
+            delivery_event_id=event_id,
+            delivery_attempt=1,
+            context_extra={"accurate_sj_id": "SJ-OTHER"},
+        )
+    _, _, progress = _progress(db)
+    assert progress["shipping"]["qty_delivered"] == 0.0
+
+
+def test_wrong_delivery_attempt_rejected(db: Database) -> None:
+    """07: attempt di context tidak cocok event → ditolak."""
+    _sync_po(db)
+    _clear(db)
+    po, _, _ = _progress(db)
+    total = qty_po_total(po)
+    _insert_note(db, sj="SJ-ATT", po="95106", qty=total)
+    photos = [
+        "evid:delivery-photo:SJ-ATT:v1",
+        "evid:delivery-photo:SJ-ATT:v2",
+    ]
+    sig = "evid:delivery-signature:SJ-ATT:v1"
+    event_id = "delivery:SJ-ATT:attempt-1"
+    db["delivery_events"].insert_one(
+        {
+            "delivery_event_id": event_id,
+            "accurate_sj_id": "SJ-ATT",
+            "accurate_po_id": "95106",
+            "attempt": 1,
+            "status": "berhasil",
+            "recipient_name": "Penerima",
+            "photo_evidence_ids": photos,
+            "signature_evidence_id": sig,
+        }
+    )
+    for pid in photos + [sig]:
+        scope = "delivery-signature" if "signature" in pid else "delivery-photo"
+        _insert_evidence(
+            db,
+            evidence_id=pid,
+            scope=scope,
+            scope_id="SJ-ATT",
+            delivery_event_id=event_id,
+            delivery_attempt=2,
+        )
+    _, _, progress = _progress(db)
+    assert progress["shipping"]["qty_delivered"] == 0.0
+
+
+def test_one_photo_pending_invalidates(db: Database) -> None:
+    """09: satu dari dua foto masih pending → invalid."""
+    _sync_po(db)
+    _clear(db)
+    po, _, _ = _progress(db)
+    total = qty_po_total(po)
+    _insert_note(db, sj="SJ-MIX", po="95106", qty=total)
+    p1, p2 = "evid:delivery-photo:SJ-MIX:v1", "evid:delivery-photo:SJ-MIX:v2"
+    sig = "evid:delivery-signature:SJ-MIX:v1"
+    event_id = "delivery:SJ-MIX:attempt-1"
+    db["delivery_events"].insert_one(
+        {
+            "delivery_event_id": event_id,
+            "accurate_sj_id": "SJ-MIX",
+            "accurate_po_id": "95106",
+            "attempt": 1,
+            "status": "berhasil",
+            "recipient_name": "Penerima",
+            "photo_evidence_ids": [p1, p2],
+            "signature_evidence_id": sig,
+        }
+    )
+    _insert_evidence(
+        db,
+        evidence_id=p1,
+        scope="delivery-photo",
+        scope_id="SJ-MIX",
+        delivery_commit="committed",
+        delivery_event_id=event_id,
+        delivery_attempt=1,
+    )
+    _insert_evidence(
+        db,
+        evidence_id=p2,
+        scope="delivery-photo",
+        scope_id="SJ-MIX",
+        delivery_commit="pending",
+        delivery_event_id=event_id,
+        delivery_attempt=1,
+    )
+    _insert_evidence(
+        db,
+        evidence_id=sig,
+        scope="delivery-signature",
+        scope_id="SJ-MIX",
+        delivery_commit="committed",
+        delivery_event_id=event_id,
+        delivery_attempt=1,
+    )
+    _, _, progress = _progress(db)
+    assert progress["shipping"]["qty_delivered"] == 0.0
+    assert progress["order_complete"] is False
+
+
+def test_signature_pending_invalidates(db: Database) -> None:
+    """10: signature pending → invalid."""
+    _sync_po(db)
+    _clear(db)
+    po, _, _ = _progress(db)
+    total = qty_po_total(po)
+    _insert_note(db, sj="SJ-SIGP", po="95106", qty=total)
+    photos = [
+        "evid:delivery-photo:SJ-SIGP:v1",
+        "evid:delivery-photo:SJ-SIGP:v2",
+    ]
+    sig = "evid:delivery-signature:SJ-SIGP:v1"
+    event_id = "delivery:SJ-SIGP:attempt-1"
+    db["delivery_events"].insert_one(
+        {
+            "delivery_event_id": event_id,
+            "accurate_sj_id": "SJ-SIGP",
+            "accurate_po_id": "95106",
+            "attempt": 1,
+            "status": "berhasil",
+            "recipient_name": "Penerima",
+            "photo_evidence_ids": photos,
+            "signature_evidence_id": sig,
+        }
+    )
+    for pid in photos:
+        _insert_evidence(
+            db,
+            evidence_id=pid,
+            scope="delivery-photo",
+            scope_id="SJ-SIGP",
+            delivery_event_id=event_id,
+            delivery_attempt=1,
+        )
+    _insert_evidence(
+        db,
+        evidence_id=sig,
+        scope="delivery-signature",
+        scope_id="SJ-SIGP",
+        delivery_commit="pending",
+        delivery_event_id=event_id,
+        delivery_attempt=1,
+    )
+    _, _, progress = _progress(db)
+    assert progress["shipping"]["qty_delivered"] == 0.0
+
+
+def test_failed_event_only_invalid(db: Database) -> None:
+    """12: event gagal → invalid."""
+    _sync_po(db)
+    _clear(db)
+    po, _, _ = _progress(db)
+    total = qty_po_total(po)
+    _insert_note(db, sj="SJ-FAIL", po="95106", qty=total)
+    db["delivery_events"].insert_one(
+        {
+            "delivery_event_id": "delivery:SJ-FAIL:attempt-1",
+            "accurate_sj_id": "SJ-FAIL",
+            "accurate_po_id": "95106",
+            "attempt": 1,
+            "status": "gagal",
+            "recipient_name": None,
+            "photo_evidence_ids": [],
+            "signature_evidence_id": None,
+        }
+    )
+    _, _, progress = _progress(db)
+    assert progress["shipping"]["qty_delivered"] == 0.0
+    assert progress["order_complete"] is False
+
+
+def test_retry_same_evidence_no_double_count(db: Database) -> None:
+    """18: dua event sukses mengacu evidence yang sama → Qty sekali."""
+    _sync_po(db)
+    _clear(db)
+    po, _, _ = _progress(db)
+    half = qty_po_total(po) / 2
+    _insert_note(db, sj="SJ-SAME", po="95106", qty=half)
+    photos = [
+        "evid:delivery-photo:SJ-SAME:v1",
+        "evid:delivery-photo:SJ-SAME:v2",
+    ]
+    sig = "evid:delivery-signature:SJ-SAME:v1"
+    # Evidence di-attach ke attempt-1 (idempotensi PR #6 mengembalikan event yang sama).
+    event_id = "delivery:SJ-SAME:attempt-1"
+    for pid in photos:
+        _insert_evidence(
+            db,
+            evidence_id=pid,
+            scope="delivery-photo",
+            scope_id="SJ-SAME",
+            delivery_event_id=event_id,
+            delivery_attempt=1,
+        )
+    _insert_evidence(
+        db,
+        evidence_id=sig,
+        scope="delivery-signature",
+        scope_id="SJ-SAME",
+        delivery_event_id=event_id,
+        delivery_attempt=1,
+    )
+    for attempt in (1, 2):
+        db["delivery_events"].insert_one(
+            {
+                "delivery_event_id": f"delivery:SJ-SAME:attempt-{attempt}",
+                "accurate_sj_id": "SJ-SAME",
+                "accurate_po_id": "95106",
+                "attempt": attempt,
+                "status": "berhasil",
+                "recipient_name": "Penerima",
+                "photo_evidence_ids": photos,
+                "signature_evidence_id": sig,
+            }
+        )
+    _, wf, progress = _progress(db)
+    assert len(eligible_delivered_sj_qty(wf)) == 1
+    assert progress["shipping"]["qty_delivered"] == half
+
+
+def test_committed_without_success_event_invalid(db: Database) -> None:
+    """19: evidence committed tanpa event berhasil → invalid."""
+    _sync_po(db)
+    _clear(db)
+    po, _, _ = _progress(db)
+    total = qty_po_total(po)
+    _insert_note(db, sj="SJ-NOEV", po="95106", qty=total)
+    for pid in (
+        "evid:delivery-photo:SJ-NOEV:v1",
+        "evid:delivery-photo:SJ-NOEV:v2",
+    ):
+        _insert_evidence(
+            db,
+            evidence_id=pid,
+            scope="delivery-photo",
+            scope_id="SJ-NOEV",
+            delivery_event_id="delivery:SJ-NOEV:attempt-1",
+            delivery_attempt=1,
+        )
+    _insert_evidence(
+        db,
+        evidence_id="evid:delivery-signature:SJ-NOEV:v1",
+        scope="delivery-signature",
+        scope_id="SJ-NOEV",
+        delivery_event_id="delivery:SJ-NOEV:attempt-1",
+        delivery_attempt=1,
+    )
+    _, _, progress = _progress(db)
+    assert progress["shipping"]["qty_delivered"] == 0.0
+    assert progress["order_complete"] is False
+
+
+def test_pr6_confirm_delivery_success_shape_compatibility(db: Database) -> None:
+    """Kompatibilitas: dokumen hasil attach_evidence_to_delivery + event sukses PR #6."""
+    _sync_po(db)
+    _clear(db)
+    po, _, _ = _progress(db)
+    total = qty_po_total(po)
+    sj = "SJ-PR6SHAPE"
+    po_id = "95106"
+    attempt = 1
+    event_id = f"delivery:{sj}:attempt-{attempt}"
+    photo_ids = [
+        f"evid:delivery-photo:{sj}:v1",
+        f"evid:delivery-photo:{sj}:v2",
+    ]
+    sig_id = f"evid:delivery-signature:{sj}:v1"
+
+    _insert_note(db, sj=sj, po=po_id, qty=total)
+    # Shape event = insert_delivery_event + confirm_delivery_success return.
+    db["delivery_events"].insert_one(
+        {
+            "delivery_event_id": event_id,
+            "accurate_sj_id": sj,
+            "accurate_po_id": po_id,
+            "attempt": attempt,
+            "status": "berhasil",
+            "courier_email": "driver@example.com",
+            "recipient_name": "Penerima PR6",
+            "photo_evidence_ids": photo_ids,
+            "signature_evidence_id": sig_id,
+            "failure_reason": None,
+            "created_at": datetime.now(timezone.utc),
+        }
+    )
+    # Shape evidence = store_evidence (pending) lalu attach_evidence_to_delivery.
+    for pid in photo_ids:
+        db["evidence_files"].insert_one(
+            {
+                "evidence_id": pid,
+                "scope": "delivery-photo",
+                "scope_id": sj,
+                "kind": "delivery-photo",
+                "deleted_at": None,
+                "context": {
+                    "accurate_po_id": po_id,
+                    "accurate_sj_id": sj,
+                    "delivery_commit": "committed",
+                    "delivery_event_id": event_id,
+                    "delivery_attempt": attempt,
+                },
+            }
+        )
+    db["evidence_files"].insert_one(
+        {
+            "evidence_id": sig_id,
+            "scope": "delivery-signature",
+            "scope_id": sj,
+            "kind": "delivery-signature",
+            "deleted_at": None,
+            "context": {
+                "recipient_name": "Penerima PR6",
+                "accurate_sj_id": sj,
+                "delivery_commit": "committed",
+                "delivery_event_id": event_id,
+                "delivery_attempt": attempt,
+            },
+        }
+    )
+    _, wf, progress = _progress(db)
+    rows = eligible_delivered_sj_qty(wf)
+    assert len(rows) == 1
+    assert rows[0]["accurate_sj_id"] == sj
+    assert rows[0]["attempt"] == attempt
+    assert set(rows[0]["evidence_ids"]) == set(photo_ids + [sig_id])
+    assert progress["shipping"]["qty_delivered"] == total
+    assert progress["order_complete"] is True
+
+    # Sanity: pending staging (pra-attach) tidak boleh dianggap committed.
+    db["evidence_files"].update_many(
+        {},
+        {
+            "$set": {"context.delivery_commit": "pending"},
+            "$unset": {
+                "context.delivery_event_id": "",
+                "context.delivery_attempt": "",
+            },
+        },
+    )
+    _, _, progress2 = _progress(db)
+    assert progress2["shipping"]["qty_delivered"] == 0.0
+    assert progress2["order_complete"] is False

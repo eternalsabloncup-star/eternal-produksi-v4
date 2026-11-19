@@ -33,6 +33,11 @@ LOADING_ACTIVE = "aktif"
 LOADING_CANCELLED = "dibatalkan"
 EVIDENCE_SCOPE_PHOTO = "delivery-photo"
 EVIDENCE_SCOPE_SIGNATURE = "delivery-signature"
+# Kontrak PR #6 (1b9f140): staging → context.delivery_commit=pending;
+# setelah txn sukses → attach_evidence_to_delivery set "committed".
+# Staging gagal di-soft-delete (abandoned), bukan status string terpisah.
+DELIVERY_COMMIT_PENDING = "pending"
+DELIVERY_COMMIT_COMMITTED = "committed"
 # confirm_delivery_success: minimal 2 foto + 1 tanda tangan + nama penerima.
 MIN_DELIVERY_PHOTOS = 2
 
@@ -83,14 +88,6 @@ def load_workflow_snapshot(db: Database, accurate_po_id: str) -> dict[str, Any]:
     delivery_notes = _safe_find(db, COLL_DELIVERY_NOTES, {"accurate_po_id": po_id})
     loading_events = _safe_find(db, COLL_LOADING_EVENTS, {"accurate_po_id": po_id})
     delivery_events = _safe_find(db, COLL_DELIVERY_EVENTS, {"accurate_po_id": po_id})
-    # Ambil meta evidence (aktif + soft-deleted) agar missing vs deleted bisa dibedakan
-    # tanpa menganggap ID asing valid. Soft-deleted tetap gagal validasi.
-    evidence = _safe_find(
-        db,
-        COLL_EVIDENCE_FILES,
-        {"scope": {"$in": [EVIDENCE_SCOPE_PHOTO, EVIDENCE_SCOPE_SIGNATURE]}},
-        limit=1000,
-    )
     payments = _safe_find(db, COLL_PAYMENTS, {"accurate_po_id": po_id})
 
     by_type: dict[str, list[dict[str, Any]]] = {}
@@ -99,14 +96,31 @@ def load_workflow_snapshot(db: Database, accurate_po_id: str) -> dict[str, Any]:
         by_type.setdefault(tt, []).append(t)
 
     events_by_sj: dict[str, list[dict[str, Any]]] = {}
+    referenced_evidence_ids: set[str] = set()
     for ev in delivery_events:
         sj = str(ev.get("accurate_sj_id") or "")
         events_by_sj.setdefault(sj, []).append(ev)
+        for pid in ev.get("photo_evidence_ids") or []:
+            if pid:
+                referenced_evidence_ids.add(str(pid))
+        sig = ev.get("signature_evidence_id")
+        if sig:
+            referenced_evidence_ids.add(str(sig))
 
     loading_by_sj: dict[str, list[dict[str, Any]]] = {}
     for lv in loading_events:
         sj = str(lv.get("accurate_sj_id") or "")
         loading_by_sj.setdefault(sj, []).append(lv)
+
+    # Hanya evidence yang direferensikan event PO ini — tanpa scan global + limit 1000.
+    evidence: list[dict[str, Any]] = []
+    if referenced_evidence_ids:
+        evidence = _safe_find(
+            db,
+            COLL_EVIDENCE_FILES,
+            {"evidence_id": {"$in": sorted(referenced_evidence_ids)}},
+            limit=max(len(referenced_evidence_ids) * 2, 50),
+        )
 
     evidence_by_id: dict[str, dict[str, Any]] = {}
     for e in evidence:
@@ -180,6 +194,8 @@ def _evidence_matches(
     evidence_id: str,
     expected_scope: str,
     accurate_sj_id: str,
+    delivery_event_id: str,
+    attempt: int,
     evidence_by_id: dict[str, dict[str, Any]],
 ) -> bool:
     doc = evidence_by_id.get(evidence_id)
@@ -190,6 +206,19 @@ def _evidence_matches(
     if str(doc.get("scope") or "") != expected_scope:
         return False
     if str(doc.get("scope_id") or "") != str(accurate_sj_id):
+        return False
+    ctx = doc.get("context") if isinstance(doc.get("context"), dict) else {}
+    # Kontrak PR #6 attach_evidence_to_delivery — semua field wajib cocok.
+    if str(ctx.get("delivery_commit") or "") != DELIVERY_COMMIT_COMMITTED:
+        return False
+    if str(ctx.get("accurate_sj_id") or "") != str(accurate_sj_id):
+        return False
+    if str(ctx.get("delivery_event_id") or "") != str(delivery_event_id):
+        return False
+    try:
+        if int(ctx["delivery_attempt"]) != int(attempt):
+            return False
+    except (KeyError, TypeError, ValueError):
         return False
     return True
 
@@ -217,6 +246,13 @@ def validate_success_event_for_note(
         return False, ()
     if not str(event.get("recipient_name") or "").strip():
         return False, ()
+    delivery_event_id = str(event.get("delivery_event_id") or "")
+    if not delivery_event_id:
+        return False, ()
+    try:
+        attempt = int(event["attempt"])
+    except (KeyError, TypeError, ValueError):
+        return False, ()
 
     photo_ids = [str(x) for x in (event.get("photo_evidence_ids") or []) if x]
     sig_id = str(event.get("signature_evidence_id") or "")
@@ -231,6 +267,8 @@ def validate_success_event_for_note(
             evidence_id=pid,
             expected_scope=EVIDENCE_SCOPE_PHOTO,
             accurate_sj_id=sj,
+            delivery_event_id=delivery_event_id,
+            attempt=attempt,
             evidence_by_id=evidence_by_id,
         ):
             return False, ()
@@ -238,6 +276,8 @@ def validate_success_event_for_note(
         evidence_id=sig_id,
         expected_scope=EVIDENCE_SCOPE_SIGNATURE,
         accurate_sj_id=sj,
+        delivery_event_id=delivery_event_id,
+        attempt=attempt,
         evidence_by_id=evidence_by_id,
     ):
         return False, ()

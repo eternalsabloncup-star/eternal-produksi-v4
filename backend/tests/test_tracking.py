@@ -302,6 +302,7 @@ def _seed_pr6_delivery(
                 "created_at": datetime.now(timezone.utc),
             }
         )
+        event_id = f"delivery:{accurate_sj_id}:attempt-1"
         for eid in photo_ids + [sig_id]:
             scope = "delivery-signature" if "signature" in eid else "delivery-photo"
             db["evidence_files"].insert_one(
@@ -310,6 +311,12 @@ def _seed_pr6_delivery(
                     "scope": scope,
                     "scope_id": accurate_sj_id,
                     "deleted_at": datetime.now(timezone.utc) if soft_delete_evidence else None,
+                    "context": {
+                        "delivery_commit": "committed",
+                        "accurate_sj_id": accurate_sj_id,
+                        "delivery_event_id": event_id,
+                        "delivery_attempt": 1,
+                    },
                 }
             )
 
