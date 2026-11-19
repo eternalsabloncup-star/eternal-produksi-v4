@@ -84,11 +84,14 @@ def db(
 
     from app.config import clear_settings_cache
     from app.db import close_client, ensure_indexes
+    from app.repositories import master_repository as master
 
     clear_settings_cache()
     close_client()
     database = mongo_client[db_name]
     ensure_indexes(database)
+    # Bootstrap Master eksplisit di fixture — request path tidak seed/upsert.
+    master.seed_master_defaults(database)
     yield database
     close_client()
     clear_settings_cache()

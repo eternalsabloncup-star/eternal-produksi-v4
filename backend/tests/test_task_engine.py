@@ -39,6 +39,9 @@ def _seed_prep_task(db: Database, qty_target: float = 1000) -> dict:
 
 
 def test_master_seed_is_idempotent(db: Database) -> None:
+    # Fixture sudah bootstrap Master — kosongkan dulu agar insert pertama terukur.
+    db["master_task_types"].delete_many({})
+    db["master_role_actions"].delete_many({})
     first = master.seed_master_defaults(db)
     second = master.seed_master_defaults(db)
     assert first["task_types"] == 12

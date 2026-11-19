@@ -87,7 +87,9 @@ def ensure_task_indexes(db: Database) -> list[str]:
         )
     from app.services.index_preflight import mark_index_specs_verified
 
-    mark_index_specs_verified(db.name, [s["name"] for s in REQUIRED_TASK_INDEX_SPECS])
+    mark_index_specs_verified(
+        [s["name"] for s in REQUIRED_TASK_INDEX_SPECS], db=db
+    )
     return created
 
 

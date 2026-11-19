@@ -61,11 +61,14 @@ def _po_line_index(po_doc: dict[str, Any]) -> dict[str, dict[str, Any]]:
     }
 
 
-def has_successful_delivery(db: Database, accurate_sj_id: str) -> bool:
-    return any(
-        e["status"] == deliveries.DELIVERY_SUCCESS
-        for e in deliveries.list_delivery_events(db, accurate_sj_id)
-    )
+def has_successful_delivery(
+    db: Database, accurate_sj_id: str, *, session: Any | None = None
+) -> bool:
+    if session is not None:
+        return deliveries.has_successful_delivery_event(
+            db, accurate_sj_id, session=session
+        )
+    return deliveries.has_successful_delivery_event(db, accurate_sj_id)
 
 
 def ingest_delivery_note(
@@ -73,47 +76,65 @@ def ingest_delivery_note(
 ) -> dict[str, Any]:
     """Sinkron SJ + penerapan aturan revisi sebagian item (Opsi B Owner).
 
+    Snapshot revisi, status Opsi B, dan audit di satu transaksi replica set.
     - Belum Loading → cukup simpan revisi; Loading biasa setelah valid.
     - Sudah Loading, belum terkirim → ``PERLU_LOADING_ULANG`` dan Loading lama
       harus dibatalkan secara teraudit sebelum Loading ulang.
     - Sudah terkirim → ``PERLU_KOREKSI_ADMINISTRASI``; Loading dan bukti
       historis tidak disentuh.
     """
-    result = deliveries.upsert_delivery_note(db, payload)
-    note = result["delivery_note"]
-    sj_id = str(note["accurate_sj_id"])
+    from app.services.index_preflight import require_delivery_txn_indexes
 
-    if not result["source_changed"]:
-        return {**result, "revision_status": note.get("revision_status")}
+    require_delivery_txn_indexes(db)
+    actor = str(user.get("email_normalized") or "")
 
-    delivered = has_successful_delivery(db, sj_id)
-    active_loading = deliveries.get_loading_event(db, sj_id)
-    reason = "Revisi item Surat Jalan dari Accurate."
+    def _operation(session: Any) -> dict[str, Any]:
+        result = deliveries.apply_upsert_delivery_note(db, payload, session=session)
+        note = result["delivery_note"]
+        sj_id = str(note["accurate_sj_id"])
 
-    if delivered:
-        status = deliveries.REVISION_NEEDS_ADMIN_CORRECTION
-    elif active_loading is not None:
-        status = deliveries.REVISION_NEEDS_RELOADING
-    else:
-        status = deliveries.REVISION_ACTIVE
+        if not result["source_changed"]:
+            return {**result, "revision_status": note.get("revision_status")}
 
-    updated = deliveries.set_revision_status(
-        db, accurate_sj_id=sj_id, status=status, reason=reason
-    )
-    append_audit_event(
-        db,
-        action="delivery.note.revision",
-        actor_email=str(user.get("email_normalized") or ""),
-        target_email=None,
-        detail={
-            "accurate_sj_id": sj_id,
-            "sj_version": result["sj_version"],
-            "changed_items": result["changed_items"],
-            "revision_status": status,
-            "active_loading_id": (active_loading or {}).get("loading_id"),
-        },
-    )
-    return {**result, "delivery_note": updated, "revision_status": status}
+        delivered = deliveries.has_successful_delivery_event(
+            db, sj_id, session=session
+        )
+        active_loading = deliveries.get_active_loading_event(
+            db, sj_id, session=session
+        )
+        reason = "Revisi item Surat Jalan dari Accurate."
+
+        if delivered:
+            status = deliveries.REVISION_NEEDS_ADMIN_CORRECTION
+        elif active_loading is not None:
+            status = deliveries.REVISION_NEEDS_RELOADING
+        else:
+            status = deliveries.REVISION_ACTIVE
+
+        updated = deliveries.set_revision_status(
+            db,
+            accurate_sj_id=sj_id,
+            status=status,
+            reason=reason,
+            session=session,
+        )
+        append_audit_event(
+            db,
+            action="delivery.note.revision",
+            actor_email=actor,
+            target_email=None,
+            detail={
+                "accurate_sj_id": sj_id,
+                "sj_version": result["sj_version"],
+                "changed_items": result["changed_items"],
+                "revision_status": status,
+                "active_loading_id": (active_loading or {}).get("loading_id"),
+            },
+            session=session,
+        )
+        return {**result, "delivery_note": updated, "revision_status": status}
+
+    return deliveries.run_delivery_mongo_txn(db, _operation)
 
 
 def validate_loading(db: Database, accurate_sj_id: str) -> dict[str, Any]:
@@ -204,15 +225,16 @@ def validate_loading(db: Database, accurate_sj_id: str) -> dict[str, Any]:
     }
 
 
-def _prepare_delivery_txn(db: Database) -> None:
-    """Verifikasi indeks wajib + seed master di LUAR transaksi.
+def _prepare_delivery_txn(db: Database) -> str:
+    """Verifikasi read-only indeks + Master di LUAR transaksi.
 
-    Tidak createIndex di request path. DDL dilarang di dalam transaksi.
+    Tidak createIndex, tidak seed/upsert Master. DDL dilarang di dalam transaksi.
+    Fail-closed jika prasyarat belum siap (bootstrap eksplisit di luar request).
     """
     from app.services.index_preflight import require_delivery_txn_indexes
 
     require_delivery_txn_indexes(db)
-    master.seed_master_defaults(db)
+    return master.require_task_type_assigned_role(db, DRIVER_TASK)
 
 
 def confirm_loading(
@@ -224,7 +246,7 @@ def confirm_loading(
 ) -> dict[str, Any]:
     """Satu aksi Loading untuk seluruh item SJ — Qty QC + Loading + Driver + audit atomik."""
     require_action(db, user, task_type=DRIVER_TASK, action="confirm")
-    _prepare_delivery_txn(db)
+    assigned_role = _prepare_delivery_txn(db)
 
     existing = deliveries.get_loading_event(db, accurate_sj_id)
     if existing is not None:
@@ -253,7 +275,6 @@ def confirm_loading(
     note = deliveries.get_delivery_note(db, accurate_sj_id)
     actor = str(user.get("email_normalized") or "")
     sequence = deliveries.next_loading_sequence(db, accurate_sj_id)
-    assigned_role = master.assigned_role_for(db, DRIVER_TASK) or "driver"
 
     def _operation(session: Any) -> dict[str, Any]:
         # Race: Loading aktif muncul setelah cek di luar txn.
@@ -306,13 +327,29 @@ def confirm_loading(
             sequence=sequence,
             session=session,
         )
-        deliveries.set_revision_status(
-            db,
-            accurate_sj_id=accurate_sj_id,
-            status=deliveries.REVISION_ACTIVE,
-            reason="Loading dikonfirmasi untuk versi SJ terbaru.",
+        # Hanya clear status revisi jika snapshot masih versi yang di-Loading.
+        # Race revisi bersamaan: versi naik → jangan timpa PERLU_LOADING_ULANG.
+        note_now = deliveries.delivery_notes_collection(db).find_one(
+            {"accurate_sj_id": str(accurate_sj_id)},
+            {"_id": 0, "sj_version": 1},
             session=session,
-        )
+        ) or {}
+        if int(note_now.get("sj_version") or 1) == int(loading.get("sj_version") or 1):
+            deliveries.set_revision_status(
+                db,
+                accurate_sj_id=accurate_sj_id,
+                status=deliveries.REVISION_ACTIVE,
+                reason="Loading dikonfirmasi untuk versi SJ terbaru.",
+                session=session,
+            )
+        else:
+            deliveries.set_revision_status(
+                db,
+                accurate_sj_id=accurate_sj_id,
+                status=deliveries.REVISION_NEEDS_RELOADING,
+                reason="Surat Jalan direvisi selama konfirmasi Loading.",
+                session=session,
+            )
         driver_task = _ensure_driver_task(
             db, note, loading, assigned_role=assigned_role, session=session
         )
@@ -379,9 +416,7 @@ def _ensure_driver_task(
     session: Any | None = None,
 ) -> dict[str, Any]:
     """Satu tugas Driver per SJ, terikat pada Loading aktif (bukan per item)."""
-    if session is None:
-        master.seed_master_defaults(db)
-    role = assigned_role or master.assigned_role_for(db, DRIVER_TASK) or "driver"
+    role = assigned_role or master.require_task_type_assigned_role(db, DRIVER_TASK)
     task = tasks.upsert_task(
         db,
         task_type=DRIVER_TASK,
@@ -445,14 +480,15 @@ def cancel_loading(
     note = deliveries.get_delivery_note(db, accurate_sj_id)
     if note is None:
         raise LookupError(f"Surat Jalan tidak ditemukan: {accurate_sj_id}")
-    if has_successful_delivery(db, accurate_sj_id):
-        raise LoadingCancelError(
-            "Pengiriman sudah berhasil dengan bukti penerimaan — Loading tidak "
-            "dapat dibatalkan."
-        )
 
     loading = deliveries.get_loading_event(db, accurate_sj_id)
     if loading is None:
+        # Fast path di luar txn; race delivery sukses tetap dicek di dalam txn.
+        if has_successful_delivery(db, accurate_sj_id):
+            raise LoadingCancelError(
+                "Pengiriman sudah berhasil dengan bukti penerimaan — Loading tidak "
+                "dapat dibatalkan."
+            )
         return {"cancelled": False, "duplicate": True, "loading": None}
 
     actor = str(user.get("email_normalized") or "")
@@ -461,6 +497,14 @@ def cancel_loading(
     cancel_reason = reason.strip()
 
     def _operation(session: Any) -> dict[str, Any]:
+        # Race cancel × delivery success: cek ulang di dalam transaksi.
+        if deliveries.has_successful_delivery_event(
+            db, accurate_sj_id, session=session
+        ):
+            raise LoadingCancelError(
+                "Pengiriman sudah berhasil dengan bukti penerimaan — Loading tidak "
+                "dapat dibatalkan."
+            )
         cancelled = deliveries.cancel_loading_event(
             db,
             loading_id=loading_id,
@@ -548,45 +592,61 @@ def raise_quantity_discrepancy(
     accurate_sj_id: str,
 ) -> dict[str, Any]:
     """Tombol Perbedaan Qty → tugas koordinasi Kepala Produksi (baris merah)."""
+    from app.services.index_preflight import require_delivery_txn_indexes
+
     validation = validate_loading(db, accurate_sj_id)
     if validation["all_matched"]:
         raise LoadingValidationError(
             "Qty Loading sudah cocok dengan Surat Jalan — tugas koordinasi tidak dibuat."
         )
     note = deliveries.get_delivery_note(db, accurate_sj_id)
-    master.seed_master_defaults(db)
+    # Fail-closed di luar txn: tidak seed Master, tidak createIndex.
+    require_delivery_txn_indexes(db)
+    assigned_role = master.require_task_type_assigned_role(db, LOADING_TASK)
     mismatched = [c for c in validation["items"] if not c["matched"]]
-    task = tasks.upsert_task(
-        db,
-        task_type=LOADING_TASK,
-        scope="delivery_note",
-        assigned_role=master.assigned_role_for(db, LOADING_TASK) or "production-head",
-        ref=_sj_ref(note),
-        label="Qty Loading dan SJ Berbeda",
-        coordination=True,
-        context={
-            "message": DISCREPANCY_MESSAGE,
-            "sj_no": note["sj_no"],
-            "mismatched_items": [
-                {
-                    "accurate_line_id": c["accurate_line_id"],
-                    "item_code": c["item_code"],
-                    "qty_sj": c["qty"],
-                    "qty_available": c["qty_available"],
-                    "reason": c["reason"],
-                }
-                for c in mismatched
-            ],
-        },
-    )
-    append_audit_event(
-        db,
-        action="delivery.loading.discrepancy",
-        actor_email=str(user.get("email_normalized") or ""),
-        target_email=None,
-        detail={"accurate_sj_id": accurate_sj_id, "mismatch_count": len(mismatched)},
-    )
-    return task
+    actor = str(user.get("email_normalized") or "")
+    context = {
+        "message": DISCREPANCY_MESSAGE,
+        "sj_no": note["sj_no"],
+        "mismatched_items": [
+            {
+                "accurate_line_id": c["accurate_line_id"],
+                "item_code": c["item_code"],
+                "qty_sj": c["qty"],
+                "qty_available": c["qty_available"],
+                "reason": c["reason"],
+            }
+            for c in mismatched
+        ],
+    }
+
+    def _operation(session: Any) -> dict[str, Any]:
+        task = tasks.upsert_task(
+            db,
+            task_type=LOADING_TASK,
+            scope="delivery_note",
+            assigned_role=assigned_role,
+            ref=_sj_ref(note),
+            label="Qty Loading dan SJ Berbeda",
+            coordination=True,
+            context=context,
+            session=session,
+        )
+        append_audit_event(
+            db,
+            action="delivery.loading.discrepancy",
+            actor_email=actor,
+            target_email=None,
+            detail={
+                "accurate_sj_id": accurate_sj_id,
+                "mismatch_count": len(mismatched),
+                "task_key": task["task_key"],
+            },
+            session=session,
+        )
+        return task
+
+    return tasks.run_in_transaction(db, _operation)
 
 
 def confirm_coordination(
@@ -627,6 +687,26 @@ def confirm_coordination(
     return result
 
 
+def _abandon_staged_delivery_evidence(
+    db: Database, *, evidence_ids: list[str], actor_email: str
+) -> None:
+    """Recovery non-atomik: soft-delete staging bila transaksi bisnis gagal.
+
+    Kegagalan cleanup tidak boleh mengubah status bisnis (sukses/gagal tetap
+    ditentukan oleh transaksi Mongo); orphan GridFS ditangani maintenance.
+    """
+    for evidence_id in evidence_ids:
+        try:
+            evidence.soft_delete_evidence(
+                db,
+                evidence_id=evidence_id,
+                actor_email=actor_email,
+                reason="recovery: konfirmasi pengiriman tidak commit",
+            )
+        except Exception:  # noqa: BLE001 — kompensasi terbaik; jangan naikkan status palsu
+            continue
+
+
 def confirm_delivery_success(
     db: Database,
     user: dict[str, Any],
@@ -636,8 +716,17 @@ def confirm_delivery_success(
     photos: list[tuple[str, str, bytes]],
     signature: tuple[str, str, bytes],
 ) -> dict[str, Any]:
-    """Minimal dua foto + satu tanda tangan + nama penerima; kurir dari sesi."""
+    """Minimal dua foto + satu tanda tangan + nama penerima; kurir dari sesi.
+
+    GridFS/evidence disimpan sebagai staging di luar transaksi. Event sukses,
+    status Driver, tautan metadata evidence, dan audit bisnis di satu transaksi
+    Mongo. Staging orphan di-soft-delete jika commit gagal (file historis tetap).
+    """
+    from app.services.index_preflight import require_delivery_txn_indexes
+    from pymongo.errors import DuplicateKeyError
+
     require_action(db, user, task_type=DRIVER_TASK, action="confirm")
+    require_delivery_txn_indexes(db)
 
     note = deliveries.get_delivery_note(db, accurate_sj_id)
     if note is None:
@@ -652,70 +741,183 @@ def confirm_delivery_success(
     if not recipient_name.strip():
         raise DeliveryEvidenceError("Nama penerima wajib diisi.")
 
+    # Idempotensi: sudah sukses → kembalikan event yang sama, tanpa bukti baru.
+    existing_success = deliveries.delivery_events_collection(db).find_one(
+        {
+            "accurate_sj_id": str(accurate_sj_id),
+            "status": deliveries.DELIVERY_SUCCESS,
+        },
+        {"_id": 0},
+    )
+    if existing_success is not None:
+        return existing_success
+
     courier = str(user.get("email_normalized") or "")
+    recipient = recipient_name.strip()
+    staged_ids: list[str] = []
     photo_ids: list[str] = []
-    for filename, content_type, content in photos:
-        stored = evidence.store_evidence(
+
+    try:
+        for filename, content_type, content in photos:
+            stored = evidence.store_evidence(
+                db,
+                scope=DELIVERY_PHOTO_SCOPE,
+                scope_id=str(accurate_sj_id),
+                filename=filename,
+                content_type=content_type,
+                content=content,
+                uploaded_by=courier,
+                kind="delivery-photo",
+                context={
+                    "accurate_po_id": note["accurate_po_id"],
+                    "accurate_sj_id": str(accurate_sj_id),
+                    "delivery_commit": "pending",
+                },
+            )
+            photo_ids.append(stored["evidence_id"])
+            staged_ids.append(stored["evidence_id"])
+
+        sig_stored = evidence.store_evidence(
             db,
-            scope=DELIVERY_PHOTO_SCOPE,
+            scope=DELIVERY_SIGNATURE_SCOPE,
             scope_id=str(accurate_sj_id),
-            filename=filename,
-            content_type=content_type,
-            content=content,
+            filename=signature[0],
+            content_type=signature[1],
+            content=signature[2],
             uploaded_by=courier,
-            kind="delivery-photo",
-            context={"accurate_po_id": note["accurate_po_id"]},
+            kind="delivery-signature",
+            context={
+                "recipient_name": recipient,
+                "accurate_sj_id": str(accurate_sj_id),
+                "delivery_commit": "pending",
+            },
         )
-        photo_ids.append(stored["evidence_id"])
-
-    sig_stored = evidence.store_evidence(
-        db,
-        scope=DELIVERY_SIGNATURE_SCOPE,
-        scope_id=str(accurate_sj_id),
-        filename=signature[0],
-        content_type=signature[1],
-        content=signature[2],
-        uploaded_by=courier,
-        kind="delivery-signature",
-        context={"recipient_name": recipient_name.strip()},
-    )
-
-    event = deliveries.insert_delivery_event(
-        db,
-        accurate_sj_id=str(accurate_sj_id),
-        accurate_po_id=str(note["accurate_po_id"]),
-        attempt=deliveries.next_delivery_attempt(db, accurate_sj_id),
-        status=deliveries.DELIVERY_SUCCESS,
-        courier_email=courier,
-        recipient_name=recipient_name.strip(),
-        photo_evidence_ids=photo_ids,
-        signature_evidence_id=sig_stored["evidence_id"],
-        failure_reason=None,
-    )
+        staged_ids.append(sig_stored["evidence_id"])
+    except Exception:
+        _abandon_staged_delivery_evidence(
+            db, evidence_ids=staged_ids, actor_email=courier
+        )
+        raise
 
     driver_key = build_task_key(DRIVER_TASK, "delivery_note", _sj_ref(note))
-    tasks.tasks_collection(db).update_one(
-        {"task_key": driver_key},
-        {
-            "$set": {
-                "status": tasks.TASK_STATUS_DONE,
-                "context.last_delivery_status": deliveries.DELIVERY_SUCCESS,
-            }
-        },
-    )
-    append_audit_event(
-        db,
-        action="delivery.confirm.success",
-        actor_email=courier,
-        target_email=None,
-        detail={
-            "accurate_sj_id": accurate_sj_id,
-            "attempt": event["attempt"],
-            "photo_count": len(photo_ids),
-            "recipient_name": recipient_name.strip(),
-        },
-    )
-    return event
+    all_evidence_ids = list(photo_ids) + [sig_stored["evidence_id"]]
+
+    def _operation(session: Any) -> dict[str, Any]:
+        # Race cancel / revisi / konfirmasi paralel — cek ulang di dalam txn.
+        if deliveries.has_successful_delivery_event(
+            db, accurate_sj_id, session=session
+        ):
+            existing = deliveries.delivery_events_collection(db).find_one(
+                {
+                    "accurate_sj_id": str(accurate_sj_id),
+                    "status": deliveries.DELIVERY_SUCCESS,
+                },
+                {"_id": 0},
+                session=session,
+            )
+            return {"event": existing, "duplicate": True}
+
+        active = deliveries.get_active_loading_event(
+            db, accurate_sj_id, session=session
+        )
+        if active is None:
+            raise LoadingValidationError(
+                "Tidak ada Loading aktif untuk SJ ini — Loading ulang diperlukan."
+            )
+        note_now = deliveries.delivery_notes_collection(db).find_one(
+            {"accurate_sj_id": str(accurate_sj_id)},
+            {"_id": 0, "sj_version": 1, "revision_status": 1},
+            session=session,
+        ) or {}
+        if note_now.get("revision_status") == deliveries.REVISION_NEEDS_RELOADING:
+            raise LoadingValidationError(
+                "Surat Jalan direvisi: konfirmasi pengiriman diblokir sampai "
+                "Loading dibatalkan dan dikonfirmasi ulang."
+            )
+        if int(active.get("sj_version") or 1) != int(note_now.get("sj_version") or 1):
+            raise LoadingValidationError(
+                "Loading aktif mengacu versi SJ lama — Loading ulang diperlukan."
+            )
+
+        event = deliveries.insert_delivery_event(
+            db,
+            accurate_sj_id=str(accurate_sj_id),
+            accurate_po_id=str(note["accurate_po_id"]),
+            attempt=deliveries.next_delivery_attempt(
+                db, accurate_sj_id, session=session
+            ),
+            status=deliveries.DELIVERY_SUCCESS,
+            courier_email=courier,
+            recipient_name=recipient,
+            photo_evidence_ids=photo_ids,
+            signature_evidence_id=sig_stored["evidence_id"],
+            failure_reason=None,
+            session=session,
+        )
+        evidence.attach_evidence_to_delivery(
+            db,
+            evidence_ids=all_evidence_ids,
+            accurate_sj_id=str(accurate_sj_id),
+            delivery_event_id=str(event["delivery_event_id"]),
+            attempt=int(event["attempt"]),
+            session=session,
+        )
+        tasks.tasks_collection(db).update_one(
+            {"task_key": driver_key},
+            {
+                "$set": {
+                    "status": tasks.TASK_STATUS_DONE,
+                    "context.last_delivery_status": deliveries.DELIVERY_SUCCESS,
+                }
+            },
+            session=session,
+        )
+        append_audit_event(
+            db,
+            action="delivery.confirm.success",
+            actor_email=courier,
+            target_email=None,
+            detail={
+                "accurate_sj_id": accurate_sj_id,
+                "attempt": event["attempt"],
+                "photo_count": len(photo_ids),
+                "recipient_name": recipient,
+                "delivery_event_id": event["delivery_event_id"],
+                "photo_evidence_ids": photo_ids,
+                "signature_evidence_id": sig_stored["evidence_id"],
+            },
+            session=session,
+        )
+        return {"event": event, "duplicate": False}
+
+    try:
+        result = tasks.run_in_transaction(db, _operation)
+    except DuplicateKeyError:
+        # Unique partial sukses per SJ: konfirmasi paralel kalah → event yang menang.
+        existing = deliveries.delivery_events_collection(db).find_one(
+            {
+                "accurate_sj_id": str(accurate_sj_id),
+                "status": deliveries.DELIVERY_SUCCESS,
+            },
+            {"_id": 0},
+        )
+        _abandon_staged_delivery_evidence(
+            db, evidence_ids=staged_ids, actor_email=courier
+        )
+        if existing is None:
+            raise
+        return existing
+    except Exception:
+        _abandon_staged_delivery_evidence(
+            db, evidence_ids=staged_ids, actor_email=courier
+        )
+        raise
+
+    if result.get("duplicate"):
+        _abandon_staged_delivery_evidence(
+            db, evidence_ids=staged_ids, actor_email=courier
+        )
+    return result["event"]
 
 
 def confirm_delivery_failure(
@@ -726,6 +928,8 @@ def confirm_delivery_failure(
     reason: str,
 ) -> dict[str, Any]:
     """Pengiriman gagal → tugas koordinasi Kepala Produksi, tanpa reschedule."""
+    from app.services.index_preflight import require_delivery_txn_indexes
+
     require_action(db, user, task_type=DRIVER_TASK, action="confirm")
     if not reason.strip():
         raise DeliveryEvidenceError("Alasan pengiriman gagal wajib diisi.")
@@ -735,49 +939,61 @@ def confirm_delivery_failure(
         raise LookupError(f"Surat Jalan tidak ditemukan: {accurate_sj_id}")
     _require_active_loading(db, accurate_sj_id)
 
-    courier = str(user.get("email_normalized") or "")
-    event = deliveries.insert_delivery_event(
-        db,
-        accurate_sj_id=str(accurate_sj_id),
-        accurate_po_id=str(note["accurate_po_id"]),
-        attempt=deliveries.next_delivery_attempt(db, accurate_sj_id),
-        status=deliveries.DELIVERY_FAILED,
-        courier_email=courier,
-        recipient_name=None,
-        photo_evidence_ids=[],
-        signature_evidence_id=None,
-        failure_reason=reason.strip(),
-    )
+    # Fail-closed sebelum mutasi: tidak seed Master, tidak createIndex.
+    require_delivery_txn_indexes(db)
+    assigned_role = master.require_task_type_assigned_role(db, DELIVERY_FAILURE_TASK)
 
-    master.seed_master_defaults(db)
-    task = tasks.upsert_task(
-        db,
-        task_type=DELIVERY_FAILURE_TASK,
-        scope="delivery_note",
-        assigned_role=master.assigned_role_for(db, DELIVERY_FAILURE_TASK)
-        or "production-head",
-        ref=_sj_ref(note),
-        label="Pengiriman Gagal — Koordinasi Administrasi",
-        coordination=True,
-        context={
-            "sj_no": note["sj_no"],
-            "failure_reason": reason.strip(),
-            "attempt": event["attempt"],
-            "courier_email": courier,
-        },
-    )
-    append_audit_event(
-        db,
-        action="delivery.confirm.failure",
-        actor_email=courier,
-        target_email=None,
-        detail={
-            "accurate_sj_id": accurate_sj_id,
-            "attempt": event["attempt"],
-            "reason": reason.strip(),
-        },
-    )
-    return {"event": event, "coordination_task_key": task["task_key"]}
+    courier = str(user.get("email_normalized") or "")
+    fail_reason = reason.strip()
+
+    def _operation(session: Any) -> dict[str, Any]:
+        event = deliveries.insert_delivery_event(
+            db,
+            accurate_sj_id=str(accurate_sj_id),
+            accurate_po_id=str(note["accurate_po_id"]),
+            attempt=deliveries.next_delivery_attempt(
+                db, accurate_sj_id, session=session
+            ),
+            status=deliveries.DELIVERY_FAILED,
+            courier_email=courier,
+            recipient_name=None,
+            photo_evidence_ids=[],
+            signature_evidence_id=None,
+            failure_reason=fail_reason,
+            session=session,
+        )
+        task = tasks.upsert_task(
+            db,
+            task_type=DELIVERY_FAILURE_TASK,
+            scope="delivery_note",
+            assigned_role=assigned_role,
+            ref=_sj_ref(note),
+            label="Pengiriman Gagal — Koordinasi Administrasi",
+            coordination=True,
+            context={
+                "sj_no": note["sj_no"],
+                "failure_reason": fail_reason,
+                "attempt": event["attempt"],
+                "courier_email": courier,
+            },
+            session=session,
+        )
+        append_audit_event(
+            db,
+            action="delivery.confirm.failure",
+            actor_email=courier,
+            target_email=None,
+            detail={
+                "accurate_sj_id": accurate_sj_id,
+                "attempt": event["attempt"],
+                "reason": fail_reason,
+                "coordination_task_key": task["task_key"],
+            },
+            session=session,
+        )
+        return {"event": event, "coordination_task_key": task["task_key"]}
+
+    return tasks.run_in_transaction(db, _operation)
 
 
 def soft_delete_delivery_evidence(

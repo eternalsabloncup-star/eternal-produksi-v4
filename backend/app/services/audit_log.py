@@ -43,7 +43,9 @@ def ensure_audit_indexes(db: Database) -> list[str]:
         created.append(name)
     from app.services.index_preflight import mark_index_specs_verified
 
-    mark_index_specs_verified(db.name, [s["name"] for s in REQUIRED_AUDIT_INDEX_SPECS])
+    mark_index_specs_verified(
+        [s["name"] for s in REQUIRED_AUDIT_INDEX_SPECS], db=db
+    )
     return created
 
 

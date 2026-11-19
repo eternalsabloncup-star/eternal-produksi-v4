@@ -34,8 +34,7 @@ def can_act(
     role = actor_operational_role(user)
     if role is None:
         return False
-    # Default terkunci Owner harus tersedia sebelum izin dievaluasi.
-    master.seed_master_defaults(db)
+    # Read-only: Master wajib di-bootstrap eksplisit (bukan seed di request path).
     return master.role_can(db, role=role, task_type=task_type, action=action)
 
 

@@ -12,16 +12,18 @@ from urllib.parse import urlparse
 from pymongo.database import Database
 
 from app.repositories.delivery_repository import (
+    DELIVERY_SUCCESS,
     LOADING_ACTIVE,
     REQUIRED_DELIVERY_INDEX_SPECS,
 )
+from app.repositories.evidence_repository import REQUIRED_EVIDENCE_INDEX_SPECS
 from app.repositories.task_repository import REQUIRED_TASK_INDEX_SPECS
 from app.services.audit_log import REQUIRED_AUDIT_INDEX_SPECS
 
 FORBIDDEN_PROD_PORTS = {27017, 27018}
 ALLOWED_TEST_PORTS = {27019}
 
-# Cache verifikasi per DB: nama indeks yang sudah lolos cek spesifikasi.
+# Cache verifikasi per target Mongo (host:port + db), bukan nama DB saja.
 _VERIFIED_SPECS: dict[str, frozenset[str]] = {}
 
 
@@ -42,18 +44,50 @@ class MissingRequiredIndexError(RuntimeError):
         self.conflict = list(conflict or [])
 
 
-def clear_index_verification_cache(db_name: str | None = None) -> None:
+def mongo_target_cache_key(db: Database) -> str:
+    """Kunci isolasi target: nodes host:port + nama DB (+ id client sebagai pembeda)."""
+    client = db.client
+    nodes = sorted(f"{host}:{port}" for host, port in (getattr(client, "nodes", None) or set()))
+    if not nodes:
+        address = getattr(client, "address", None)
+        if address and len(address) >= 2:
+            nodes = [f"{address[0]}:{address[1]}"]
+        else:
+            nodes = [f"client:{id(client)}"]
+    return f"{','.join(nodes)}|{db.name}|c{id(client)}"
+
+
+def clear_index_verification_cache(
+    db_name: str | None = None, *, db: Database | None = None
+) -> None:
     """Hapus cache verifikasi (uji / setelah maintenance indeks)."""
+    if db is not None:
+        _VERIFIED_SPECS.pop(mongo_target_cache_key(db), None)
+        return
     if db_name is None:
         _VERIFIED_SPECS.clear()
-    else:
-        _VERIFIED_SPECS.pop(db_name, None)
+        return
+    # Hapus semua kunci yang merujuk nama DB tersebut (kompatibilitas tes lama).
+    for key in list(_VERIFIED_SPECS):
+        if f"|{db_name}|" in key or key == db_name:
+            _VERIFIED_SPECS.pop(key, None)
 
 
-def mark_index_specs_verified(db_name: str, names: list[str]) -> None:
+def mark_index_specs_verified(
+    names: list[str],
+    *,
+    db: Database | None = None,
+    db_name: str | None = None,
+) -> None:
     """Dipakai setelah ensure_* eksplisit (bootstrap/test) — bukan request path."""
-    prev = _VERIFIED_SPECS.get(db_name, frozenset())
-    _VERIFIED_SPECS[db_name] = prev | frozenset(names)
+    if db is not None:
+        key = mongo_target_cache_key(db)
+    elif db_name is not None:
+        key = db_name
+    else:
+        raise ValueError("mark_index_specs_verified membutuhkan db atau db_name")
+    prev = _VERIFIED_SPECS.get(key, frozenset())
+    _VERIFIED_SPECS[key] = prev | frozenset(names)
 
 
 def extract_mongo_ports_from_uri(uri: str) -> list[int]:
@@ -187,7 +221,8 @@ def inspect_index_specs(db: Database, specs: list[dict[str, Any]]) -> dict[str, 
 def require_index_specs(db: Database, specs: list[dict[str, Any]]) -> None:
     """Fail-closed: indeks wajib harus cocok spek. Tidak pernah createIndex."""
     names = frozenset(str(s["name"]) for s in specs)
-    cached = _VERIFIED_SPECS.get(db.name, frozenset())
+    key = mongo_target_cache_key(db)
+    cached = _VERIFIED_SPECS.get(key, frozenset())
     if names <= cached:
         return
 
@@ -201,25 +236,27 @@ def require_index_specs(db: Database, specs: list[dict[str, Any]]) -> None:
             missing=report["missing"],
             conflict=report["conflict"],
         )
-    mark_index_specs_verified(db.name, list(names))
+    mark_index_specs_verified(list(names), db=db)
 
 
 def require_delivery_txn_indexes(db: Database) -> None:
-    """Indeks wajib sebelum transaksi Loading/cancel/revisi SJ."""
+    """Indeks wajib sebelum transaksi Loading/cancel/revisi/sukses pengiriman."""
     require_index_specs(
         db,
         list(REQUIRED_DELIVERY_INDEX_SPECS)
         + list(REQUIRED_TASK_INDEX_SPECS)
-        + list(REQUIRED_AUDIT_INDEX_SPECS),
+        + list(REQUIRED_AUDIT_INDEX_SPECS)
+        + list(REQUIRED_EVIDENCE_INDEX_SPECS),
     )
 
 
 def inspect_required_indexes(db: Database) -> dict[str, Any]:
-    """Preflight lengkap delivery + task (+ audit) — tanpa createIndex."""
+    """Preflight lengkap delivery + task + audit + evidence — tanpa createIndex."""
     specs = (
         list(REQUIRED_DELIVERY_INDEX_SPECS)
         + list(REQUIRED_TASK_INDEX_SPECS)
         + list(REQUIRED_AUDIT_INDEX_SPECS)
+        + list(REQUIRED_EVIDENCE_INDEX_SPECS)
     )
     report = inspect_index_specs(db, specs)
     blockers: list[dict[str, Any]] = []
@@ -232,10 +269,23 @@ def inspect_required_indexes(db: Database) -> dict[str, Any]:
                 "note": "Periksa duplicate accurate_sj_id sebelum createIndex unique",
             }
         )
+    if "uniq_successful_delivery_per_sj" in report["missing"] or any(
+        c["name"] == "uniq_successful_delivery_per_sj" for c in report["conflict"]
+    ):
+        blockers.append(
+            {
+                "index": "uniq_successful_delivery_per_sj",
+                "note": (
+                    "Maintenance Owner: unique partial accurate_sj_id "
+                    f"where status={DELIVERY_SUCCESS!r} — jangan createIndex otomatis"
+                ),
+            }
+        )
     return {
         **report,
         "duplicate_data_blockers": blockers,
         "partial_active_loading_status": LOADING_ACTIVE,
+        "partial_successful_delivery_status": DELIVERY_SUCCESS,
         "create_index_commands_for_owner_approval": [
             {
                 "collection": s["collection"],

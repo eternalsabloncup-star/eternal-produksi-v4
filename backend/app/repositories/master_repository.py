@@ -221,3 +221,24 @@ def assigned_role_for(db: Database, task_type: str) -> str | None:
     if not doc:
         return None
     return doc.get("assigned_role")
+
+
+class MissingMasterConfigError(RuntimeError):
+    """Konfigurasi Master wajib belum siap — mutasi Loading ditolak (fail-closed)."""
+
+    code = "MISSING_MASTER_CONFIG"
+
+
+def require_task_type_assigned_role(db: Database, task_type: str) -> str:
+    """Read-only: pastikan task_type Master sudah ada + assigned_role.
+
+    Tidak createIndex, tidak seed/upsert. Bootstrap Master harus eksplisit.
+    """
+    doc = get_task_type(db, task_type)
+    role = (doc or {}).get("assigned_role") if doc else None
+    if not doc or not role:
+        raise MissingMasterConfigError(
+            f"Konfigurasi Master untuk task_type={task_type!r} belum siap "
+            "(assigned_role wajib). Jalankan bootstrap Master sebelum Loading."
+        )
+    return str(role)

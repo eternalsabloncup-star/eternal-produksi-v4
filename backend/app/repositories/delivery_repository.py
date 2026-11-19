@@ -105,6 +105,13 @@ REQUIRED_DELIVERY_INDEX_SPECS: list[dict[str, Any]] = [
         "name": "uniq_delivery_attempt",
         "unique": True,
     },
+    {
+        "collection": DELIVERY_EVENTS_COLLECTION,
+        "keys": [("accurate_sj_id", ASCENDING)],
+        "name": "uniq_successful_delivery_per_sj",
+        "unique": True,
+        "partialFilterExpression": {"status": DELIVERY_SUCCESS},
+    },
 ]
 
 
@@ -120,7 +127,7 @@ def ensure_delivery_indexes(db: Database) -> list[str]:
     from app.services.index_preflight import mark_index_specs_verified
 
     mark_index_specs_verified(
-        db.name, [s["name"] for s in REQUIRED_DELIVERY_INDEX_SPECS]
+        [s["name"] for s in REQUIRED_DELIVERY_INDEX_SPECS], db=db
     )
     return created
 
@@ -530,80 +537,77 @@ def diff_note_items(
     return changes
 
 
-def upsert_delivery_note(db: Database, payload: dict[str, Any]) -> dict[str, Any]:
-    """Idempoten per ``accurate_sj_id``; snapshot + histori revisi atomik.
-
-    Update snapshot dan insert histori versi di satu transaksi replica set.
-    Payload tidak berubah → tidak menambah versi / histori.
-    """
-    from app.repositories import task_repository as tasks
-
-    _ensure_once(db)
+def apply_upsert_delivery_note(
+    db: Database, payload: dict[str, Any], *, session: Any
+) -> dict[str, Any]:
+    """Inti upsert SJ di dalam session transaksi yang sudah dibuka."""
     doc = normalize_delivery_note(payload)
+    now = datetime.now(timezone.utc)
+    before = delivery_notes_collection(db).find_one(
+        {"accurate_sj_id": doc["accurate_sj_id"]}, {"_id": 0}, session=session
+    )
 
-    def _operation(session: Any) -> dict[str, Any]:
-        now = datetime.now(timezone.utc)
-        before = delivery_notes_collection(db).find_one(
-            {"accurate_sj_id": doc["accurate_sj_id"]}, {"_id": 0}, session=session
-        )
+    changes = diff_note_items(before, doc)
+    header_changes = diff_note_header(before, doc)
+    ship_date_changed = before is not None and before.get("ship_date") != doc.get(
+        "ship_date"
+    )
+    # Item/ship_date = revisi versi; header-only = update snapshot tanpa bump versi.
+    changed = bool(changes) or ship_date_changed
+    version = int((before or {}).get("sj_version") or 0) + (
+        1 if changed or before is None else 0
+    )
+    if before is not None and not changed:
+        version = int(before.get("sj_version") or 1)
 
-        changes = diff_note_items(before, doc)
-        header_changes = diff_note_header(before, doc)
-        ship_date_changed = before is not None and before.get("ship_date") != doc.get(
-            "ship_date"
-        )
-        # Item/ship_date = revisi versi; header-only = update snapshot tanpa bump versi.
-        changed = bool(changes) or ship_date_changed
-        version = int((before or {}).get("sj_version") or 0) + (
-            1 if changed or before is None else 0
-        )
-        if before is not None and not changed:
-            version = int(before.get("sj_version") or 1)
+    update: dict[str, Any] = {**doc, "synced_at": now, "sj_version": version}
+    if before is None:
+        update["revision_status"] = REVISION_ACTIVE
 
-        update: dict[str, Any] = {**doc, "synced_at": now, "sj_version": version}
-        if before is None:
-            update["revision_status"] = REVISION_ACTIVE
+    delivery_notes_collection(db).update_one(
+        {"accurate_sj_id": doc["accurate_sj_id"]},
+        {"$set": update, "$setOnInsert": {"created_at": now}},
+        upsert=True,
+        session=session,
+    )
 
-        delivery_notes_collection(db).update_one(
-            {"accurate_sj_id": doc["accurate_sj_id"]},
-            {"$set": update, "$setOnInsert": {"created_at": now}},
-            upsert=True,
+    # Histori hanya untuk insert awal atau perubahan item/ship_date.
+    if changed or before is None:
+        note_revisions_collection(db).insert_one(
+            {
+                "accurate_sj_id": doc["accurate_sj_id"],
+                "version": version,
+                "snapshot_before": before,
+                "snapshot_after": doc,
+                "changed_items": changes,
+                "changed_header_fields": header_changes,
+                "ship_date_changed": ship_date_changed,
+                "created_at": now,
+            },
             session=session,
         )
 
-        # Histori hanya untuk insert awal atau perubahan item/ship_date.
-        if changed or before is None:
-            note_revisions_collection(db).insert_one(
-                {
-                    "accurate_sj_id": doc["accurate_sj_id"],
-                    "version": version,
-                    "snapshot_before": before,
-                    "snapshot_after": doc,
-                    "changed_items": changes,
-                    "changed_header_fields": header_changes,
-                    "ship_date_changed": ship_date_changed,
-                    "created_at": now,
-                },
-                session=session,
-            )
+    after = delivery_notes_collection(db).find_one(
+        {"accurate_sj_id": doc["accurate_sj_id"]}, {"_id": 0}, session=session
+    )
+    return {
+        "delivery_note": after,
+        "was_insert": before is None,
+        "source_changed": changed,
+        "changed_items": changes,
+        "changed_header_fields": header_changes,
+        "sj_version": version,
+    }
 
-        after = delivery_notes_collection(db).find_one(
-            {"accurate_sj_id": doc["accurate_sj_id"]}, {"_id": 0}, session=session
-        )
-        return {
-            "delivery_note": after,
-            "was_insert": before is None,
-            "source_changed": changed,
-            "changed_items": changes,
-            "changed_header_fields": header_changes,
-            "sj_version": version,
-        }
 
-    # Race concurrent: WriteConflict / DuplicateKey versi → retry.
+def run_delivery_mongo_txn(db: Database, operation: Any) -> Any:
+    """Jalankan operasi dalam transaksi replica set + retry WriteConflict/DuplicateKey."""
+    from app.repositories import task_repository as tasks
+
     last_err: Exception | None = None
     for _ in range(12):
         try:
-            return tasks.run_in_transaction(db, _operation, attempts=8)
+            return tasks.run_in_transaction(db, operation, attempts=8)
         except DuplicateKeyError as exc:
             last_err = exc
             continue
@@ -612,7 +616,42 @@ def upsert_delivery_note(db: Database, payload: dict[str, Any]) -> dict[str, Any
                 last_err = exc
                 continue
             raise
-    raise last_err if last_err else RuntimeError("upsert_delivery_note gagal")
+    raise last_err if last_err else RuntimeError("transaksi delivery gagal")
+
+
+def upsert_delivery_note(db: Database, payload: dict[str, Any]) -> dict[str, Any]:
+    """Idempoten per ``accurate_sj_id``; snapshot + histori revisi atomik."""
+    _ensure_once(db)
+
+    def _operation(session: Any) -> dict[str, Any]:
+        return apply_upsert_delivery_note(db, payload, session=session)
+
+    return run_delivery_mongo_txn(db, _operation)
+
+
+def has_successful_delivery_event(
+    db: Database, accurate_sj_id: str, *, session: Any | None = None
+) -> bool:
+    """Read delivery sukses; mendukung session transaksi."""
+    row = delivery_events_collection(db).find_one(
+        {
+            "accurate_sj_id": str(accurate_sj_id),
+            "status": DELIVERY_SUCCESS,
+        },
+        {"_id": 1},
+        session=session,
+    )
+    return row is not None
+
+
+def get_active_loading_event(
+    db: Database, accurate_sj_id: str, *, session: Any | None = None
+) -> dict[str, Any] | None:
+    return loading_events_collection(db).find_one(
+        {"accurate_sj_id": str(accurate_sj_id), "status": LOADING_ACTIVE},
+        {"_id": 0},
+        session=session,
+    )
 
 
 def list_note_revisions(db: Database, accurate_sj_id: str) -> list[dict[str, Any]]:
@@ -742,9 +781,7 @@ def insert_loading_event(
 def get_loading_event(db: Database, accurate_sj_id: str) -> dict[str, Any] | None:
     """Loading yang sedang aktif untuk satu SJ (bukan yang sudah dibatalkan)."""
     _ensure_once(db)
-    return loading_events_collection(db).find_one(
-        {"accurate_sj_id": str(accurate_sj_id), "status": LOADING_ACTIVE}, {"_id": 0}
-    )
+    return get_active_loading_event(db, accurate_sj_id)
 
 
 def get_loading_by_id(db: Database, loading_id: str) -> dict[str, Any] | None:
@@ -787,11 +824,13 @@ def cancel_loading_event(
     )
 
 
-def next_delivery_attempt(db: Database, accurate_sj_id: str) -> int:
-    _ensure_once(db)
+def next_delivery_attempt(
+    db: Database, accurate_sj_id: str, *, session: Any | None = None
+) -> int:
+    _ensure_once(db, session=session)
     return (
         delivery_events_collection(db).count_documents(
-            {"accurate_sj_id": str(accurate_sj_id)}
+            {"accurate_sj_id": str(accurate_sj_id)}, session=session
         )
         + 1
     )
@@ -809,8 +848,9 @@ def insert_delivery_event(
     photo_evidence_ids: list[str],
     signature_evidence_id: str | None,
     failure_reason: str | None,
+    session: Any | None = None,
 ) -> dict[str, Any]:
-    _ensure_once(db)
+    _ensure_once(db, session=session)
     doc = {
         "delivery_event_id": f"delivery:{accurate_sj_id}:attempt-{attempt}",
         "accurate_sj_id": str(accurate_sj_id),
@@ -825,7 +865,7 @@ def insert_delivery_event(
         "created_at": datetime.now(timezone.utc),
     }
     try:
-        delivery_events_collection(db).insert_one(dict(doc))
+        delivery_events_collection(db).insert_one(dict(doc), session=session)
     except DuplicateKeyError as exc:
         raise ValueError(
             f"Percobaan pengiriman {attempt} untuk SJ {accurate_sj_id} sudah tercatat."
