@@ -4,10 +4,11 @@
 Usage examples:
   python scripts/bootstrap_mongo.py --ensure-indexes
   python scripts/bootstrap_mongo.py --seed-master
+  python scripts/bootstrap_mongo.py --seed-system-roles
   python scripts/bootstrap_mongo.py --create-admin
 
 Akun pertama dibuat sebagai role ``super_admin``.
-Seed Master memakai $setOnInsert — tidak menimpa mapping Owner yang sudah diubah.
+Seed Master / system roles memakai $setOnInsert — tidak menimpa data Owner yang sudah diubah.
 
 Never run from API startup, Docker app entrypoint, or deploy.
 """
@@ -48,6 +49,14 @@ def parse_args() -> argparse.Namespace:
         help="Seed Master task types + role actions defaults (idempotent; maintenance only).",
     )
     parser.add_argument(
+        "--seed-system-roles",
+        action="store_true",
+        help=(
+            "Seed Settings system role catalog (super_admin/admin/user) "
+            "idempotent; maintenance only — never via API request."
+        ),
+    )
+    parser.add_argument(
         "--create-admin",
         action="store_true",
         help="Create the first Super Admin via secure interactive password input.",
@@ -67,10 +76,15 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> int:
     args = parse_args()
-    if not args.ensure_indexes and not args.create_admin and not args.seed_master:
+    if not (
+        args.ensure_indexes
+        or args.create_admin
+        or args.seed_master
+        or args.seed_system_roles
+    ):
         print(
             "Pilih minimal satu aksi: --ensure-indexes, --seed-master, "
-            "dan/atau --create-admin",
+            "--seed-system-roles, dan/atau --create-admin",
             file=sys.stderr,
         )
         return 2
@@ -98,6 +112,17 @@ def main() -> int:
             "Master seed OK (idempotent): "
             f"task_types_inserted={seeded['task_types']} "
             f"role_actions_inserted={seeded['role_actions']}"
+        )
+
+    if args.seed_system_roles:
+        from app.repositories import settings_role_repository as settings_roles
+
+        inserted = settings_roles.ensure_system_roles(db)
+        status = settings_roles.system_roles_bootstrap_status(db)
+        print(
+            "System roles seed OK (idempotent): "
+            f"inserted={inserted} ready={status['ready']} "
+            f"present={','.join(status['present'])}"
         )
 
     if args.create_admin:

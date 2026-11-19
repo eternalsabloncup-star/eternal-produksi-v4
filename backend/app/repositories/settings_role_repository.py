@@ -1,7 +1,8 @@
 """Custom & system role catalog for Settings V4.
 
 System roles are immutable keys. Custom roles default-deny module permissions.
-Request path: require indexes (no createIndex). Bootstrap via ensure_indexes.
+Request path: require indexes + read-only (no createIndex, no seed/upsert).
+Bootstrap system roles only via ``ensure_system_roles`` (maintenance/CLI/test).
 """
 
 from __future__ import annotations
@@ -17,6 +18,8 @@ from app.auth.permissions import ALL_PERMISSIONS
 from app.auth.roles import ROLE_ADMIN, ROLE_SUPER_ADMIN, ROLE_USER
 
 ROLES_COLLECTION = "settings_roles"
+
+SYSTEM_ROLE_KEYS: tuple[str, ...] = (ROLE_SUPER_ADMIN, ROLE_ADMIN, ROLE_USER)
 
 SYSTEM_ROLE_DOCS: tuple[dict[str, Any], ...] = (
     {
@@ -83,8 +86,11 @@ def require_settings_role_indexes(db: Database) -> None:
 
 
 def ensure_system_roles(db: Database) -> int:
-    """Idempotent catalog rows for system roles — $setOnInsert only."""
-    require_settings_role_indexes(db)
+    """Idempotent catalog rows for system roles — maintenance/CLI/test only.
+
+    Uses $setOnInsert only. Never call from GET, login, or permission checks.
+    """
+    ensure_settings_role_indexes(db)
     now = datetime.now(timezone.utc)
     inserted = 0
     for base in SYSTEM_ROLE_DOCS:
@@ -106,6 +112,34 @@ def ensure_system_roles(db: Database) -> int:
     return inserted
 
 
+def system_roles_bootstrap_status(db: Database) -> dict[str, Any]:
+    """Read-only: apakah katalog role sistem sudah di-bootstrap (tanpa seed)."""
+    require_settings_role_indexes(db)
+    present: list[str] = []
+    for key in SYSTEM_ROLE_KEYS:
+        doc = roles_collection(db).find_one(
+            {"role_key": key, "kind": "system"}, {"_id": 1}
+        )
+        if doc is not None:
+            present.append(key)
+    missing = [k for k in SYSTEM_ROLE_KEYS if k not in present]
+    ready = len(missing) == 0
+    return {
+        "ready": ready,
+        "present": present,
+        "missing": missing,
+        "note": (
+            "Katalog role sistem siap."
+            if ready
+            else (
+                "Role sistem belum di-bootstrap. "
+                "Jalankan maintenance manual: "
+                "python scripts/bootstrap_mongo.py --seed-system-roles"
+            )
+        ),
+    }
+
+
 def _public(doc: dict[str, Any]) -> dict[str, Any]:
     return {
         "role_key": doc["role_key"],
@@ -121,8 +155,8 @@ def _public(doc: dict[str, Any]) -> dict[str, Any]:
 
 
 def list_roles(db: Database, *, include_inactive: bool = True) -> list[dict[str, Any]]:
+    """Read-only list — no seed/upsert."""
     require_settings_role_indexes(db)
-    ensure_system_roles(db)
     query: dict[str, Any] = {}
     if not include_inactive:
         query["is_active"] = True
@@ -130,8 +164,8 @@ def list_roles(db: Database, *, include_inactive: bool = True) -> list[dict[str,
 
 
 def get_role(db: Database, role_key: str) -> dict[str, Any] | None:
+    """Read-only lookup — no seed/upsert."""
     require_settings_role_indexes(db)
-    ensure_system_roles(db)
     doc = roles_collection(db).find_one({"role_key": role_key})
     return _public(doc) if doc else None
 
@@ -145,7 +179,6 @@ def create_custom_role(
     duplicated_from: str | None = None,
 ) -> dict[str, Any]:
     require_settings_role_indexes(db)
-    ensure_system_roles(db)
     key = role_key.strip().lower().replace(" ", "-")
     if not key or key in {ROLE_SUPER_ADMIN, ROLE_ADMIN, ROLE_USER}:
         raise ValueError("role_key custom tidak valid atau bentrok dengan role sistem.")
@@ -194,7 +227,6 @@ def set_module_permissions(
     expected_version: int,
 ) -> dict[str, Any]:
     require_settings_role_indexes(db)
-    ensure_system_roles(db)
     role = roles_collection(db).find_one({"role_key": role_key})
     if role is None:
         raise LookupError(f"Role tidak ditemukan: {role_key}")
