@@ -12,8 +12,12 @@
 #
 # DILARANG: cetak secret, tulis Accurate, sync ke eternal_v4, merge, restart service,
 #           mengubah checkout main production.
+# Alur: discover SJ↔SO (read-only) → seed PO terkait ke Mongo test → sync SJ
+# terpilih 2x (idempotency). Prefer ACCURATE_SMOKE_SO_ID bila ada SJ single-SO;
+# jika tidak, fallback PO eligible lain dari data Accurate asli (bukan tebakan).
+# MULTI_SO_NOT_SUPPORTED tetap fail-closed (tidak dipilih sebagai kandidat uji).
 # ONESHOT_PASS: ≥1 SJ tersinkron + second-pass idempotency PASS.
-# ONESHOT_BLOCKED: seluruh SJ skipped / tidak ada SJ teruji.
+# ONESHOT_BLOCKED: discovery kosong / seluruh SJ skipped / tidak ada SJ teruji.
 
 set -euo pipefail
 
@@ -329,6 +333,26 @@ PY
   ISO=$?
   [[ "$ISO" -eq 0 ]] || exit 28
 
+  DISCOVER_OUT="$("$PY_BIN" scripts/accurate_sj_sync_nonprod.py \
+    --discover \
+    --prefer-po-id "$SO_ID" \
+    --page-size "$PAGE_SIZE" --max-pages "$MAX_PAGES" --max-rows "$MAX_ROWS" \
+    --actor-email "vps-oneshot@eternal.local")"
+  DISCOVER_RC=$?
+  printf '%s\n' "$DISCOVER_OUT"
+  printf '%s\n' "$DISCOVER_OUT" >> "$STAGES_FILE"
+  if [[ "$DISCOVER_RC" -ne 0 ]]; then
+    # Tidak ada SJ single-SO eligible di window — BLOCKED (bukan fail sync).
+    exit 42
+  fi
+
+  SELECTED_PO="$(printf '%s' "$DISCOVER_OUT" | "$PY_BIN" -c 'import json,sys; r=json.load(sys.stdin); print(r.get("selected_po_id") or "")')"
+  SELECTED_SJ_CSV="$(printf '%s' "$DISCOVER_OUT" | "$PY_BIN" -c 'import json,sys; r=json.load(sys.stdin); print(",".join(r.get("selected_sj_ids") or []))')"
+  [[ -n "$SELECTED_PO" && -n "$SELECTED_SJ_CSV" ]] || exit 42
+
+  export ONESHOT_SELECTED_PO="$SELECTED_PO"
+  export ONESHOT_SELECTED_SJ_CSV="$SELECTED_SJ_CSV"
+
   "$PY_BIN" - <<'PY'
 import json, os, sys
 from app.config import clear_settings_cache
@@ -351,7 +375,7 @@ assert_effective_sj_oneshot_mongo_target(
     expected_replica_set=os.environ["TEST_RS"],
     app_env="development",
 )
-so_id = os.environ.get("ACCURATE_SMOKE_SO_ID", "95106")
+so_id = os.environ.get("ONESHOT_SELECTED_PO") or os.environ.get("ACCURATE_SMOKE_SO_ID", "95106")
 db = get_db()
 ensure_indexes(db)
 existing = get_by_accurate_id(db, so_id)
@@ -359,6 +383,8 @@ if existing is not None:
     print(json.dumps({
         "ok": True, "stage": "po_seed", "action": "already_present",
         "accurate_id": str(so_id), "po_count": count_by_accurate_id(db, so_id),
+        "prefer_po_id": os.environ.get("ACCURATE_SMOKE_SO_ID", "95106"),
+        "writes_accurate": False,
     }))
     sys.exit(0)
 try:
@@ -379,11 +405,13 @@ print(json.dumps({
     "was_insert": result.get("was_insert"),
     "line_count": result.get("line_count"),
     "idempotent": result.get("idempotent"),
+    "prefer_po_id": os.environ.get("ACCURATE_SMOKE_SO_ID", "95106"),
+    "writes_accurate": False,
 }))
 PY
 
   SYNC1_OUT="$("$PY_BIN" scripts/accurate_sj_sync_nonprod.py \
-    --page-size "$PAGE_SIZE" --max-pages "$MAX_PAGES" --max-rows "$MAX_ROWS" \
+    --sj-ids "$SELECTED_SJ_CSV" \
     --actor-email "vps-oneshot@eternal.local")"
   SYNC1=$?
   printf '%s\n' "$SYNC1_OUT"
@@ -391,7 +419,7 @@ PY
   printf '%s\n' "$SYNC1_OUT" >> "$STAGES_FILE"
 
   SYNC2_OUT="$("$PY_BIN" scripts/accurate_sj_sync_nonprod.py \
-    --page-size "$PAGE_SIZE" --max-pages "$MAX_PAGES" --max-rows "$MAX_ROWS" \
+    --sj-ids "$SELECTED_SJ_CSV" \
     --actor-email "vps-oneshot@eternal.local")"
   SYNC2=$?
   printf '%s\n' "$SYNC2_OUT"
@@ -456,6 +484,7 @@ for n in notes:
 created = updated = unchanged = skipped = failed = listed = 0
 stages_path = os.environ.get("STAGES_FILE", "")
 sync_rows = []
+discover = {}
 if stages_path and os.path.isfile(stages_path):
     with open(stages_path, encoding="utf-8") as fh:
         for line in fh:
@@ -466,7 +495,10 @@ if stages_path and os.path.isfile(stages_path):
                 row = json.loads(line)
             except json.JSONDecodeError:
                 continue
-            if "created" in row or "skipped" in row:
+            if row.get("stage") == "discover" or row.get("mode") == "discover":
+                discover = row
+                continue
+            if row.get("stage") == "sync" or "created" in row or "skipped" in row:
                 sync_rows.append(row)
                 created += int(row.get("created") or 0)
                 updated += int(row.get("updated") or 0)
@@ -492,8 +524,15 @@ idempotent_second_pass = (
     and int(pass2.get("failed") or 0) == 0
     and bool(pass2.get("ok", True))
 )
+prefer_po = str(discover.get("prefer_po_id") or os.environ.get("ACCURATE_SMOKE_SO_ID", "95106"))
+prefer_sj = int(discover.get("prefer_po_sj_count") or 0)
+selected_po = str(discover.get("selected_po_id") or os.environ.get("ONESHOT_SELECTED_PO") or "")
 
-if sj_count == 0 and processed == 0 and (skipped > 0 or listed == 0):
+if int(discover.get("selected_sj_count") or 0) == 0 and sj_count == 0:
+    code = "ONESHOT_BLOCKED"
+    ok = False
+    reason = "no_eligible_single_so_sj_in_window"
+elif sj_count == 0 and processed == 0 and (skipped > 0 or listed == 0):
     code = "ONESHOT_BLOCKED"
     ok = False
     reason = "all_sj_skipped_or_no_sj_tested"
@@ -536,6 +575,12 @@ print(json.dumps({
     "sync_listed": listed,
     "pass1_processed": pass1_processed,
     "idempotent_second_pass": idempotent_second_pass,
+    "prefer_po_id": prefer_po,
+    "prefer_po_sj_count": prefer_sj,
+    "prefer_po_had_sj": prefer_sj > 0,
+    "selected_po_id": selected_po,
+    "selection_reason": discover.get("selection_reason"),
+    "discover_multi_so_rejected": discover.get("multi_so_rejected"),
     "writes_accurate": False,
     "production_ports_touched": False,
 }))

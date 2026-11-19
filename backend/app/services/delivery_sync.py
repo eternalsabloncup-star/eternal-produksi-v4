@@ -225,6 +225,7 @@ def sync_delivery_orders_from_accurate(
         "listed": 0,
         "pages": 0,
     }
+    skip_reasons: dict[str, int] = {}
     failures: list[dict[str, Any]] = []
     stopped_reason: str | None = None
 
@@ -282,7 +283,11 @@ def sync_delivery_orders_from_accurate(
                         require_registered_po=require_registered_po,
                     )
                     key = str(outcome.get("outcome") or "failed")
-                    if key in counters:
+                    if key == "skipped":
+                        counters["skipped"] += 1
+                        reason = str(outcome.get("reason") or "unknown")
+                        skip_reasons[reason] = skip_reasons.get(reason, 0) + 1
+                    elif key in counters:
                         counters[key] += 1
                     else:
                         counters["failed"] += 1
@@ -321,7 +326,108 @@ def sync_delivery_orders_from_accurate(
         "max_rows": max_rows,
         "elapsed_seconds": round(time.monotonic() - started, 3),
         **counters,
+        "skip_reasons": skip_reasons,
         "failures": failures[:50],  # batasi diagnostik; tanpa payload pelanggan
+        "auto_sync": False,
+        "writes_accurate": False,
+        "deletes_missing_sj": False,
+    }
+
+
+def sync_selected_delivery_orders_from_accurate(
+    db: Database,
+    user: dict[str, Any],
+    sj_ids: list[str | int],
+    *,
+    client: AccurateReadClient | None = None,
+    mongo_guard: MongoGuardMode = "test",
+    require_registered_po: bool = True,
+    scope: str = "manual-selected",
+) -> dict[str, Any]:
+    """Sync hanya SJ ID yang sudah diverifikasi discovery (read-only Accurate)."""
+    _guard_db(db, mongo_guard=mongo_guard)
+    ids = [as_text(x) for x in sj_ids if as_text(x)]
+    if not ids:
+        return {
+            "ok": False,
+            "code": "no_sj_ids",
+            "created": 0,
+            "updated": 0,
+            "unchanged": 0,
+            "skipped": 0,
+            "failed": 0,
+            "listed": 0,
+            "pages": 0,
+            "skip_reasons": {},
+            "failures": [],
+            "auto_sync": False,
+            "writes_accurate": False,
+            "deletes_missing_sj": False,
+        }
+
+    acquire_delivery_sync_lock(db, scope=scope)
+    reader = client or AccurateReadClient.from_settings()
+    counters = {
+        "created": 0,
+        "updated": 0,
+        "unchanged": 0,
+        "skipped": 0,
+        "failed": 0,
+        "listed": 0,
+        "pages": 0,
+    }
+    skip_reasons: dict[str, int] = {}
+    failures: list[dict[str, Any]] = []
+    try:
+        for sj_id in ids:
+            counters["listed"] += 1
+            try:
+                detail = reader.fetch_delivery_order_detail(sj_id)
+                outcome = sync_delivery_order_payload(
+                    db,
+                    user,
+                    detail,
+                    mongo_guard=mongo_guard,
+                    require_registered_po=require_registered_po,
+                )
+                key = str(outcome.get("outcome") or "failed")
+                if key == "skipped":
+                    counters["skipped"] += 1
+                    reason = str(outcome.get("reason") or "unknown")
+                    skip_reasons[reason] = skip_reasons.get(reason, 0) + 1
+                elif key in counters:
+                    counters[key] += 1
+                else:
+                    counters["failed"] += 1
+                    failures.append(
+                        {
+                            "stage": "ingest",
+                            "accurate_sj_id": sj_id,
+                            "code": "unknown_outcome",
+                            "error": key,
+                        }
+                    )
+            except Exception as exc:  # noqa: BLE001
+                counters["failed"] += 1
+                failures.append(
+                    {
+                        "stage": "detail_or_ingest",
+                        "accurate_sj_id": sj_id,
+                        **_safe_error(exc),
+                    }
+                )
+    finally:
+        release_delivery_sync_lock(db, scope=scope)
+
+    processed = counters["created"] + counters["updated"] + counters["unchanged"]
+    return {
+        "ok": counters["failed"] == 0 and processed > 0,
+        "stopped_reason": None,
+        "selected": True,
+        "elapsed_seconds": None,
+        **counters,
+        "skip_reasons": skip_reasons,
+        "failures": failures[:50],
         "auto_sync": False,
         "writes_accurate": False,
         "deletes_missing_sj": False,

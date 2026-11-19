@@ -11,14 +11,18 @@ Syarat:
 Tidak menulis Accurate. Tidak menyentuh eternal_v4 / eternal_produksi_v4.
 Output aman: counters + kode error — tanpa token, signature, atau payload pelanggan.
 
+Mode:
+  (default) list+detail sync window
+  --discover          read-only cari SJ↔SO single-SO (tanpa tulis Mongo)
+  --sj-ids a,b,c      sync hanya SJ terpilih (hasil discovery)
+
 Contoh:
   export APP_ENV=test
   export DB_NAME=eternal_v4_test_sj_manual
   export MONGO_URL='mongodb://…/?authSource=…&replicaSet=rs0'
   export V4_SJ_SYNC_ENABLED=1
-  # Accurate live via file env (jangan commit):
-  #   source /tmp/accurate-live.env
-  PYTHONPATH=backend python3 scripts/accurate_sj_sync_nonprod.py --max-pages 2 --max-rows 40
+  PYTHONPATH=backend python3 scripts/accurate_sj_sync_nonprod.py --discover --prefer-po-id 95106
+  PYTHONPATH=backend python3 scripts/accurate_sj_sync_nonprod.py --sj-ids 123,456
 """
 
 from __future__ import annotations
@@ -42,6 +46,16 @@ def _host_of(url: str) -> str:
     return (parsed.hostname or "").lower()
 
 
+def _parse_sj_ids(raw: str | None) -> list[str]:
+    if not raw:
+        return []
+    out: list[str] = []
+    for part in str(raw).replace(" ", "").split(","):
+        if part and part not in out:
+            out.append(part)
+    return out
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="SJ Accurate → Mongo test (manual)")
     parser.add_argument("--page-size", type=int, default=20)
@@ -53,13 +67,30 @@ def main(argv: list[str] | None = None) -> int:
         default="owner@eternal.local",
         help="Email aktor audit (dinormalisasi di service)",
     )
+    parser.add_argument(
+        "--discover",
+        action="store_true",
+        help="Read-only discovery SJ↔SO; tidak menulis Mongo",
+    )
+    parser.add_argument(
+        "--prefer-po-id",
+        default="",
+        help="PO Accurate yang diprioritaskan bila ada SJ single-SO terkait",
+    )
+    parser.add_argument(
+        "--sj-ids",
+        default="",
+        help="Comma-separated Accurate SJ IDs untuk sync terarah",
+    )
     args = parser.parse_args(argv)
 
     from app.config import clear_settings_cache, get_settings
     from app.db import close_client, ensure_indexes, get_db
     from app.db_guard import UnsafeMongoTargetError
     from app.integrations.accurate.auth import AccurateAuthError
+    from app.integrations.accurate.client import AccurateReadClient
     from app.services import delivery_sync
+    from app.services.delivery_sj_discovery import discover_sj_so_links
 
     clear_settings_cache()
     close_client()
@@ -78,7 +109,7 @@ def main(argv: list[str] | None = None) -> int:
         )
         return 3
 
-    if not settings.sj_sync_enabled:
+    if not settings.sj_sync_enabled and not args.discover:
         print(
             json.dumps(
                 {
@@ -94,20 +125,82 @@ def main(argv: list[str] | None = None) -> int:
         "email_normalized": str(args.actor_email).strip().lower(),
         "role": "super_admin",
     }
+    prefer = (args.prefer_po_id or "").strip()
+    sj_ids = _parse_sj_ids(args.sj_ids)
 
     try:
+        client = AccurateReadClient.from_settings()
+
+        if args.discover:
+            report = discover_sj_so_links(
+                client=client,
+                page_size=args.page_size,
+                max_pages=args.max_pages,
+                max_rows=args.max_rows,
+                timeout_seconds=args.timeout_seconds,
+                prefer_po_id=prefer or None,
+            )
+            safe = {
+                "ok": bool(report.get("ok")) and int(report.get("selected_sj_count") or 0) > 0,
+                "stage": "discover",
+                "mode": "discover",
+                "mongodb_db": settings.mongodb_db,
+                "writes_accurate": False,
+                "listed": report.get("listed"),
+                "pages": report.get("pages"),
+                "single_so_sj": report.get("single_so_sj"),
+                "multi_so_rejected": report.get("multi_so_rejected"),
+                "identity_failed": report.get("identity_failed"),
+                "detail_failed": report.get("detail_failed"),
+                "distinct_po_count": report.get("distinct_po_count"),
+                "prefer_po_id": report.get("prefer_po_id"),
+                "prefer_po_sj_count": report.get("prefer_po_sj_count"),
+                "selected_po_id": report.get("selected_po_id"),
+                "selected_sj_ids": report.get("selected_sj_ids"),
+                "selected_sj_count": report.get("selected_sj_count"),
+                "selection_reason": report.get("selection_reason"),
+                "stopped_reason": report.get("stopped_reason"),
+                "elapsed_seconds": report.get("elapsed_seconds"),
+            }
+            print(json.dumps(safe, ensure_ascii=False))
+            return 0 if safe["ok"] else 11
+
+        if not settings.sj_sync_enabled:
+            print(
+                json.dumps(
+                    {
+                        "ok": False,
+                        "code": "SJ_SYNC_DISABLED",
+                        "error": "Set V4_SJ_SYNC_ENABLED=1 setelah verifikasi isolasi",
+                    }
+                )
+            )
+            return 4
+
         db = get_db(settings)
         ensure_indexes(db)
-        result = delivery_sync.sync_delivery_orders_from_accurate(
-            db,
-            user,
-            page_size=args.page_size,
-            max_pages=args.max_pages,
-            max_rows=args.max_rows,
-            timeout_seconds=args.timeout_seconds,
-            mongo_guard="test",
-            scope="cli-nonprod",
-        )
+
+        if sj_ids:
+            result = delivery_sync.sync_selected_delivery_orders_from_accurate(
+                db,
+                user,
+                sj_ids,
+                client=client,
+                mongo_guard="test",
+                scope="cli-nonprod-selected",
+            )
+        else:
+            result = delivery_sync.sync_delivery_orders_from_accurate(
+                db,
+                user,
+                client=client,
+                page_size=args.page_size,
+                max_pages=args.max_pages,
+                max_rows=args.max_rows,
+                timeout_seconds=args.timeout_seconds,
+                mongo_guard="test",
+                scope="cli-nonprod",
+            )
     except UnsafeMongoTargetError as exc:
         print(json.dumps({"ok": False, "code": exc.code, "error": "unsafe_mongo_target"}))
         return 5
@@ -140,6 +233,8 @@ def main(argv: list[str] | None = None) -> int:
 
     safe = {
         "ok": bool(result.get("ok")),
+        "stage": "sync",
+        "mode": "selected" if sj_ids else "list",
         "mongodb_db": settings.mongodb_db,
         "sj_sync_enabled": True,
         "writes_accurate": False,
@@ -152,7 +247,9 @@ def main(argv: list[str] | None = None) -> int:
         "failed": result.get("failed"),
         "listed": result.get("listed"),
         "pages": result.get("pages"),
+        "skip_reasons": result.get("skip_reasons") or {},
         "stopped_reason": result.get("stopped_reason"),
+        "selected": bool(result.get("selected")),
         "failure_count": len(result.get("failures") or []),
         "failure_codes": [
             f.get("code") for f in (result.get("failures") or []) if isinstance(f, dict)
