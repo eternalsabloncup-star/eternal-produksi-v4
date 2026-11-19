@@ -1,7 +1,7 @@
 """Auto-sync Penerimaan Penjualan — BLOCKED sampai kontrak Accurate terverifikasi.
 
 Tidak ada PATH sales-receipt di AccurateReadClient. Job ini:
-- Menghormati kill switch (OFF = zero request/write).
+- Menghormati kill switch (OFF = zero request/write/lock/status).
 - Saat ON tanpa kontrak: fail-closed, zero Accurate HTTP, status BLOCKED.
 - Tidak membuka payment gate dengan aturan baru.
 """
@@ -19,7 +19,11 @@ from app.services.accurate_auto_sync.locks import (
     acquire_job_lock,
     release_job_lock,
 )
-from app.services.accurate_auto_sync.status import mark_running, record_job_result
+from app.services.accurate_auto_sync.status import (
+    disabled_status_view,
+    mark_running,
+    record_job_result,
+)
 
 # Kontrak resmi belum ada di repo (tidak ada list/detail path tervalidasi).
 RECEIPT_CONTRACT_STATUS = "unverified"
@@ -39,23 +43,8 @@ def receipt_contract_ready() -> bool:
 
 
 def run_receipt_auto_sync(db: Database) -> dict[str, Any]:
-    enabled = is_receipt_auto_sync_enabled()
-    mark_running(db, "receipt", enabled=enabled)
-
-    if not enabled:
-        status = record_job_result(
-            db,
-            "receipt",
-            enabled=False,
-            ok=True,
-            duration_seconds=0.0,
-            blocked=True,
-            detail={
-                "contract": RECEIPT_CONTRACT_STATUS,
-                "message": "Kill switch OFF — zero Accurate / zero write.",
-                "blocker": RECEIPT_CONTRACT_BLOCKER,
-            },
-        )
+    if not is_receipt_auto_sync_enabled():
+        # ZERO WRITE: tanpa lock, status mutation, Accurate HTTP.
         return {
             "ok": True,
             "job": "receipt",
@@ -64,9 +53,18 @@ def run_receipt_auto_sync(db: Database) -> dict[str, Any]:
             "accurate_requests": 0,
             "writes": 0,
             "gate_mutations": 0,
-            "status": status,
+            "status": disabled_status_view(
+                "receipt",
+                blocked=True,
+                detail={
+                    "contract": RECEIPT_CONTRACT_STATUS,
+                    "message": "Kill switch OFF — zero Accurate / zero write.",
+                    "blocker": RECEIPT_CONTRACT_BLOCKER,
+                },
+            ),
         }
 
+    mark_running(db, "receipt")
     started = time.monotonic()
     token: str | None = None
     try:
@@ -82,6 +80,7 @@ def run_receipt_auto_sync(db: Database) -> dict[str, Any]:
                 error=RECEIPT_CONTRACT_BLOCKER,
                 error_code="receipt_contract_unverified",
                 duration_seconds=time.monotonic() - started,
+                complete=False,
                 detail={
                     "contract": RECEIPT_CONTRACT_STATUS,
                     "accurate_requests": 0,
@@ -101,7 +100,6 @@ def run_receipt_auto_sync(db: Database) -> dict[str, Any]:
                 "status": status,
             }
 
-        # Cabang verified — belum diimplementasikan sampai Owner menyetujui kontrak.
         status = record_job_result(
             db,
             "receipt",
@@ -111,6 +109,7 @@ def run_receipt_auto_sync(db: Database) -> dict[str, Any]:
             error="receipt_parser_not_implemented",
             error_code="receipt_parser_not_implemented",
             duration_seconds=time.monotonic() - started,
+            complete=False,
         )
         return {
             "ok": False,
@@ -132,6 +131,7 @@ def run_receipt_auto_sync(db: Database) -> dict[str, Any]:
             error=str(exc),
             error_code=exc.code,
             duration_seconds=time.monotonic() - started,
+            complete=False,
         )
         return {
             "ok": False,

@@ -21,6 +21,17 @@ def _now() -> datetime:
     return datetime.now(timezone.utc)
 
 
+def _as_utc(dt: datetime) -> datetime:
+    """Mongo driver sering mengembalikan naive UTC — samakan sebelum banding."""
+    if dt.tzinfo is None:
+        return dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(timezone.utc)
+
+
+def lock_id_for(job: str) -> str:
+    return f"accurate_auto_sync:{job}"
+
+
 def acquire_job_lock(
     db: Database,
     *,
@@ -28,7 +39,7 @@ def acquire_job_lock(
     ttl_seconds: int = DEFAULT_TTL_SECONDS,
 ) -> str:
     """Ambil lease; kembalikan owner_token. Gagal → AutoSyncLockError."""
-    lock_id = f"accurate_auto_sync:{job}"
+    lock_id = lock_id_for(job)
     now = _now()
     expires = now + timedelta(seconds=max(30, int(ttl_seconds)))
     token = secrets.token_hex(16)
@@ -65,11 +76,33 @@ def acquire_job_lock(
     return token
 
 
+def owns_job_lock(db: Database, *, job: str, owner_token: str) -> bool:
+    """True hanya jika lease aktif milik token ini."""
+    if not owner_token:
+        return False
+    doc = db[LOCKS_COLLECTION].find_one(
+        {"_id": lock_id_for(job), "owner_token": owner_token},
+        {"_id": 1, "expires_at": 1},
+    )
+    if doc is None:
+        return False
+    expires = doc.get("expires_at")
+    if isinstance(expires, datetime) and _as_utc(expires) <= _now():
+        return False
+    return True
+
+
+def require_owns_job_lock(db: Database, *, job: str, owner_token: str) -> None:
+    if not owns_job_lock(db, job=job, owner_token=owner_token):
+        raise AutoSyncLockError(
+            f"Lease job '{job}' hilang atau bukan milik worker ini — abort commit."
+        )
+
+
 def release_job_lock(db: Database, *, job: str, owner_token: str) -> bool:
     """Lepas lease hanya jika owner_token cocok. True bila berhasil."""
-    lock_id = f"accurate_auto_sync:{job}"
     result = db[LOCKS_COLLECTION].delete_one(
-        {"_id": lock_id, "owner_token": owner_token}
+        {"_id": lock_id_for(job), "owner_token": owner_token}
     )
     return result.deleted_count == 1
 
@@ -78,11 +111,10 @@ def refresh_job_lock(
     db: Database, *, job: str, owner_token: str, ttl_seconds: int = DEFAULT_TTL_SECONDS
 ) -> bool:
     """Perpanjang lease jika masih milik token ini."""
-    lock_id = f"accurate_auto_sync:{job}"
     now = _now()
     expires = now + timedelta(seconds=max(30, int(ttl_seconds)))
     result = db[LOCKS_COLLECTION].update_one(
-        {"_id": lock_id, "owner_token": owner_token},
+        {"_id": lock_id_for(job), "owner_token": owner_token},
         {"$set": {"expires_at": expires}},
     )
     return result.matched_count == 1
@@ -90,6 +122,6 @@ def refresh_job_lock(
 
 def lock_snapshot(db: Database, job: str) -> dict[str, Any] | None:
     doc = db[LOCKS_COLLECTION].find_one(
-        {"_id": f"accurate_auto_sync:{job}"}, {"_id": 0, "owner_token": 0}
+        {"_id": lock_id_for(job)}, {"_id": 0, "owner_token": 0}
     )
     return doc

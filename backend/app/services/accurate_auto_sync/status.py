@@ -20,7 +20,12 @@ REQUIRED_AUTO_SYNC_STATUS_INDEX_SPECS: list[dict[str, Any]] = [
     },
 ]
 
-HealthState = Literal["DISABLED", "HEALTHY", "STALE", "FAILED", "RUNNING", "BLOCKED"]
+HealthState = Literal[
+    "DISABLED", "HEALTHY", "STALE", "FAILED", "RUNNING", "BLOCKED", "PARTIAL"
+]
+
+# Discovery belum selesai — jangan catat sebagai last_success penuh.
+INCOMPLETE_STOP_REASONS = frozenset({"timeout", "max_pages", "max_rows"})
 
 
 def _now() -> datetime:
@@ -66,12 +71,30 @@ def _empty_counters() -> dict[str, int]:
     }
 
 
-def mark_running(db: Database, job: JobName, *, enabled: bool) -> dict[str, Any]:
+def disabled_status_view(
+    job: JobName, *, blocked: bool = False, detail: dict[str, Any] | None = None
+) -> dict[str, Any]:
+    """Status in-memory untuk kill switch OFF — tanpa write Mongo."""
+    return {
+        "job": job,
+        "enabled": False,
+        "health": "DISABLED",
+        "running": False,
+        "counters": _empty_counters(),
+        "consecutive_failures": 0,
+        "blocked": bool(blocked),
+        "detail": dict(detail or {"message": "Kill switch OFF — zero Accurate / zero write."}),
+        "persisted": False,
+    }
+
+
+def mark_running(db: Database, job: JobName) -> dict[str, Any]:
+    """Hanya untuk job yang ENABLED. Jangan panggil saat kill switch OFF."""
     now = _now()
     doc = {
         "job": job,
-        "enabled": bool(enabled),
-        "health": "RUNNING" if enabled else "DISABLED",
+        "enabled": True,
+        "health": "RUNNING",
         "last_attempt_at": now,
         "running": True,
         "updated_at": now,
@@ -98,12 +121,23 @@ def record_job_result(
     error_code: str | None = None,
     duration_seconds: float = 0.0,
     blocked: bool = False,
+    partial: bool = False,
+    complete: bool = True,
     detail: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
+    """Persist hasil job ENABLED.
+
+    last_success_at hanya untuk siklus lengkap sukses (ok + complete + not partial).
+    Detail failure / incomplete discovery → bukan HEALTHY.
+    """
     now = _now()
     existing = db[STATUS_COLLECTION].find_one({"job": job}) or {}
     consecutive = int(existing.get("consecutive_failures") or 0)
-    if ok:
+    counters_merged = {**_empty_counters(), **(counters or {})}
+    failed_count = int(counters_merged.get("failed") or 0)
+
+    full_success = bool(ok and complete and not partial and failed_count == 0 and enabled)
+    if full_success:
         consecutive = 0
     elif enabled:
         consecutive += 1
@@ -112,7 +146,11 @@ def record_job_result(
         health: HealthState = "DISABLED"
     elif blocked:
         health = "BLOCKED"
-    elif ok:
+    elif failed_count > 0 or (not ok and not partial):
+        health = "FAILED"
+    elif partial or not complete:
+        health = "PARTIAL"
+    elif full_success:
         health = "HEALTHY"
     else:
         health = "FAILED"
@@ -124,15 +162,18 @@ def record_job_result(
         "running": False,
         "last_attempt_at": existing.get("last_attempt_at") or now,
         "last_finished_at": now,
-        "last_success_at": now if ok else existing.get("last_success_at"),
+        "last_success_at": now if full_success else existing.get("last_success_at"),
         "last_error": error,
         "last_error_code": error_code,
         "duration_seconds": round(float(duration_seconds), 3),
-        "counters": {**_empty_counters(), **(counters or {})},
+        "counters": counters_merged,
         "consecutive_failures": consecutive,
         "blocked": bool(blocked),
+        "partial": bool(partial),
+        "complete": bool(complete and not partial),
         "detail": dict(detail or {}),
         "updated_at": now,
+        "persisted": True,
     }
     db[STATUS_COLLECTION].update_one(
         {"job": job},
@@ -160,23 +201,25 @@ def list_job_statuses(
     jobs: list[dict[str, Any]] = []
     for job in ("po", "receipt", "sj"):
         enabled = bool(enabled_flags.get(job, False))
+        if not enabled:
+            jobs.append(disabled_status_view(job))  # type: ignore[arg-type]
+            continue
         stored = get_job_status(db, job) or {
             "job": job,
-            "enabled": enabled,
-            "health": "DISABLED",
+            "enabled": True,
+            "health": "FAILED",
             "counters": _empty_counters(),
             "consecutive_failures": 0,
+            "persisted": False,
         }
-        health = str(stored.get("health") or "DISABLED")
-        if not enabled:
-            health = "DISABLED"
-        elif health == "HEALTHY" and stored.get("last_success_at"):
+        health = str(stored.get("health") or "FAILED")
+        if health == "HEALTHY" and stored.get("last_success_at"):
             last = stored["last_success_at"]
             if isinstance(last, datetime):
                 age = (now - last).total_seconds()
                 if age > stale_after:
                     health = "STALE"
-        stored = {**stored, "enabled": enabled, "health": health}
+        stored = {**stored, "enabled": True, "health": health}
         jobs.append(stored)
     return {
         "interval_seconds": int(interval_seconds),
