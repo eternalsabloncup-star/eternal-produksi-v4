@@ -24,10 +24,17 @@ type Props = {
 
 type AcceptPhase = "idle" | "loading" | "success" | "error";
 
-type TerimaPoFeedback = {
+export type TerimaPoFeedback = {
   tone: "success" | "error";
   title: string;
   message: string;
+};
+
+/** Copy overlay sukses — hanya setelah acceptPo resolve. */
+export const TERIMA_PO_SUCCESS_FEEDBACK: TerimaPoFeedback = {
+  tone: "success",
+  title: "PO berhasil diterima",
+  message: "PO berhasil diterima.",
 };
 
 /** Pesan error aman untuk overlay Terima PO (tanpa traceback/internal). */
@@ -41,6 +48,27 @@ export function terimaPoFeedbackMessage(err: unknown): string {
     if (msg) return msg;
   }
   return "Gagal menerima PO. Silakan coba lagi.";
+}
+
+export function terimaPoErrorFeedback(err: unknown): TerimaPoFeedback {
+  return {
+    tone: "error",
+    title: "Gagal menerima PO",
+    message: terimaPoFeedbackMessage(err),
+  };
+}
+
+/** Sama dengan Live Tracking: success 1800ms, error 2600ms. */
+export function terimaPoOverlayAutoCloseMs(tone: "success" | "error"): number {
+  return tone === "success" ? 1800 : 2600;
+}
+
+export function isTerimaPoAcceptDisabled(
+  phase: AcceptPhase,
+  accepted: boolean,
+  mayAccept: boolean,
+): boolean {
+  return phase === "loading" || phase === "success" || accepted || !mayAccept;
 }
 
 /** Popup rincian PO Inbox + gate Terima PO (backend). */
@@ -73,8 +101,7 @@ export function InboxPoDetailModal({ row, open, onClose, onAccepted }: Props) {
   const mayAccept = canAcceptPoRole(user?.role, user?.operational_role);
   const showAccept =
     localRow.origin === "accurate" && Boolean(localRow.accurateId) && mayAccept;
-  const acceptDisabled =
-    phase === "loading" || phase === "success" || accepted || !mayAccept;
+  const acceptDisabled = isTerimaPoAcceptDisabled(phase, accepted, mayAccept);
 
   const orderStatus = localRow.urgent ? "Urgent" : "Normal";
   const fields: [string, string][] = [
@@ -124,19 +151,12 @@ export function InboxPoDetailModal({ row, open, onClose, onAccepted }: Props) {
       };
       setLocalRow(next);
       setPhase("success");
-      setFeedback({
-        tone: "success",
-        title: "PO berhasil diterima",
-        message: "PO berhasil diterima.",
-      });
+      setFeedback(TERIMA_PO_SUCCESS_FEEDBACK);
       onAccepted?.(next);
     } catch (err) {
       setPhase("error");
-      setFeedback({
-        tone: "error",
-        title: "Gagal menerima PO",
-        message: terimaPoFeedbackMessage(err),
-      });
+      // Status PO tidak diubah; onAccepted tidak dipanggil.
+      setFeedback(terimaPoErrorFeedback(err));
     }
   }
 
@@ -279,7 +299,9 @@ export function InboxPoDetailModal({ row, open, onClose, onAccepted }: Props) {
           tone={feedback?.tone || "success"}
           title={feedback?.title || ""}
           message={feedback?.message || ""}
-          autoCloseMs={feedback?.tone === "success" ? 1800 : 2600}
+          autoCloseMs={
+            feedback ? terimaPoOverlayAutoCloseMs(feedback.tone) : 0
+          }
           onClose={() => setFeedback(null)}
         />
       </div>

@@ -1,6 +1,12 @@
 import { describe, expect, it, vi } from "vitest";
 import { PoAcceptError } from "../api/poAcceptance";
-import { terimaPoFeedbackMessage } from "./InboxPoDetailModal";
+import {
+  TERIMA_PO_SUCCESS_FEEDBACK,
+  isTerimaPoAcceptDisabled,
+  terimaPoErrorFeedback,
+  terimaPoFeedbackMessage,
+  terimaPoOverlayAutoCloseMs,
+} from "./InboxPoDetailModal";
 
 describe("terimaPoFeedbackMessage", () => {
   it("uses API detail for 403/409/422/500 PoAcceptError", () => {
@@ -18,7 +24,7 @@ describe("terimaPoFeedbackMessage", () => {
     ).toBe("Gagal menerima PO (HTTP 500).");
   });
 
-  it("falls back for empty PoAcceptError and unknown errors", () => {
+  it("falls back for empty PoAcceptError and network-like failures", () => {
     expect(terimaPoFeedbackMessage(new PoAcceptError("   ", 500))).toBe(
       "Gagal menerima PO. Silakan coba lagi.",
     );
@@ -29,8 +35,65 @@ describe("terimaPoFeedbackMessage", () => {
   });
 });
 
-describe("acceptPo feedback contract (mocked)", () => {
-  it("maps HTTP 200 and duplicate success to the Owner success copy", async () => {
+describe("ConfirmationSuccessOverlay contract for Terima PO", () => {
+  it("success copy matches Owner requirement (incl. duplicate:true path)", () => {
+    expect(TERIMA_PO_SUCCESS_FEEDBACK).toEqual({
+      tone: "success",
+      title: "PO berhasil diterima",
+      message: "PO berhasil diterima.",
+    });
+    expect(terimaPoOverlayAutoCloseMs("success")).toBe(1800);
+  });
+
+  it("error overlay uses tone=error with safe API message for each status class", () => {
+    const cases: Array<[number, string]> = [
+      [403, "Akses ditolak"],
+      [409, "Gagal mengklaim penerimaan PO."],
+      [422, "accurate_po_id wajib."],
+      [500, "Gagal menerima PO (HTTP 500)."],
+    ];
+    for (const [status, detail] of cases) {
+      expect(terimaPoErrorFeedback(new PoAcceptError(detail, status))).toEqual({
+        tone: "error",
+        title: "Gagal menerima PO",
+        message: detail,
+      });
+    }
+    expect(terimaPoErrorFeedback(new Error("Failed to fetch"))).toEqual({
+      tone: "error",
+      title: "Gagal menerima PO",
+      message: "Failed to fetch",
+    });
+    expect(terimaPoOverlayAutoCloseMs("error")).toBe(2600);
+  });
+
+  it("failed accept must not invoke onAccepted and must keep prior status", async () => {
+    const onAccepted = vi.fn();
+    const priorStatus = "PO Baru";
+    let status = priorStatus;
+    let feedback = null as ReturnType<typeof terimaPoErrorFeedback> | typeof TERIMA_PO_SUCCESS_FEEDBACK | null;
+
+    const acceptPo = vi
+      .fn()
+      .mockRejectedValue(new PoAcceptError("Akses ditolak", 403));
+
+    try {
+      await acceptPo("acc-1");
+      status = "PO Diterima";
+      feedback = TERIMA_PO_SUCCESS_FEEDBACK;
+      onAccepted({ status });
+    } catch (err) {
+      feedback = terimaPoErrorFeedback(err);
+    }
+
+    expect(onAccepted).not.toHaveBeenCalled();
+    expect(status).toBe(priorStatus);
+    expect(feedback?.tone).toBe("error");
+    expect(feedback?.title).toBe("Gagal menerima PO");
+  });
+
+  it("HTTP 200 including duplicate:true uses success feedback after resolve only", async () => {
+    const onAccepted = vi.fn();
     const acceptPo = vi.fn().mockResolvedValue({
       accurate_po_id: "acc-1",
       duplicate: true,
@@ -43,34 +106,52 @@ describe("acceptPo feedback contract (mocked)", () => {
       workflow: {},
       po: {},
     });
+
     const res = await acceptPo("acc-1");
+    const next = {
+      acceptanceStatus: res.acceptance.status || "accepted",
+      status: res.acceptance.inbox_status || "PO Diterima",
+    };
+    onAccepted(next);
+
     expect(res.duplicate).toBe(true);
-    expect(res.acceptance.status).toBe("accepted");
-    // Copy yang dipakai overlay setelah API resolve (bukan sebelum request).
-    expect({
-      tone: "success" as const,
-      title: "PO berhasil diterima",
-      message: "PO berhasil diterima.",
-    }).toEqual({
-      tone: "success",
-      title: "PO berhasil diterima",
-      message: "PO berhasil diterima.",
-    });
+    expect(onAccepted).toHaveBeenCalledTimes(1);
+    expect(next.status).toBe("PO Diterima");
+    expect(TERIMA_PO_SUCCESS_FEEDBACK.tone).toBe("success");
+  });
+});
+
+describe("loading and double-submit guards", () => {
+  it("disables accept while loading/success/already accepted/no permission", () => {
+    expect(isTerimaPoAcceptDisabled("loading", false, true)).toBe(true);
+    expect(isTerimaPoAcceptDisabled("success", false, true)).toBe(true);
+    expect(isTerimaPoAcceptDisabled("idle", true, true)).toBe(true);
+    expect(isTerimaPoAcceptDisabled("idle", false, false)).toBe(true);
+    expect(isTerimaPoAcceptDisabled("error", false, true)).toBe(false);
+    expect(isTerimaPoAcceptDisabled("idle", false, true)).toBe(false);
   });
 
-  it("does not treat failed accept as success payload", async () => {
-    const acceptPo = vi
-      .fn()
-      .mockRejectedValue(new PoAcceptError("Akses ditolak", 403));
-    await expect(acceptPo("acc-1")).rejects.toBeInstanceOf(PoAcceptError);
-    expect({
-      tone: "error" as const,
-      title: "Gagal menerima PO",
-      message: terimaPoFeedbackMessage(new PoAcceptError("Akses ditolak", 403)),
-    }).toEqual({
-      tone: "error",
-      title: "Gagal menerima PO",
-      message: "Akses ditolak",
+  it("blocks a second click while the first request is in flight", async () => {
+    let phase: "idle" | "loading" | "success" | "error" = "idle";
+    const acceptPo = vi.fn().mockImplementation(async () => {
+      await new Promise((r) => setTimeout(r, 20));
+      return { duplicate: false, acceptance: { status: "accepted", inbox_status: "PO Diterima" } };
     });
+
+    async function attempt() {
+      if (isTerimaPoAcceptDisabled(phase, false, true)) return;
+      phase = "loading";
+      try {
+        await acceptPo("acc-1");
+        phase = "success";
+      } catch {
+        phase = "error";
+      }
+    }
+
+    const p1 = attempt();
+    const p2 = attempt();
+    await Promise.all([p1, p2]);
+    expect(acceptPo).toHaveBeenCalledTimes(1);
   });
 });
