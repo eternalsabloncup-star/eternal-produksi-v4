@@ -76,12 +76,17 @@ def test_master_task_types_listed_after_login(
     _login(app_client, "owner@eternal.local")
     res = app_client.get("/api/master/task-types")
     assert res.status_code == 200
+    from app.domain.operational import DEFAULT_TASK_TYPES
+
     body = res.json()
-    assert len(body["items"]) == 12
+    assert len(body["items"]) == len(DEFAULT_TASK_TYPES)
     assert "production-head" in body["roles"]
     design = next(i for i in body["items"] if i["task_type"] == "design")
     assert design["assigned_role"] == "designer"
     assert design["scope"] == "po"
+    bypass = next(i for i in body["items"] if i["task_type"] == "payment-bypass")
+    assert "approve" in bypass["actions"]
+    assert bypass["assigned_role"] == "production-head"
 
 
 def test_master_write_requires_csrf_and_permission(
