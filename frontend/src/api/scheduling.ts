@@ -85,6 +85,7 @@ export async function createAllocations(
   lineId: string,
   allocations: { operator_email: string; qty: number }[],
   idempotencyKey: string,
+  scheduleDate?: string,
 ): Promise<{ allocations: Allocation[]; duplicate: boolean }> {
   return request(
     `/api/scheduling/${encodeURIComponent(accuratePoId)}/lines/${encodeURIComponent(
@@ -92,7 +93,11 @@ export async function createAllocations(
     )}/allocations`,
     {
       method: "POST",
-      body: JSON.stringify({ allocations, idempotency_key: idempotencyKey }),
+      body: JSON.stringify({
+        allocations,
+        idempotency_key: idempotencyKey,
+        ...(scheduleDate ? { schedule_date: scheduleDate } : {}),
+      }),
     },
   );
 }
