@@ -239,8 +239,16 @@ def test_accurate_status_no_secrets(app_client: TestClient, db: Database) -> Non
     _login(app_client)
     res = app_client.get("/api/settings/accurate")
     assert res.status_code == 200
+    body = res.json()
     text = res.text.lower()
     assert "sj_live_sync_enabled" in text
+    assert body.get("manual_sync_button") is False
+    assert body.get("po_auto_sync_enabled") is False
+    assert body.get("receipt_auto_sync_enabled") is False
+    assert body.get("auto_sync_interval_seconds") == 60
+    assert body.get("receipt_contract", {}).get("status") == "unverified"
+    assert "auto_sync" in body
+    assert body["auto_sync"].get("manual_sync_button") is False
     assert "accurate_api_token" not in text or "configured" in text
     # raw token value must not appear
     assert "bearer" not in text
