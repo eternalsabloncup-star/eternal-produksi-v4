@@ -14,10 +14,12 @@ class UserPublic(BaseModel):
     id: str
     email: str
     display_name: str
-    # super_admin | admin | user — never include password fields
+    # super_admin | admin | user | custom role_key — never include password fields
     role: str
     # Peran operasional (production-head, designer, …) — opsional.
     operational_role: str | None = None
+    branch_ids: list[str] = Field(default_factory=list)
+    permissions: list[str] = Field(default_factory=list)
 
 
 class MeResponse(BaseModel):

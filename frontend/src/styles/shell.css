@@ -2697,3 +2697,25 @@
   color: #6b7c8a;
   font-style: italic;
 }
+
+.ep-settings-tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 0 0 16px;
+}
+
+.ep-settings-form {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 0 0 12px;
+  align-items: center;
+}
+
+.ep-settings-form input,
+.ep-settings-form select {
+  min-height: 36px;
+  padding: 6px 10px;
+}
+

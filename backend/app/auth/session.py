@@ -103,11 +103,51 @@ def verify_csrf(session: dict[str, Any], csrf_token: str | None) -> bool:
     return secrets.compare_digest(expected, hash_token(csrf_token))
 
 
-def public_user(user: dict[str, Any]) -> dict[str, str | None]:
+def public_user(user: dict[str, Any]) -> dict[str, Any]:
+    from app.auth.permissions import ALL_PERMISSIONS
+    from app.auth.roles import is_super_admin
+
+    role = user.get("role", "user")
+    if is_super_admin(role):
+        perms: list[str] = sorted(ALL_PERMISSIONS)
+    else:
+        perms = list(user.get("effective_module_permissions") or [])
     return {
         "id": str(user["_id"]),
         "email": user.get("email_normalized", ""),
         "display_name": user.get("display_name", ""),
-        "role": user.get("role", "user"),
+        "role": role,
         "operational_role": user.get("operational_role"),
+        "branch_ids": list(user.get("branch_ids") or []),
+        "permissions": perms,
     }
+
+
+def list_active_sessions_for_user(db: Database, user_id: ObjectId) -> list[dict[str, Any]]:
+    now = utcnow()
+    cursor = sessions_collection(db).find(
+        {
+            "user_id": user_id,
+            "revoked_at": None,
+            "expires_at": {"$gt": now},
+        },
+        {"token_hash": 0, "csrf_token_hash": 0},
+    ).sort("created_at", -1)
+    out: list[dict[str, Any]] = []
+    for doc in cursor:
+        out.append(
+            {
+                "id": str(doc["_id"]),
+                "created_at": doc.get("created_at"),
+                "expires_at": doc.get("expires_at"),
+            }
+        )
+    return out
+
+
+def revoke_all_sessions_for_user(db: Database, user_id: ObjectId) -> int:
+    res = sessions_collection(db).update_many(
+        {"user_id": user_id, "revoked_at": None},
+        {"$set": {"revoked_at": utcnow()}},
+    )
+    return int(res.modified_count)

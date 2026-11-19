@@ -153,6 +153,16 @@ def ensure_indexes(db: Database | None = None) -> dict[str, list[str]]:
     # Maintenance/bootstrap only — request path tracking tetap verify-only.
     created["tracking_links"] = ensure_tracking_indexes(database)
 
+    from app.repositories.org_master_repository import ensure_org_master_indexes
+    from app.repositories.settings_role_repository import (
+        ensure_settings_role_indexes,
+        ensure_system_roles,
+    )
+
+    created["settings_roles"] = ensure_settings_role_indexes(database)
+    ensure_system_roles(database)
+    created["org_masters"] = ensure_org_master_indexes(database)
+
     return created
 
 
