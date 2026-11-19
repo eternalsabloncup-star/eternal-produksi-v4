@@ -11,6 +11,8 @@ export type UserPublic = {
 export type MeResponse = {
   user: UserPublic;
   csrf_token: string;
+  /** Capability UI dari Master; otorisasi tetap di backend. */
+  capabilities?: Record<string, boolean>;
 };
 
 function readCookie(name: string): string | null {

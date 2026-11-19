@@ -28,7 +28,8 @@ export function KpiSummary({ items }: Props) {
     <div className="ep-kpis" role="group" aria-label="Ringkasan KPI">
       {items.map((item) => {
         const theme = resolveKpiTheme(item.label);
-        const foot = item.foot || "Simulasi operasional (DEMO)";
+        // Jangan default ke teks DEMO — menyesatkan di jalur API production.
+        const foot = item.foot || "Ringkasan operasional";
         const valueText = String(item.value);
         return (
           <div

@@ -88,11 +88,14 @@ def line_schedule_state(
         )
     allocated = schedules.active_allocated_qty(db, accurate_line_id)
     qty_target = float(line.get("qty") or 0)
+    from app.repositories import product_master_repository as products
+
+    item_code = str(line.get("item_code") or "")
     return {
         "accurate_po_id": accurate_po_id,
         "po_no": po_doc.get("po_no"),
         "accurate_line_id": accurate_line_id,
-        "item_code": line.get("item_code"),
+        "item_code": item_code,
         "item_name": line.get("item_name"),
         "process_kind": line.get("process_kind"),
         "qty_target": qty_target,
@@ -101,6 +104,8 @@ def line_schedule_state(
         "qty_printed": printed_qty_for_line(
             db, accurate_po_id=accurate_po_id, accurate_line_id=accurate_line_id
         ),
+        # Ukuran screen dari Master Produk (bukan DEMO Kecil/Besar).
+        "screen_size": products.screen_size_for_item(db, item_code),
         "allocations": allocations,
         "gates": gates.get_gates(db, accurate_po_id),
         "scheduling_unlocked": gates.both_gates_open(db, accurate_po_id),

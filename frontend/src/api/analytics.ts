@@ -15,7 +15,8 @@ export type BufferStockRow = {
   qty_printed: number;
   qty_remaining: number;
   qty_ready_warehouse: number | string;
-  qty_shipped: number;
+  ready_mismatch?: boolean;
+  qty_shipped: number | string;
   buffer_status: string;
   sales_pic: string;
 };
@@ -28,8 +29,11 @@ export type BufferStock = {
     qty_remaining: number;
     qty_ready_warehouse: number | string;
     qty_shipped: number;
+    ready_mismatch_rows?: number;
+    ready_incomplete_rows?: number;
   };
   not_configured: string[];
+  ready_formula?: string;
 };
 
 export type FlowNode = {

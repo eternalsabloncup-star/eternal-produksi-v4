@@ -441,8 +441,8 @@ export function LiveTrackingPage() {
                 </dl>
                 <p className="elt-note">
                   Catatan Qty: progres Cetak memakai target task baris Cetak (bukan
-                  total Qty seluruh PO). Contoh fixture: Qty PO 1.050; task cetak
-                  400/1.000 — scope item Cetak, bukan kesalahan format tampilan.
+                  total Qty seluruh PO) — scope item Cetak, bukan kesalahan format
+                  tampilan.
                 </p>
                 <h3 className="elt-subhead">Item</h3>
                 <ul className="elt-item-list">

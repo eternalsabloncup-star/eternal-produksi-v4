@@ -39,14 +39,24 @@ def _seed_prep_task(db: Database, qty_target: float = 1000) -> dict:
 
 
 def test_master_seed_is_idempotent(db: Database) -> None:
+    from app.domain.operational import DEFAULT_TASK_TYPES
+
+    expected = len(DEFAULT_TASK_TYPES)
     # Fixture sudah bootstrap Master — kosongkan dulu agar insert pertama terukur.
     db["master_task_types"].delete_many({})
     db["master_role_actions"].delete_many({})
     first = master.seed_master_defaults(db)
     second = master.seed_master_defaults(db)
-    assert first["task_types"] == 12
+    assert first["task_types"] == expected
     assert second["task_types"] == 0
-    assert len(master.list_task_types(db)) == 12
+    assert len(master.list_task_types(db)) == expected
+    bypass = master.get_task_type(db, "payment-bypass")
+    assert bypass is not None
+    grant = db["master_role_actions"].find_one(
+        {"role": "production-head", "task_type": "payment-bypass"}
+    )
+    assert grant is not None
+    assert grant.get("actions") == []
 
 
 def test_task_creation_is_idempotent_on_resync(db: Database) -> None:

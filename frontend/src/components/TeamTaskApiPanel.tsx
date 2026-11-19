@@ -17,6 +17,10 @@ import {
   type ProductionSample,
   type TaskConfirmation,
 } from "../api/operational";
+import { DataTable } from "./DataTable/DataTable";
+import { DEFAULT_TABLE_PAGE_SIZE } from "./DataTable/Pagination";
+import type { ColumnDef } from "./DataTable/types";
+import { DesignWorkflowPanel } from "./DesignWorkflowPanel";
 
 type Props = {
   role: OperationalRole;
@@ -46,6 +50,7 @@ function shortfallLabel(taskType: string): string {
 const SAMPLE_UPLOAD_TASK = "konfirmasi-sample";
 const SAMPLE_APPROVAL_TASK = "approval-sampel";
 const DRIVER_TASK = "pengiriman";
+const DESIGN_TASK = "design";
 const COORDINATION_TASKS = new Set([
   "qty-loading-sj-berbeda",
   "pengiriman-gagal-koordinasi",
@@ -76,6 +81,9 @@ export function TeamTaskApiPanel({ role, roleLabel }: Props) {
   const drawingRef = useRef(false);
   const [recipientName, setRecipientName] = useState("");
   const [failureReason, setFailureReason] = useState("");
+  const [q, setQ] = useState("");
+  const [page, setPage] = useState(1);
+  const [pageSize, setPageSize] = useState(DEFAULT_TABLE_PAGE_SIZE);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -102,6 +110,136 @@ export function TeamTaskApiPanel({ role, roleLabel }: Props) {
     const done = tasks.filter((t) => t.status === "selesai").length;
     return { total: tasks.length, done, open: tasks.length - done };
   }, [tasks]);
+
+  const filteredTasks = useMemo(() => {
+    const qq = q.trim().toLowerCase();
+    if (!qq) return tasks;
+    return tasks.filter((t) => {
+      const hay = [
+        t.label,
+        t.task_type,
+        t.ref.po_no,
+        t.ref.sj_no,
+        t.ref.accurate_line_id,
+        t.status,
+      ]
+        .filter(Boolean)
+        .join(" ")
+        .toLowerCase();
+      return hay.includes(qq);
+    });
+  }, [tasks, q]);
+
+  const pageTasks = useMemo(() => {
+    const start = (page - 1) * pageSize;
+    return filteredTasks.slice(start, start + pageSize);
+  }, [filteredTasks, page, pageSize]);
+
+  const columns: ColumnDef<OperationalTask>[] = useMemo(
+    () => [
+      {
+        id: "taskType",
+        label: "Jenis Pekerjaan",
+        hideable: true,
+        filterType: "text",
+        defaultWidth: 160,
+        getFilterValue: (t) => t.label || t.task_type,
+        render: (t) => (
+          <span className={t.coordination ? "ep-text-danger" : undefined}>
+            {t.label || t.task_type}
+          </span>
+        ),
+      },
+      {
+        id: "poSj",
+        label: "No. PO / SJ",
+        sticky: "po",
+        hideable: true,
+        filterType: "text",
+        defaultWidth: 120,
+        getFilterValue: (t) => t.ref.po_no || t.ref.sj_no || "",
+        render: (t) => t.ref.po_no || t.ref.sj_no || "—",
+      },
+      {
+        id: "line",
+        label: "Item Line",
+        hideable: true,
+        filterType: "text",
+        defaultWidth: 100,
+        getFilterValue: (t) => t.ref.accurate_line_id || "",
+        render: (t) => t.ref.accurate_line_id || "—",
+      },
+      {
+        id: "qtyTarget",
+        label: "Qty Target",
+        hideable: true,
+        filterType: "number",
+        defaultWidth: 100,
+        getFilterValue: (t) => String(t.qty_target ?? ""),
+        getSortValue: (t) => t.qty_target ?? null,
+        render: (t) => formatQty(t.qty_target),
+      },
+      {
+        id: "qtyConfirmed",
+        label: "Qty Terkonfirmasi",
+        hideable: true,
+        filterType: "number",
+        defaultWidth: 120,
+        getFilterValue: (t) => String(t.qty_confirmed),
+        getSortValue: (t) => t.qty_confirmed,
+        render: (t) => formatQty(t.qty_confirmed),
+      },
+      {
+        id: "shortfall",
+        label: "Selisih Qty",
+        hideable: true,
+        filterType: "number",
+        defaultWidth: 110,
+        getFilterValue: (t) =>
+          t.qty_target !== undefined
+            ? String(Math.max(t.qty_target - t.qty_confirmed, 0))
+            : "",
+        getSortValue: (t) =>
+          t.qty_target !== undefined
+            ? Math.max(t.qty_target - t.qty_confirmed, 0)
+            : null,
+        render: (t) =>
+          t.qty_target !== undefined
+            ? formatQty(Math.max(t.qty_target - t.qty_confirmed, 0))
+            : "—",
+      },
+      {
+        id: "status",
+        label: "Status",
+        hideable: true,
+        filterType: "text",
+        defaultWidth: 120,
+        getFilterValue: (t) => statusLabel(t.status),
+        render: (t) => statusLabel(t.status),
+      },
+      {
+        id: "action",
+        label: "Aksi",
+        hideable: false,
+        filterType: "text",
+        defaultWidth: 90,
+        getFilterValue: () => "",
+        render: (t) => (
+          <button
+            type="button"
+            className="ep-btn sm"
+            onClick={(e) => {
+              e.stopPropagation();
+              void openTask(t);
+            }}
+          >
+            Buka
+          </button>
+        ),
+      },
+    ],
+    [],
+  );
 
   const isSampleTask =
     selected?.task_type === SAMPLE_UPLOAD_TASK ||
@@ -345,95 +483,102 @@ export function TeamTaskApiPanel({ role, roleLabel }: Props) {
 
   return (
     <div className="ep-taskpanel" data-testid="team-task-api-panel">
-      <div className="ep-filterbar">
-        <strong>{roleLabel}</strong>
-        <button
-          type="button"
-          className={filter === "all" ? "ep-btn is-active" : "ep-btn"}
-          onClick={() => setFilter("all")}
-        >
-          Semua ({counts.total})
-        </button>
-        <button
-          type="button"
-          className={filter === "done" ? "ep-btn is-active" : "ep-btn"}
-          onClick={() => setFilter("done")}
-        >
-          Sudah Dikerjakan ({counts.done})
-        </button>
-        <button
-          type="button"
-          className={filter === "open" ? "ep-btn is-active" : "ep-btn"}
-          onClick={() => setFilter("open")}
-        >
-          Belum Dikerjakan ({counts.open})
-        </button>
-        <button type="button" className="ep-btn" onClick={() => void load()}>
-          Muat ulang
-        </button>
-      </div>
-
       {error ? (
         <div className="ep-error" role="alert">
           {error}
         </div>
       ) : null}
 
-      <div className="ep-tblscroll">
-        <table className="ep-table">
-          <thead>
-            <tr>
-              <th>Jenis Pekerjaan</th>
-              <th>No. PO / SJ</th>
-              <th>Item Line</th>
-              <th>Qty Target</th>
-              <th>Qty Terkonfirmasi</th>
-              <th>Status</th>
-              <th>Aksi</th>
-            </tr>
-          </thead>
-          <tbody>
-            {loading ? (
-              <tr>
-                <td colSpan={7}>Memuat tugas dari MongoDB V4…</td>
-              </tr>
-            ) : tasks.length === 0 ? (
-              <tr>
-                <td colSpan={7} className="ep-empty">
-                  Belum ada tugas {roleLabel} di MongoDB V4.
-                </td>
-              </tr>
-            ) : (
-              tasks.map((t) => (
-                <tr
-                  key={t.task_key}
-                  className={t.coordination ? "ep-row-danger" : undefined}
-                  onClick={() => void openTask(t)}
-                >
-                  <td>{t.label || t.task_type}</td>
-                  <td>{t.ref.po_no || t.ref.sj_no || "—"}</td>
-                  <td>{t.ref.accurate_line_id || "—"}</td>
-                  <td>{formatQty(t.qty_target)}</td>
-                  <td>{formatQty(t.qty_confirmed)}</td>
-                  <td>{statusLabel(t.status)}</td>
-                  <td>
-                    <button
-                      type="button"
-                      className="ep-btn"
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        void openTask(t);
-                      }}
-                    >
-                      Buka
-                    </button>
-                  </td>
-                </tr>
-              ))
-            )}
-          </tbody>
-        </table>
-      </div>
+      <DataTable
+        tableId={`po-accurate:tasks-${role}`}
+        columns={columns}
+        rows={loading ? [] : pageTasks}
+        filterSourceRows={filteredTasks}
+        rowKey={(t) => t.task_key}
+        enableColumnManager
+        inlineColumnTools
+        page={page}
+        pageSize={pageSize}
+        total={loading ? 0 : filteredTasks.length}
+        onPageChange={setPage}
+        onPageSizeChange={(size) => {
+          setPageSize(size);
+          setPage(1);
+        }}
+        onRowActivate={(t) => void openTask(t)}
+        emptyMessage={
+          loading
+            ? `Memuat tugas ${roleLabel} dari MongoDB V4…`
+            : `Belum ada tugas ${roleLabel} di MongoDB V4.`
+        }
+        filterSlot={(tools) => (
+          <div className="ep-filterbar is-compact">
+            <strong>{roleLabel}</strong>
+            <button
+              type="button"
+              className={filter === "all" ? "ep-btn sm is-active" : "ep-btn sm"}
+              onClick={() => {
+                setFilter("all");
+                setPage(1);
+              }}
+            >
+              Semua ({counts.total})
+            </button>
+            <button
+              type="button"
+              className={filter === "done" ? "ep-btn sm is-active" : "ep-btn sm"}
+              onClick={() => {
+                setFilter("done");
+                setPage(1);
+              }}
+            >
+              Sudah ({counts.done})
+            </button>
+            <button
+              type="button"
+              className={filter === "open" ? "ep-btn sm is-active" : "ep-btn sm"}
+              onClick={() => {
+                setFilter("open");
+                setPage(1);
+              }}
+            >
+              Belum ({counts.open})
+            </button>
+            <div className="ep-search">
+              <span style={{ fontSize: 14, color: "#97a8bc" }} aria-hidden>
+                ⌕
+              </span>
+              <input
+                placeholder="Cari PO / SJ / jenis…"
+                value={q}
+                onChange={(e) => {
+                  setQ(e.target.value);
+                  setPage(1);
+                }}
+                aria-label="Cari tugas"
+              />
+            </div>
+            <button type="button" className="ep-btn sm" onClick={() => void load()}>
+              Muat ulang
+            </button>
+            <button
+              type="button"
+              className="ep-btn sm"
+              onClick={(e) => tools.openColumns(e.currentTarget)}
+            >
+              ▥ Kolom Tabel
+            </button>
+            {tools.prefsHint ? (
+              <span
+                className={`ep-prefs-hint${tools.saveState === "error" ? " is-error" : ""}`}
+                role={tools.saveState === "error" ? "alert" : undefined}
+              >
+                {tools.prefsHint}
+              </span>
+            ) : null}
+          </div>
+        )}
+      />
 
       {selected ? (
         <div
@@ -689,8 +834,19 @@ export function TeamTaskApiPanel({ role, roleLabel }: Props) {
                 </div>
               ) : null}
 
-              {selected.qty_target !== undefined && selected.task_type !== DRIVER_TASK &&
-              !COORDINATION_TASKS.has(selected.task_type) ? (
+              {selected.task_type === DESIGN_TASK && selected.ref.accurate_po_id ? (
+                <DesignWorkflowPanel
+                  accuratePoId={selected.ref.accurate_po_id}
+                  poNo={selected.ref.po_no}
+                  onChanged={() => void reloadAfterAction(selected)}
+                />
+              ) : null}
+
+              {selected.qty_target !== undefined &&
+              selected.task_type !== DRIVER_TASK &&
+              selected.task_type !== DESIGN_TASK &&
+              !COORDINATION_TASKS.has(selected.task_type) &&
+              !isSampleTask ? (
                 <div className="ep-filterbar">
                   <label htmlFor="qty-confirm">Qty</label>
                   <input

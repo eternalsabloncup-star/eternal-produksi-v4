@@ -130,9 +130,17 @@ def login(
         csrf_token,
         max_age=settings.session_ttl_seconds,
     )
+    from app.services.task_engine import can_act
+
+    caps = {
+        "payment_bypass": can_act(
+            db, user, task_type="payment-bypass", action="approve"
+        ),
+    }
     return MeResponse(
         user=UserPublic(**public_user(user)),
         csrf_token=csrf_token,
+        capabilities=caps,
     )
 
 
@@ -172,7 +180,16 @@ def read_me(
             path="/",
         )
 
+    from app.services.task_engine import can_act
+
+    db = get_db(settings)
+    caps = {
+        "payment_bypass": can_act(
+            db, auth.user, task_type="payment-bypass", action="approve"
+        ),
+    }
     return MeResponse(
         user=UserPublic(**public_user(auth.user)),
         csrf_token=csrf_token,
+        capabilities=caps,
     )

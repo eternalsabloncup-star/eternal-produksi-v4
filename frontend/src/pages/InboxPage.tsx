@@ -108,14 +108,14 @@ export function InboxPage() {
       {sourceMode === "demo" ? <DemoBanner /> : null}
       {sourceMode === "demo" ? (
         <div className="ep-visualnotice">
-          Aksi “Tambah PO / Jadwalkan / Approve” bisnis sengaja belum diaktifkan di
-          Task #004 agar tidak menyerupai operasi backend nyata.
+          Mode DEMO — aksi bisnis menulis Accurate/Mongo tidak aktif. Terima PO
+          hanya untuk PO Accurate di mode API.
         </div>
       ) : (
         <div className="ep-visualnotice">
-          Sumber Accurate · Inbox tidak menulis Accurate Online. Sync hanya lewat
-          prosedur manual Owner. Progres cetak/QC/jadwal belum terhubung di modul
-          ini.
+          Sumber Accurate · MongoDB V4 (read-only Accurate Online). Terima PO
+          mengaktifkan workflow Eternal. Penjadwalan dan progres di modul terkait.
+          Sync SJ live tetap OFF.
         </div>
       )}
       {kpiError ? (
