@@ -85,3 +85,57 @@ def append_audit_event(
     result = db[COLLECTION].insert_one(doc, session=session)
     doc["_id"] = result.inserted_id
     return doc
+
+
+def list_audit_events(
+    db: Database,
+    *,
+    action: str | None = None,
+    actor_email: str | None = None,
+    module: str | None = None,
+    created_from: datetime | None = None,
+    created_to: datetime | None = None,
+    limit: int = 50,
+    offset: int = 0,
+) -> dict[str, Any]:
+    """Paginated audit read — never returns secrets."""
+    require_audit_indexes(db)
+    query: dict[str, Any] = {}
+    if action:
+        query["action"] = action
+    if actor_email:
+        query["actor_email"] = actor_email.strip().lower()
+    if module:
+        query["action"] = {"$regex": f"^{module}\\."}
+    created: dict[str, Any] = {}
+    if created_from is not None:
+        created["$gte"] = created_from
+    if created_to is not None:
+        created["$lte"] = created_to
+    if created:
+        query["created_at"] = created
+    lim = max(1, min(int(limit), 200))
+    off = max(0, int(offset))
+    coll = db[COLLECTION]
+    total = coll.count_documents(query)
+    cursor = (
+        coll.find(query, {"_id": 0})
+        .sort("created_at", -1)
+        .skip(off)
+        .limit(lim)
+    )
+    items = []
+    for doc in cursor:
+        detail = dict(doc.get("detail") or {})
+        for banned in ("password", "password_hash", "token", "secret", "csrf"):
+            detail.pop(banned, None)
+        items.append(
+            {
+                "action": doc.get("action"),
+                "actor_email": doc.get("actor_email"),
+                "target_email": doc.get("target_email"),
+                "detail": detail,
+                "created_at": doc.get("created_at"),
+            }
+        )
+    return {"items": items, "total": total, "limit": lim, "offset": off}
