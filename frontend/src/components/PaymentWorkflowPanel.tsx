@@ -194,7 +194,13 @@ export function PaymentWorkflowPanel({ accuratePoId, poNo, onChanged }: Props) {
             <p className="ep-empty">Belum ada snapshot penerimaan untuk PO ini.</p>
           )}
 
-          <p className="ep-sectionlabel">Catat penerimaan Accurate (snapshot)</p>
+          <p className="ep-sectionlabel">
+            Catat penerimaan Accurate (snapshot manual)
+          </p>
+          <p className="ep-po-confirm-hint" data-testid="payment-manual-notice">
+            Bukan sinkronisasi live Accurate. Petugas mengisi snapshot penerimaan
+            secara manual; gate dan audit diputuskan backend.
+          </p>
           <div className="ep-filterbar">
             <input
               aria-label="ID penerimaan Accurate"
