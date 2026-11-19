@@ -18,7 +18,12 @@ from app.repositories import sample_repository as samples
 from app.repositories import schedule_repository as schedules
 from app.repositories import task_repository as tasks
 from app.services.audit_log import append_audit_event
-from app.services.task_engine import confirm_task, require_action
+from app.services.task_engine import (
+    TaskPermissionError,
+    can_act,
+    confirm_task,
+    require_action,
+)
 
 PREP_TASK = "persiapan-cup"
 SCREEN_TASK = "screen"
@@ -184,7 +189,7 @@ def screen_confirmed_qty(db: Database, alloc: dict[str, Any]) -> float:
     return float((task or {}).get("qty_confirmed") or 0)
 
 
-def submit_sample(
+def upload_sample_draft(
     db: Database,
     user: dict[str, Any],
     *,
@@ -193,7 +198,7 @@ def submit_sample(
     content_type: str,
     content: bytes,
 ) -> dict[str, Any]:
-    """Sampel milik satu alokasi operator; revisi menambah versi baru."""
+    """Unggah draft sampel — append-only; belum membuka approval / gate cetak."""
     require_action(db, user, task_type=SAMPLE_TASK, action="input")
     alloc = _require_allocation(db, allocation_id)
     _require_accepted_po(db, str(alloc["accurate_po_id"]))
@@ -208,10 +213,15 @@ def submit_sample(
     )
     if quota["qty_available"] <= 0:
         raise ProductionGateError("Kuota Persiapan Cup dari Helper belum tersedia.")
+    if samples.pending_sample(db, allocation_id) is not None:
+        raise ProductionGateError(
+            "Sampel masih menunggu approval — tunggu keputusan Kepala Produksi "
+            "sebelum mengunggah draft baru."
+        )
 
-    # Fail-closed Master SEBELUM evidence/GridFS — cegah orphan bila Master hilang.
+    # Fail-closed Master SEBELUM evidence/GridFS.
     sample_role = master.require_task_type_assigned_role(db, SAMPLE_TASK)
-    approval_role = master.require_task_type_assigned_role(db, APPROVAL_TASK)
+    master.require_task_type_assigned_role(db, APPROVAL_TASK)
 
     actor = str(user.get("email_normalized") or "")
     stored = evidence.store_evidence(
@@ -223,7 +233,10 @@ def submit_sample(
         content=content,
         uploaded_by=actor,
         kind="operator-sample",
-        context={"accurate_line_id": alloc["accurate_line_id"]},
+        context={
+            "accurate_line_id": alloc["accurate_line_id"],
+            "sample_phase": "draft",
+        },
     )
     sample = samples.create_sample(
         db,
@@ -233,38 +246,43 @@ def submit_sample(
         evidence_id=stored["evidence_id"],
         filename=filename,
         submitted_by=actor,
+        status=samples.STATUS_DRAFT,
     )
 
-    tasks.upsert_task(
+    # Operator tetap punya tugas terbuka sampai Konfirmasi.
+    sample_task = tasks.upsert_task(
         db,
         task_type=SAMPLE_TASK,
         scope="po_line_allocation",
         assigned_role=sample_role,
         ref=_alloc_ref(alloc),
-        label="Upload/Konfirmasi Sample",
-        context={"latest_version": sample["version"], "status": sample["status"]},
-    )
-    approval = tasks.upsert_task(
-        db,
-        task_type=APPROVAL_TASK,
-        scope="po_line_allocation",
-        assigned_role=approval_role,
-        ref=_alloc_ref(alloc),
-        label="Approval Sampel",
+        label="Konfirmasi Sampel",
         context={
-            "sample_version": sample["version"],
-            "operator_email": alloc.get("operator_email"),
+            "latest_version": sample["version"],
             "status": sample["status"],
+            "needs_resubmit": False,
+            "display_kind": "draft",
+            "active_draft_version": sample["version"],
         },
     )
     tasks.tasks_collection(db).update_one(
-        {"task_key": approval["task_key"]},
-        {"$set": {"status": tasks.TASK_STATUS_OPEN}},
+        {"task_key": sample_task["task_key"]},
+        {
+            "$set": {
+                "status": tasks.TASK_STATUS_OPEN,
+                "label": "Konfirmasi Sampel",
+                "context.latest_version": sample["version"],
+                "context.status": samples.STATUS_DRAFT,
+                "context.needs_resubmit": False,
+                "context.display_kind": "draft",
+                "context.active_draft_version": sample["version"],
+            }
+        },
     )
 
     append_audit_event(
         db,
-        action="production.sample.upload",
+        action="production.sample.draft_upload",
         actor_email=actor,
         target_email=None,
         detail={
@@ -273,7 +291,156 @@ def submit_sample(
             "evidence_id": stored["evidence_id"],
         },
     )
-    return {"sample": sample, "evidence": stored}
+    return {"sample": sample, "evidence": stored, "phase": "draft"}
+
+
+def submit_sample(
+    db: Database,
+    user: dict[str, Any],
+    *,
+    allocation_id: str,
+    filename: str,
+    content_type: str,
+    content: bytes,
+) -> dict[str, Any]:
+    """Alias: unggah draft. Approval hanya lewat confirm_sample_submission."""
+    return upload_sample_draft(
+        db,
+        user,
+        allocation_id=allocation_id,
+        filename=filename,
+        content_type=content_type,
+        content=content,
+    )
+
+
+def confirm_sample_submission(
+    db: Database,
+    user: dict[str, Any],
+    *,
+    allocation_id: str,
+    idempotency_key: str | None = None,
+) -> dict[str, Any]:
+    """Konfirmasi draft aktif → Menunggu Approval (satu versi submitted)."""
+    if not (
+        can_act(db, user, task_type=SAMPLE_TASK, action="confirm")
+        or can_act(db, user, task_type=SAMPLE_TASK, action="input")
+    ):
+        raise TaskPermissionError(
+            "Akses ditolak untuk konfirmasi sampel."
+        )
+    alloc = _require_allocation(db, allocation_id)
+    _require_accepted_po(db, str(alloc["accurate_po_id"]))
+
+    # Idempotency: konfirmasi ulang saat sudah pending → tidak gandakan tugas.
+    pending = samples.pending_sample(db, allocation_id)
+    if pending is not None:
+        return {
+            "sample": pending,
+            "duplicate": True,
+            "phase": "menunggu_approval",
+        }
+
+    draft = samples.latest_draft(db, allocation_id)
+    if draft is None:
+        raise ProductionGateError(
+            "Belum ada draft sampel aktif — unggah file terlebih dahulu."
+        )
+
+    sample_role = master.require_task_type_assigned_role(db, SAMPLE_TASK)
+    approval_role = master.require_task_type_assigned_role(db, APPROVAL_TASK)
+    actor = str(user.get("email_normalized") or "")
+
+    submitted = samples.confirm_draft_sample(
+        db,
+        allocation_id=allocation_id,
+        version=int(draft["version"]),
+        actor_email=actor,
+    )
+    if submitted is None:
+        # Race: draft berubah / sudah dikonfirmasi proses lain.
+        pending_now = samples.pending_sample(db, allocation_id)
+        if pending_now is not None:
+            return {
+                "sample": pending_now,
+                "duplicate": True,
+                "phase": "menunggu_approval",
+            }
+        raise ProductionGateError(
+            "Draft sampel berubah — muat ulang lalu konfirmasi lagi."
+        )
+
+    sample_key = build_task_key(SAMPLE_TASK, "po_line_allocation", _alloc_ref(alloc))
+    tasks.upsert_task(
+        db,
+        task_type=SAMPLE_TASK,
+        scope="po_line_allocation",
+        assigned_role=sample_role,
+        ref=_alloc_ref(alloc),
+        label="Konfirmasi Sampel",
+        context={
+            "latest_version": submitted["version"],
+            "status": submitted["status"],
+            "needs_resubmit": False,
+            "display_kind": "menunggu-approval",
+        },
+    )
+    tasks.tasks_collection(db).update_one(
+        {"task_key": sample_key},
+        {
+            "$set": {
+                "status": tasks.TASK_STATUS_DONE,
+                "label": "Konfirmasi Sampel",
+                "context.latest_version": submitted["version"],
+                "context.status": submitted["status"],
+                "context.needs_resubmit": False,
+                "context.display_kind": "menunggu-approval",
+                "context.active_draft_version": None,
+            }
+        },
+    )
+
+    approval = tasks.upsert_task(
+        db,
+        task_type=APPROVAL_TASK,
+        scope="po_line_allocation",
+        assigned_role=approval_role,
+        ref=_alloc_ref(alloc),
+        label="Approval Sampel",
+        context={
+            "sample_version": submitted["version"],
+            "operator_email": alloc.get("operator_email"),
+            "status": submitted["status"],
+        },
+    )
+    tasks.tasks_collection(db).update_one(
+        {"task_key": approval["task_key"]},
+        {
+            "$set": {
+                "status": tasks.TASK_STATUS_OPEN,
+                "context.sample_version": submitted["version"],
+                "context.status": submitted["status"],
+            }
+        },
+    )
+
+    append_audit_event(
+        db,
+        action="production.sample.confirm",
+        actor_email=actor,
+        target_email=None,
+        detail={
+            "allocation_id": allocation_id,
+            "version": submitted["version"],
+            "evidence_id": submitted.get("evidence_id"),
+            "idempotency_key": idempotency_key,
+        },
+    )
+    return {
+        "sample": submitted,
+        "duplicate": False,
+        "phase": "menunggu_approval",
+    }
 
 
 def decide_sample(
@@ -337,23 +504,34 @@ def decide_sample(
             },
         )
         sample_role = master.require_task_type_assigned_role(db, SAMPLE_TASK)
+        # Identity task_key sama — bukan alokasi/tugas baru. Label UI: Sampel Ulang.
         tasks.upsert_task(
             db,
             task_type=SAMPLE_TASK,
             scope="po_line_allocation",
             assigned_role=sample_role,
             ref=_alloc_ref(alloc),
-            label="Upload/Konfirmasi Sample",
+            label="Sampel Ulang",
             context={
                 "latest_version": version,
                 "status": sample["status"],
                 "reject_reason": (reason or "").strip(),
                 "needs_resubmit": True,
+                "display_kind": "sampel-ulang",
             },
         )
         tasks.tasks_collection(db).update_one(
             {"task_key": sample_key},
-            {"$set": {"status": tasks.TASK_STATUS_OPEN}},
+            {
+                "$set": {
+                    "status": tasks.TASK_STATUS_OPEN,
+                    "label": "Sampel Ulang",
+                    "context.needs_resubmit": True,
+                    "context.display_kind": "sampel-ulang",
+                    "context.reject_reason": (reason or "").strip(),
+                    "context.status": sample["status"],
+                }
+            },
         )
 
     append_audit_event(
@@ -499,7 +677,11 @@ def confirm_qc_packing(
     idempotency_key: str,
     note: str | None = None,
 ) -> dict[str, Any]:
-    """Satu Qty berarti lolos QC sekaligus selesai Packing."""
+    """Satu Qty berarti lolos QC sekaligus selesai Packing.
+
+    Target operasional = Qty cetak sah line (bukan Qty PO penuh).
+    Maksimum tambahan = cetak − packing terkonfirmasi.
+    """
     _require_accepted_po(db, accurate_po_id)
     key = qc_task_key(accurate_po_id, accurate_line_id)
     task = tasks.get_task(db, key)
@@ -509,6 +691,13 @@ def confirm_qc_packing(
     printed = printed_total_for_line(
         db, accurate_po_id=accurate_po_id, accurate_line_id=accurate_line_id
     )
+    already = float((task or {}).get("qty_confirmed") or 0)
+    remaining = max(printed - already, 0.0)
+    if qty > remaining:
+        raise ProductionQuantityError(
+            f"Qty QC/Packing {qty:g} melebihi sisa hasil cetak yang belum dipacking "
+            f"({remaining:g}). Qty cetak sah {printed:g}, sudah packing {already:g}."
+        )
     tasks.tasks_collection(db).update_one(
         {"task_key": key}, {"$set": {"qty_target": printed}}
     )

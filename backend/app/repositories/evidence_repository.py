@@ -169,6 +169,24 @@ def get_evidence(db: Database, evidence_id: str) -> dict[str, Any] | None:
     return doc
 
 
+def open_evidence_stream(db: Database, evidence_id: str) -> tuple[dict[str, Any], Any]:
+    """Buka stream GridFS untuk bukti aktif — tanpa soft-delete."""
+    from bson import ObjectId
+
+    _require_once(db)
+    doc = evidence_collection(db).find_one({"evidence_id": evidence_id}, {"_id": 0})
+    if doc is None:
+        raise LookupError(f"Bukti tidak ditemukan: {evidence_id}")
+    if doc.get("deleted_at") is not None:
+        raise LookupError(f"Bukti sudah dihapus: {evidence_id}")
+    grid_id = doc.get("gridfs_id")
+    if grid_id is None:
+        raise LookupError(f"Bukti tanpa file GridFS: {evidence_id}")
+    stream = _bucket(db).get(ObjectId(str(grid_id)))
+    doc["gridfs_id"] = str(grid_id)
+    return doc, stream
+
+
 def attach_evidence_to_delivery(
     db: Database,
     *,

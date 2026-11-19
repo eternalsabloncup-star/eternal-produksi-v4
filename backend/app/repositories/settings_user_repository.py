@@ -49,6 +49,50 @@ def list_users(db: Database, *, include_inactive: bool = True) -> list[dict[str,
     return [public_user_admin(d) for d in cursor]
 
 
+def list_active_operators(db: Database) -> list[dict[str, Any]]:
+    """Operator aktif Master Pengguna — identifier email + nama tampilan."""
+    cursor = users_collection(db).find(
+        {"is_active": True, "operational_role": "operator"}
+    ).sort("display_name", ASCENDING)
+    items: list[dict[str, Any]] = []
+    for doc in cursor:
+        email = str(doc.get("email_normalized") or "").strip()
+        name = str(doc.get("display_name") or "").strip()
+        if not email:
+            continue
+        items.append(
+            {
+                "id": str(doc["_id"]),
+                "email": email,
+                "display_name": name,
+            }
+        )
+    return items
+
+
+def find_active_operator_by_email(db: Database, email: str) -> dict[str, Any] | None:
+    from app.models.user import normalize_email
+
+    email_n = normalize_email(email)
+    if not email_n:
+        return None
+    doc = users_collection(db).find_one(
+        {
+            "email_normalized": email_n,
+            "is_active": True,
+            "operational_role": "operator",
+        }
+    )
+    if doc is None:
+        return None
+    name = str(doc.get("display_name") or "").strip()
+    return {
+        "id": str(doc["_id"]),
+        "email": email_n,
+        "display_name": name,
+    }
+
+
 def get_user(db: Database, user_id: str) -> dict[str, Any] | None:
     doc = users_collection(db).find_one({"_id": _oid(user_id)})
     return public_user_admin(doc) if doc else None

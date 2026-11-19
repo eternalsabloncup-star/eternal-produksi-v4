@@ -147,10 +147,12 @@ def insert_allocation(
     qty: float,
     schedule_date: str,
     created_by: str,
+    print_color: str | None = None,
+    screen_kind: str | None = None,
 ) -> dict[str, Any]:
     _ensure_once(db)
     now = datetime.now(timezone.utc)
-    doc = {
+    doc: dict[str, Any] = {
         "allocation_id": allocation_id,
         "accurate_po_id": accurate_po_id,
         "po_no": po_no,
@@ -164,6 +166,11 @@ def insert_allocation(
         "created_at": now,
         "updated_at": now,
     }
+    # Opsional — record lama tanpa field tetap valid; jangan isi default palsu.
+    if print_color is not None:
+        doc["print_color"] = print_color
+    if screen_kind is not None:
+        doc["screen_kind"] = screen_kind
     try:
         allocations_collection(db).insert_one(dict(doc))
     except DuplicateKeyError as exc:
@@ -188,14 +195,19 @@ def update_allocation_qty(
     qty: float,
     actor_email: str,
     reason: str,
-) -> dict[str, Any]:
+    expected_qty: float | None = None,
+) -> dict[str, Any] | None:
+    """Update Qty alokasi. None = gagal CAS (expected_qty tidak cocok)."""
     _ensure_once(db)
     current = get_allocation(db, allocation_id)
     if current is None:
         raise LookupError(f"Alokasi tidak ditemukan: {allocation_id}")
     now = datetime.now(timezone.utc)
+    filt: dict[str, Any] = {"allocation_id": allocation_id}
+    if expected_qty is not None:
+        filt["qty"] = float(expected_qty)
     updated = allocations_collection(db).find_one_and_update(
-        {"allocation_id": allocation_id},
+        filt,
         {
             "$set": {
                 "qty": float(qty),
@@ -206,6 +218,8 @@ def update_allocation_qty(
         projection={"_id": 0},
         return_document=ReturnDocument.AFTER,
     )
+    if updated is None:
+        return None
     append_history(
         db,
         allocation_id=allocation_id,
