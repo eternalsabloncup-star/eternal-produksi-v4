@@ -1,9 +1,10 @@
-import { useEffect, useMemo, useState } from "react";
+import { useState } from "react";
 import { NavIcon } from "../app/icons";
 import {
   TEAM_TASK_ROLES,
   type TeamTaskRoleId,
 } from "../app/nav";
+import { formatOpenTaskBadge } from "../api/openTaskCounts";
 import { DesignerTaskPanel } from "../components/DesignerTaskPanel";
 import { DriverTaskPanel } from "../components/DriverTaskPanel";
 import { HelperTaskPanel } from "../components/HelperTaskPanel";
@@ -12,9 +13,7 @@ import { ProductionHeadAllocTable } from "../components/ProductionHeadAllocTable
 import { ScreenerTaskPanel } from "../components/ScreenerTaskPanel";
 import { TeamTaskApiPanel } from "../components/TeamTaskApiPanel";
 import { resolveInboxPoSourceMode } from "../demo/resolveInboxMode";
-import { subscribeProductionAlloc } from "../demo/productionHeadAlloc";
-import { getOpenTeamTaskCounts } from "../demo/teamTasks";
-import { subscribeTeamTaskWork } from "../demo/teamTaskWork";
+import { useOpenTeamTaskCounts } from "../hooks/useOpenTeamTaskCounts";
 
 function RolePanel({ roleId }: { roleId: TeamTaskRoleId }) {
   switch (roleId) {
@@ -41,32 +40,38 @@ export function TeamTasksSummaryPage() {
     resolveInboxPoSourceMode(import.meta.env.VITE_INBOX_PO_SOURCE) === "api";
   const [activeRoleId, setActiveRoleId] =
     useState<TeamTaskRoleId>("production-head");
-  const [tick, setTick] = useState(0);
-
-  useEffect(() => {
-    const unsubAlloc = subscribeProductionAlloc(() => setTick((t) => t + 1));
-    const unsubWork = subscribeTeamTaskWork(() => setTick((t) => t + 1));
-    return () => {
-      unsubAlloc();
-      unsubWork();
-    };
-  }, []);
+  const {
+    counts,
+    status: countsStatus,
+    error: countsError,
+  } = useOpenTeamTaskCounts();
 
   const activeRole =
     TEAM_TASK_ROLES.find((r) => r.id === activeRoleId) ?? TEAM_TASK_ROLES[0];
 
-  const counts = useMemo(() => {
-    void tick;
-    return getOpenTeamTaskCounts();
-  }, [tick]);
-
   return (
     <div>
+      {countsStatus === "error" ? (
+        <p className="ep-error" role="alert" data-testid="task-counts-error">
+          {countsError || "Jumlah tugas tidak dapat dimuat."}
+        </p>
+      ) : null}
+      {countsStatus === "truncated" ? (
+        <p className="ep-notice" data-testid="task-counts-truncated">
+          Jumlah tugas terbuka mencapai batas baca API — angka badge mungkin
+          lebih rendah dari total sebenarnya.
+        </p>
+      ) : null}
       <div className="ep-task-rolerow-wrap">
         <div className="ep-task-rolerow" role="list" aria-label="Peran Tugas Tim">
           {TEAM_TASK_ROLES.map((role) => {
             const count = counts[role.id] ?? 0;
+            const badge = formatOpenTaskBadge(count, countsStatus) ?? "0";
             const active = role.id === activeRole.id;
+            const alert =
+              countsStatus === "ready" || countsStatus === "truncated"
+                ? count > 0
+                : countsStatus === "error";
             return (
               <button
                 key={role.id}
@@ -86,10 +91,18 @@ export function TeamTasksSummaryPage() {
                 </span>
                 <span className="ep-task-rolechip-label">{role.label}</span>
                 <span
-                  className={`ep-task-rolechip-badge${count > 0 ? " is-alert" : ""}`}
-                  aria-label={`${count} belum dikerjakan`}
+                  className={`ep-task-rolechip-badge${alert ? " is-alert" : ""}`}
+                  aria-label={
+                    countsStatus === "error"
+                      ? countsError || "Jumlah tidak tersedia"
+                      : countsStatus === "loading"
+                        ? "Memuat…"
+                        : `${count} belum dikerjakan`
+                  }
+                  data-testid={`summary-badge-${role.id}`}
+                  data-status={countsStatus}
                 >
-                  {count}
+                  {badge}
                 </span>
               </button>
             );

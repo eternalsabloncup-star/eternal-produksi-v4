@@ -156,11 +156,14 @@ export async function fetchTasks(params: {
   role?: OperationalRole;
   taskType?: string;
   done?: boolean;
+  /** Backend default 200, max 1000 — wajib diisi bila menghitung total terbuka. */
+  limit?: number;
 }): Promise<{ items: OperationalTask[]; total: number; source: string }> {
   const search = new URLSearchParams();
   if (params.role) search.set("role", params.role);
   if (params.taskType) search.set("task_type", params.taskType);
   if (params.done !== undefined) search.set("done", String(params.done));
+  if (params.limit !== undefined) search.set("limit", String(params.limit));
   const qs = search.toString();
   return request(`/api/tasks${qs ? `?${qs}` : ""}`);
 }

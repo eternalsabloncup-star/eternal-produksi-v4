@@ -2,19 +2,17 @@ import {
   useCallback,
   useEffect,
   useLayoutEffect,
-  useMemo,
   useRef,
   useState,
   type CSSProperties,
 } from "react";
 import { createPortal } from "react-dom";
 import { NavLink, useLocation } from "react-router-dom";
-import { NavIcon } from "./icons";
-import { subscribeProductionAlloc } from "../demo/productionHeadAlloc";
-import { getOpenTeamTaskCounts } from "../demo/teamTasks";
-import { subscribeTeamTaskWork } from "../demo/teamTaskWork";
+import { formatOpenTaskBadge } from "../api/openTaskCounts";
+import { useOpenTeamTaskCounts } from "../hooks/useOpenTeamTaskCounts";
 import type { ShellDataMode } from "../demo/resolveInboxMode";
 import { shellSidefootCopy } from "../demo/resolveInboxMode";
+import { NavIcon } from "./icons";
 import {
   APP_NAV,
   TEAM_TASKS_SUMMARY,
@@ -32,7 +30,11 @@ export function Sidebar({ inboxBadge, dataMode }: Props) {
   const location = useLocation();
   const tasksActive = isTasksSectionPath(location.pathname);
   const [flyoutOpen, setFlyoutOpen] = useState(false);
-  const [allocTick, setAllocTick] = useState(0);
+  const {
+    counts: openTaskCounts,
+    status: openTaskStatus,
+    error: openTaskError,
+  } = useOpenTeamTaskCounts();
   const [flyoutPos, setFlyoutPos] = useState<CSSProperties>({
     position: "fixed",
     top: 0,
@@ -42,19 +44,6 @@ export function Sidebar({ inboxBadge, dataMode }: Props) {
 
   const tasksBtnRef = useRef<HTMLButtonElement | null>(null);
   const flyoutRef = useRef<HTMLDivElement | null>(null);
-
-  useEffect(() => {
-    const unsubAlloc = subscribeProductionAlloc(() => setAllocTick((t) => t + 1));
-    const unsubWork = subscribeTeamTaskWork(() => setAllocTick((t) => t + 1));
-    return () => {
-      unsubAlloc();
-      unsubWork();
-    };
-  }, []);
-  const openTaskCounts = useMemo(() => {
-    void allocTick;
-    return getOpenTeamTaskCounts();
-  }, [allocTick]);
 
   const closeFlyout = useCallback(() => setFlyoutOpen(false), []);
 
@@ -169,6 +158,15 @@ export function Sidebar({ inboxBadge, dataMode }: Props) {
               </NavLink>
               {TEAM_TASK_ROLES.map((role) => {
                 const openCount = openTaskCounts[role.id] ?? 0;
+                const badge = formatOpenTaskBadge(openCount, openTaskStatus);
+                const badgeLabel =
+                  openTaskStatus === "error"
+                    ? openTaskError || "Jumlah tugas tidak tersedia"
+                    : openTaskStatus === "loading"
+                      ? "Memuat jumlah tugas…"
+                      : openTaskStatus === "truncated"
+                        ? `Sekurang-kurangnya ${openCount} belum selesai (batas baca tercapai)`
+                        : `${openCount} belum selesai`;
                 return (
                   <NavLink
                     key={role.id}
@@ -190,12 +188,17 @@ export function Sidebar({ inboxBadge, dataMode }: Props) {
                       <NavIcon name={role.icon} size={14} />
                     </span>
                     <span className="ep-nav-flyout-label">{role.label}</span>
-                    {openCount > 0 ? (
+                    {badge ? (
                       <span
-                        className={`ep-nav-flyout-badge${openCount < 100 ? " is-round" : " is-pill"}`}
-                        aria-label={`${openCount} belum selesai`}
+                        className={`ep-nav-flyout-badge${
+                          badge.length <= 2 ? " is-round" : " is-pill"
+                        }${openTaskStatus === "error" ? " is-alert" : ""}`}
+                        aria-label={badgeLabel}
+                        title={badgeLabel}
+                        data-testid={`task-badge-${role.id}`}
+                        data-status={openTaskStatus}
                       >
-                        {openCount}
+                        {badge}
                       </span>
                     ) : null}
                   </NavLink>
