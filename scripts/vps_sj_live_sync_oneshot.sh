@@ -63,12 +63,7 @@ cleanup() {
   [[ -n "${STAGES_FILE:-}" && -f "${STAGES_FILE}" ]] && rm -f "${STAGES_FILE}" 2>/dev/null || true
   [[ -n "${RUN_LOG:-}" && -f "${RUN_LOG}" ]] && rm -f "${RUN_LOG}" 2>/dev/null || true
   [[ -n "${PW_TMP:-}" && -f "${PW_TMP}" ]] && rm -f "${PW_TMP}" 2>/dev/null || true
-  # Jangan rm -rf worktree. Lepas hanya via git worktree remove jika kita yang membuat.
-  if [[ "${WT_CREATED_BY_ONESHOT:-0}" == "1" ]]; then
-    if git -C "$REPO_ORIGIN" worktree list --porcelain 2>/dev/null | grep -qx "worktree ${WT_ROOT}"; then
-      git -C "$REPO_ORIGIN" worktree remove --force "$WT_ROOT" 2>/dev/null || true
-    fi
-  fi
+  # Jangan hapus worktree (termasuk yang dibuat root sebelumnya).
   if [[ "$ec" -ne 0 && "$FINAL_OK" -eq 0 ]]; then
     case "$FINAL_CODE" in
       ONESHOT_PASS|ONESHOT_BLOCKED|secret_leak_guard|oneshot_failed) ;;
@@ -78,6 +73,7 @@ cleanup() {
 }
 trap cleanup EXIT
 RUN_LOG=""
+WT_CREATED_BY_ONESHOT=0
 
 # --- Fail-closed: port production/legacy ---
 [[ "$TEST_PORT" == "27017" || "$TEST_PORT" == "27018" ]] && \
@@ -100,23 +96,22 @@ fi
 PROD_HEAD_BEFORE="$(git -C "$REPO_ORIGIN" rev-parse HEAD)"
 PROD_BRANCH_BEFORE="$(git -C "$REPO_ORIGIN" branch --show-current || true)"
 
-# --- Worktree terpisah (TANPA rm -rf; TANPA checkout main) ---
-WT_CREATED_BY_ONESHOT=0
-mkdir -p "$(dirname "$WT_ROOT")"
-if [[ -e "$WT_ROOT" ]]; then
-  if git -C "$WT_ROOT" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
-    log "worktree_reuse=$WT_ROOT"
-    # Fetch via origin repo refs; update hanya worktree detach
-    git -C "$REPO_ORIGIN" fetch origin "$BRANCH" --quiet
-    git -C "$WT_ROOT" checkout -f "origin/$BRANCH" --quiet
-  else
-    die "WT_ROOT ada tetapi bukan git worktree (menolak hapus paksa): $WT_ROOT"
-  fi
+# --- Worktree: semua git sebagai user ini; skip checkout jika SHA bersih + index writable ---
+# shellcheck source=/dev/null
+if [[ -f "$REPO_ORIGIN/scripts/lib/oneshot_worktree.sh" ]]; then
+  source "$REPO_ORIGIN/scripts/lib/oneshot_worktree.sh"
+elif [[ -f "$(dirname "$0")/lib/oneshot_worktree.sh" ]]; then
+  source "$(dirname "$0")/lib/oneshot_worktree.sh"
 else
-  git -C "$REPO_ORIGIN" fetch origin "$BRANCH" --quiet
-  git -C "$REPO_ORIGIN" worktree add --detach "$WT_ROOT" "origin/$BRANCH"
-  WT_CREATED_BY_ONESHOT=1
+  _LIB_TMP="$(mktemp -t oneshot-wt-lib.XXXXXX)"
+  git -C "$REPO_ORIGIN" show "origin/${BRANCH}:scripts/lib/oneshot_worktree.sh" > "$_LIB_TMP"
+  # shellcheck source=/dev/null
+  source "$_LIB_TMP"
+  rm -f "$_LIB_TMP"
 fi
+
+oneshot_ensure_worktree "$REPO_ORIGIN" "$BRANCH" "$WT_ROOT" "${EXPECTED_SHA:-}" \
+  || die "ensure worktree gagal"
 
 PROD_HEAD_AFTER="$(git -C "$REPO_ORIGIN" rev-parse HEAD)"
 PROD_BRANCH_AFTER="$(git -C "$REPO_ORIGIN" branch --show-current || true)"
@@ -129,12 +124,12 @@ HEAD="$(git rev-parse HEAD)"
 log "worktree=$WT_ROOT"
 log "head=$HEAD"
 log "branch_target=$BRANCH"
-if [[ -n "$EXPECTED_SHA" ]]; then
-  case "$HEAD" in
-    "$EXPECTED_SHA"|"$EXPECTED_SHA"*) ;;
-    *) die "HEAD $HEAD tidak cocok EXPECTED_SHA=$EXPECTED_SHA" ;;
-  esac
+log "git_user=$(id -un)"
+if [[ -n "$EXPECTED_SHA" && "$HEAD" != "$EXPECTED_SHA" ]]; then
+  die "HEAD $HEAD tidak cocok EXPECTED_SHA=$EXPECTED_SHA"
 fi
+oneshot_worktree_index_writable "$WT_ROOT" \
+  || die "index worktree tidak writable oleh $(id -un)"
 
 [[ -f backend/app/services/delivery_sync.py ]] || die "delivery_sync.py missing — checkout bukan PR #6?"
 [[ -f backend/app/oneshot_mongo_lock.py ]] || die "oneshot_mongo_lock.py missing"
