@@ -4,6 +4,8 @@ export type UserPublic = {
   display_name: string;
   role: string;
   operational_role?: string | null;
+  branch_ids?: string[];
+  permissions?: string[];
 };
 
 export type MeResponse = {
