@@ -87,6 +87,7 @@ TABLE_PREFERENCES_INDEXES: list[dict[str, Any]] = [
 def ensure_indexes(db: Database | None = None) -> dict[str, list[str]]:
     """Create required indexes idempotently. Safe to re-run."""
     from app.repositories.po_repository import ensure_po_indexes
+    from app.repositories.tracking_link_repository import ensure_tracking_indexes
     from app.services.audit_log import ensure_audit_indexes
 
     database = get_db() if db is None else db
@@ -96,6 +97,7 @@ def ensure_indexes(db: Database | None = None) -> dict[str, list[str]]:
         "ui_table_preferences": [],
         "accurate_sales_orders": [],
         "audit_logs": [],
+        "tracking_links": [],
     }
 
     users = database["users"]
@@ -126,6 +128,7 @@ def ensure_indexes(db: Database | None = None) -> dict[str, list[str]]:
 
     created["accurate_sales_orders"] = ensure_po_indexes(database)
     created["audit_logs"] = ensure_audit_indexes(database)
+    created["tracking_links"] = ensure_tracking_indexes(database)
 
     return created
 

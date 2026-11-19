@@ -10,6 +10,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from app.api.health import router as health_router
 from app.api.po import router as po_router
 from app.api.table_preferences import router as table_preferences_router
+from app.api.tracking import router as tracking_router
 from app.auth.routes import router as auth_router
 from app.config import get_settings
 from app.db import close_client
@@ -45,6 +46,7 @@ def create_app() -> FastAPI:
     application.include_router(auth_router)
     application.include_router(table_preferences_router)
     application.include_router(po_router)
+    application.include_router(tracking_router)
     return application
 
 

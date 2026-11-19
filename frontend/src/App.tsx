@@ -5,6 +5,8 @@ import { ControlPage } from "./pages/ControlPage";
 import { InboxPage } from "./pages/InboxPage";
 import { LoginPage } from "./pages/LoginPage";
 import { PlaceholderModulePage } from "./pages/PlaceholderModulePage";
+import { LiveTrackingPage } from "./pages/tracking/LiveTrackingPage";
+import { TrackingAdminPage } from "./pages/tracking/TrackingAdminPage";
 
 function ProtectedRoute({ children }: { children: React.ReactNode }) {
   const { user, loading } = useAuth();
@@ -41,6 +43,10 @@ export default function App() {
     <Routes>
       <Route path="/" element={<Navigate to="/app/control" replace />} />
       <Route
+        path="/t/:customerSlug/:poSlug/:token"
+        element={<LiveTrackingPage />}
+      />
+      <Route
         path="/login"
         element={
           <PublicOnly>
@@ -59,6 +65,7 @@ export default function App() {
         <Route index element={<Navigate to="control" replace />} />
         <Route path="control" element={<ControlPage />} />
         <Route path="inbox" element={<InboxPage />} />
+        <Route path="tracking" element={<TrackingAdminPage />} />
         <Route
           path="dashboard"
           element={

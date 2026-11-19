@@ -97,6 +97,7 @@ def db(
 
 @pytest.fixture()
 def app_client(db: Database, monkeypatch: pytest.MonkeyPatch):
+    from app.api.tracking import reset_tracking_rate_limiter
     from app.auth.routes import reset_rate_limiter
     from app.config import clear_settings_cache
     from app.db import close_client
@@ -106,11 +107,13 @@ def app_client(db: Database, monkeypatch: pytest.MonkeyPatch):
     clear_settings_cache()
     close_client()
     reset_rate_limiter()
+    reset_tracking_rate_limiter()
 
     application = create_app()
     with TestClient(application) as client:
         yield client
 
     reset_rate_limiter()
+    reset_tracking_rate_limiter()
     close_client()
     clear_settings_cache()
