@@ -1,0 +1,14 @@
+# CONTOH saja — JANGAN enable di production tanpa keputusan Owner.
+# Salin ke /etc/systemd/system/ setelah review.
+#
+# [Unit] accurate-auto-sync.service
+# Type=oneshot
+# ExecStart=/usr/bin/python3 /path/to/scripts/accurate_auto_sync_worker.py --job all
+# EnvironmentFile=/etc/eternal-v4/backend/backend.env
+#
+# [Timer]
+# OnUnitActiveSec=60
+# AccuracySec=5
+# Persistent=false
+#
+# Tetap matikan V4_*_AUTO_SYNC_ENABLED / V4_SJ_SYNC_ENABLED sampai Owner setuju.
