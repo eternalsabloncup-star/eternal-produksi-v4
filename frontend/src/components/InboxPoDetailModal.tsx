@@ -24,31 +24,48 @@ type Props = {
 
 type AcceptPhase = "idle" | "loading" | "success" | "error";
 
+type TerimaPoFeedback = {
+  tone: "success" | "error";
+  title: string;
+  message: string;
+};
+
+/** Pesan error aman untuk overlay Terima PO (tanpa traceback/internal). */
+export function terimaPoFeedbackMessage(err: unknown): string {
+  if (err instanceof PoAcceptError) {
+    const msg = err.message.trim();
+    return msg || "Gagal menerima PO. Silakan coba lagi.";
+  }
+  if (err instanceof Error) {
+    const msg = err.message.trim();
+    if (msg) return msg;
+  }
+  return "Gagal menerima PO. Silakan coba lagi.";
+}
+
 /** Popup rincian PO Inbox + gate Terima PO (backend). */
 export function InboxPoDetailModal({ row, open, onClose, onAccepted }: Props) {
   const { user } = useAuth();
   const [phase, setPhase] = useState<AcceptPhase>("idle");
-  const [errorMsg, setErrorMsg] = useState<string | null>(null);
-  const [successOpen, setSuccessOpen] = useState(false);
+  const [feedback, setFeedback] = useState<TerimaPoFeedback | null>(null);
   const [localRow, setLocalRow] = useState<PoRow | null>(row);
 
   useEffect(() => {
     setLocalRow(row);
     setPhase("idle");
-    setErrorMsg(null);
-    setSuccessOpen(false);
+    setFeedback(null);
   }, [open, row?.id, row?.accurateId, row?.acceptanceStatus]);
 
   useEffect(() => {
     if (!open) return;
     function onKey(e: KeyboardEvent) {
       if (e.key !== "Escape") return;
-      if (successOpen) return;
+      if (feedback) return;
       onClose();
     }
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [open, onClose, successOpen]);
+  }, [open, onClose, feedback]);
 
   if (!open || !localRow) return null;
 
@@ -93,7 +110,7 @@ export function InboxPoDetailModal({ row, open, onClose, onAccepted }: Props) {
   async function onTerimaPo() {
     if (acceptDisabled || !localRow?.accurateId) return;
     setPhase("loading");
-    setErrorMsg(null);
+    setFeedback(null);
     try {
       const res = await acceptPo(localRow.accurateId);
       const next: PoRow = {
@@ -107,17 +124,19 @@ export function InboxPoDetailModal({ row, open, onClose, onAccepted }: Props) {
       };
       setLocalRow(next);
       setPhase("success");
-      setSuccessOpen(true);
+      setFeedback({
+        tone: "success",
+        title: "PO berhasil diterima",
+        message: "PO berhasil diterima.",
+      });
       onAccepted?.(next);
     } catch (err) {
       setPhase("error");
-      setErrorMsg(
-        err instanceof PoAcceptError
-          ? err.message
-          : err instanceof Error
-            ? err.message
-            : "Gagal menerima PO.",
-      );
+      setFeedback({
+        tone: "error",
+        title: "Gagal menerima PO",
+        message: terimaPoFeedbackMessage(err),
+      });
     }
   }
 
@@ -252,18 +271,16 @@ export function InboxPoDetailModal({ row, open, onClose, onAccepted }: Props) {
               </button>
             ) : null}
           </div>
-          {phase === "error" && errorMsg ? (
-            <p className="ep-error" role="alert">
-              {errorMsg}
-            </p>
-          ) : null}
         </div>
 
         <ConfirmationSuccessOverlay
-          open={successOpen}
-          title="PO berhasil diterima"
-          message="Workflow produksi Eternal diaktifkan sesuai respons server."
-          onClose={() => setSuccessOpen(false)}
+          open={Boolean(feedback)}
+          global
+          tone={feedback?.tone || "success"}
+          title={feedback?.title || ""}
+          message={feedback?.message || ""}
+          autoCloseMs={feedback?.tone === "success" ? 1800 : 2600}
+          onClose={() => setFeedback(null)}
         />
       </div>
     </div>
