@@ -8,7 +8,7 @@ Aturan terkunci:
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any  # noqa: F401 — session Any
 
 from pymongo.database import Database
 
@@ -38,8 +38,11 @@ def has_print_items(po_doc: dict[str, Any]) -> bool:
     return bool(print_lines(po_doc))
 
 
-def _assigned_role(db: Database, task_type: str, fallback: str) -> str:
-    master.seed_master_defaults(db)
+def _assigned_role(
+    db: Database, task_type: str, fallback: str, *, session: Any | None = None
+) -> str:
+    # Request path: read-only Master (tanpa seed/createIndex).
+    del session
     return master.assigned_role_for(db, task_type) or fallback
 
 
@@ -64,11 +67,21 @@ def sync_design_gate_for_non_print_po(
     )
 
 
-def derive_tasks_for_po(db: Database, po_doc: dict[str, Any]) -> dict[str, Any]:
+def derive_tasks_for_po(
+    db: Database,
+    po_doc: dict[str, Any],
+    *,
+    session: Any | None = None,
+    require_accepted: bool = False,
+) -> dict[str, Any]:
     """Buat/refresh tugas untuk satu PO. Idempoten: tidak menggandakan tugas."""
+    from app.services.po_acceptance import is_po_accepted, require_po_accepted
+
     accurate_po_id = str(po_doc.get("accurate_id") or "")
     if not accurate_po_id:
         raise ValueError("PO wajib memiliki accurate_id.")
+    if require_accepted:
+        require_po_accepted(po_doc)
     header = _header(po_doc)
     po_no = str(po_doc.get("po_no") or header.get("po_no") or "")
     created: list[str] = []
@@ -80,15 +93,20 @@ def derive_tasks_for_po(db: Database, po_doc: dict[str, Any]) -> dict[str, Any]:
             db,
             task_type="design",
             scope="po",
-            assigned_role=_assigned_role(db, "design", "designer"),
+            assigned_role=_assigned_role(
+                db, "design", "designer", session=session
+            ),
             ref=TaskRef(accurate_po_id=accurate_po_id, po_no=po_no),
             label="Design",
             context={"print_line_count": len(lines), "customer": header.get("customer")},
+            session=session,
         )
         created.append(design["task_key"])
     else:
         skipped.append("design:semua-item-non-cetak")
-        sync_design_gate_for_non_print_po(db, po_doc)
+        # Di dalam transaksi: tunda set_gate (preflight indeks) ke pemanggil.
+        if session is None and is_po_accepted(po_doc):
+            sync_design_gate_for_non_print_po(db, po_doc)
 
     scheduling_open = gates.both_gates_open(db, accurate_po_id)
     for line in lines:
@@ -106,11 +124,14 @@ def derive_tasks_for_po(db: Database, po_doc: dict[str, Any]) -> dict[str, Any]:
             db,
             task_type="penjadwalan",
             scope="po_line",
-            assigned_role=_assigned_role(db, "penjadwalan", "production-head"),
+            assigned_role=_assigned_role(
+                db, "penjadwalan", "production-head", session=session
+            ),
             ref=ref,
             qty_target=float(line.get("qty") or 0),
             label="Penjadwalan",
             context={"item_name": line.get("item_name"), "unit": line.get("unit")},
+            session=session,
         )
         created.append(task["task_key"])
 

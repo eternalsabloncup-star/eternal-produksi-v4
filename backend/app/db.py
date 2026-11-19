@@ -96,6 +96,7 @@ def ensure_indexes(db: Database | None = None) -> dict[str, list[str]]:
     from app.repositories.sample_repository import ensure_sample_indexes
     from app.repositories.schedule_repository import ensure_schedule_indexes
     from app.repositories.task_repository import ensure_task_indexes
+    from app.repositories.tracking_link_repository import ensure_tracking_indexes
     from app.services.audit_log import ensure_audit_indexes
 
     database = get_db() if db is None else db
@@ -107,6 +108,7 @@ def ensure_indexes(db: Database | None = None) -> dict[str, list[str]]:
         "audit_logs": [],
         "master": [],
         "operational_tasks": [],
+        "tracking_links": [],
     }
 
     users = database["users"]
@@ -146,6 +148,8 @@ def ensure_indexes(db: Database | None = None) -> dict[str, list[str]]:
     created["production_allocations"] = ensure_schedule_indexes(database)
     created["operator_samples"] = ensure_sample_indexes(database)
     created["accurate_delivery_notes"] = ensure_delivery_indexes(database)
+    # Maintenance/bootstrap only — request path tracking tetap verify-only.
+    created["tracking_links"] = ensure_tracking_indexes(database)
 
     return created
 

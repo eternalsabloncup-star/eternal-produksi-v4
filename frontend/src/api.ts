@@ -3,6 +3,7 @@ export type UserPublic = {
   email: string;
   display_name: string;
   role: string;
+  operational_role?: string | null;
 };
 
 export type MeResponse = {

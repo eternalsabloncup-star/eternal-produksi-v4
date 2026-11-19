@@ -100,8 +100,19 @@ def _serialize_po_doc(row: dict[str, Any]) -> dict[str, Any]:
         "operational": doc.get("operational")
         if isinstance(doc.get("operational"), dict)
         else {},
+        "acceptance": _acceptance_for_api(doc),
         "last_line_diff": doc.get("last_line_diff"),
     }
+
+
+def _acceptance_for_api(doc: dict[str, Any]) -> dict[str, Any]:
+    from app.services.po_acceptance import acceptance_block
+
+    block = acceptance_block(doc)
+    accepted_at = block.get("accepted_at")
+    if hasattr(accepted_at, "isoformat"):
+        block = {**block, "accepted_at": accepted_at.isoformat()}
+    return block
 
 
 @router.get("")
@@ -155,6 +166,38 @@ def po_metrics(
         **metrics,
         "source": "mongodb",
         "origin": "accurate",
+    }
+
+
+@router.post("/{accurate_po_id}/accept")
+def accept_po(
+    accurate_po_id: str,
+    auth: AuthContext = Depends(require_csrf),
+) -> dict[str, Any]:
+    """Kepala Produksi menerima PO → aktifkan workflow Eternal (idempotent)."""
+    from app.services import po_acceptance
+    from app.services.task_engine import TaskPermissionError
+
+    db = get_db()
+    try:
+        result = po_acceptance.accept_po(
+            db, auth.user, accurate_po_id=accurate_po_id
+        )
+    except LookupError as exc:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, str(exc)) from exc
+    except TaskPermissionError as exc:
+        raise HTTPException(status.HTTP_403_FORBIDDEN, str(exc)) from exc
+    except po_acceptance.PoAcceptanceError as exc:
+        raise HTTPException(status.HTTP_409_CONFLICT, str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, str(exc)) from exc
+
+    return {
+        "accurate_po_id": result["accurate_po_id"],
+        "duplicate": result["duplicate"],
+        "acceptance": result["acceptance"],
+        "workflow": result["workflow"],
+        "po": _serialize_po_doc(result["po"]),
     }
 
 

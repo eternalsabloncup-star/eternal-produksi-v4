@@ -35,6 +35,8 @@ def _user(db: Database, email: str, role: str) -> None:
 
 def _seed(db: Database) -> str:
     upsert_sales_order(db, normalize_sales_order(SAMPLE_SALES_ORDER_STRUCTURE))
+    from tests.po_accept_helpers import mark_po_accepted
+    mark_po_accepted(db)
     create_admin_user(
         db,
         email="owner@eternal.local",

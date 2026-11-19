@@ -58,6 +58,8 @@ def _payload(buffer_label: str | None = None) -> dict:
 
 def _seed(db: Database, buffer_label: str | None = None) -> dict:
     upsert_sales_order(db, normalize_sales_order(_payload(buffer_label)))
+    from tests.po_accept_helpers import mark_po_accepted
+    mark_po_accepted(db)
     return get_by_accurate_id(db, PO_ID)
 
 

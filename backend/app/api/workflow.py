@@ -61,6 +61,16 @@ def _require_operations(auth: AuthContext) -> None:
         raise HTTPException(status.HTTP_403_FORBIDDEN, "Akses ditolak")
 
 
+def _require_po_accepted(po_doc: dict[str, Any]) -> None:
+    """Gate Terima PO — workflow desain/pembayaran hanya setelah accepted."""
+    from app.services.po_acceptance import PoAcceptanceError, require_po_accepted
+
+    try:
+        require_po_accepted(po_doc)
+    except PoAcceptanceError as exc:
+        raise HTTPException(status.HTTP_409_CONFLICT, str(exc)) from exc
+
+
 # Prefix terpisah dari /api/po agar tidak tertelan route katalog PO.
 @router.post("/workflow/{accurate_po_id}/derive-tasks")
 def post_derive_tasks(
@@ -70,7 +80,12 @@ def post_derive_tasks(
     _require_operations(auth)
     db = get_db()
     po_doc = _po_or_404(accurate_po_id)
-    return po_tasks.derive_tasks_for_po(db, po_doc)
+    from app.services.po_acceptance import PoAcceptanceError
+
+    try:
+        return po_tasks.derive_tasks_for_po(db, po_doc, require_accepted=True)
+    except PoAcceptanceError as exc:
+        raise HTTPException(status.HTTP_409_CONFLICT, str(exc)) from exc
 
 
 @router.get("/workflow/{accurate_po_id}/gates")
@@ -114,6 +129,7 @@ async def post_design_submission(
     auth: AuthContext = Depends(require_csrf),
 ) -> dict[str, Any]:
     po_doc = _po_or_404(accurate_po_id)
+    _require_po_accepted(po_doc)
     if not po_tasks.has_print_items(po_doc):
         raise HTTPException(
             status.HTTP_409_CONFLICT,
@@ -145,6 +161,7 @@ def post_design_confirm(
     body: ConfirmDesignRequest,
     auth: AuthContext = Depends(require_csrf),
 ) -> dict[str, Any]:
+    _require_po_accepted(_po_or_404(accurate_po_id))
     db = get_db()
     try:
         return design_service.confirm_design(
@@ -161,6 +178,7 @@ def post_design_approval_link(
     accurate_po_id: str,
     auth: AuthContext = Depends(require_csrf),
 ) -> dict[str, Any]:
+    _require_po_accepted(_po_or_404(accurate_po_id))
     db = get_db()
     try:
         return design_service.create_customer_link(
@@ -234,6 +252,7 @@ def post_payment_receipts(
 ) -> dict[str, Any]:
     _require_operations(auth)
     po_doc = _po_or_404(accurate_po_id)
+    _require_po_accepted(po_doc)
     db = get_db()
     return payment_service.ingest_receipts(
         db,
@@ -250,6 +269,7 @@ def post_payment_bypass(
     body: BypassPaymentRequest,
     auth: AuthContext = Depends(require_csrf),
 ) -> dict[str, Any]:
+    _require_po_accepted(_po_or_404(accurate_po_id))
     db = get_db()
     try:
         return payment_service.bypass_payment_gate(

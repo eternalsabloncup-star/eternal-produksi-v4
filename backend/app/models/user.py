@@ -16,6 +16,8 @@ class UserPublic(BaseModel):
     display_name: str
     # super_admin | admin | user — never include password fields
     role: str
+    # Peran operasional (production-head, designer, …) — opsional.
+    operational_role: str | None = None
 
 
 class MeResponse(BaseModel):

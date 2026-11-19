@@ -16,6 +16,8 @@ export type NavIconName =
   | "circle-dot"
   | "crown"
   | "pen-tool"
+  | "wallet"
+  | "file-text"
   | "wrench"
   | "scan"
   | "cog"
@@ -139,6 +141,21 @@ const PATHS: Record<NavIconName, ReactNode> = {
       <path d="m18 13-1.5-7.5L2 2l3.5 14.5L13 18l5-5z" />
       <path d="m2 2 7.586 7.586" />
       <circle cx="11" cy="11" r="2" />
+    </>
+  ),
+  wallet: (
+    <>
+      <path d="M19 7V4a1 1 0 0 0-1-1H5a2 2 0 0 0 0 4h15a1 1 0 0 1 1 1v4h-3a2 2 0 0 0 0 4h3a1 1 0 0 0 1-1v-2a1 1 0 0 0-1-1" />
+      <path d="M3 5v14a2 2 0 0 0 2 2h15a1 1 0 0 0 1-1v-4" />
+    </>
+  ),
+  "file-text": (
+    <>
+      <path d="M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7Z" />
+      <path d="M14 2v4a2 2 0 0 0 2 2h4" />
+      <path d="M10 9H8" />
+      <path d="M16 13H8" />
+      <path d="M16 17H8" />
     </>
   ),
   wrench: (

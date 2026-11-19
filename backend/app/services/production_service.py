@@ -38,6 +38,24 @@ class ProductionQuantityError(ValueError):
     """Qty melampaui jadwal, kuota Helper, atau hasil cetak tersedia."""
 
 
+def _require_accepted_po(db: Database, accurate_po_id: str) -> dict[str, Any]:
+    """Gate Terima PO — penolakan sebelum mutasi produksi."""
+    from app.repositories.po_repository import get_by_accurate_id
+    from app.services.po_acceptance import PoAcceptanceError, require_po_accepted
+
+    po_id = str(accurate_po_id or "").strip()
+    if not po_id:
+        raise ValueError("accurate_po_id wajib.")
+    po_doc = get_by_accurate_id(db, po_id)
+    if po_doc is None:
+        raise LookupError(f"PO tidak ditemukan: {po_id}")
+    try:
+        require_po_accepted(po_doc)
+    except PoAcceptanceError as exc:
+        raise ProductionGateError(str(exc)) from exc
+    return po_doc
+
+
 def _line_ref(alloc: dict[str, Any]) -> TaskRef:
     return TaskRef(
         accurate_po_id=str(alloc["accurate_po_id"]),
@@ -126,6 +144,7 @@ def confirm_preparation(
     idempotency_key: str,
     note: str | None = None,
 ) -> dict[str, Any]:
+    _require_accepted_po(db, accurate_po_id)
     key = prep_task_key(accurate_po_id, accurate_line_id)
     if tasks.get_task(db, key) is None:
         raise LookupError(
@@ -151,6 +170,7 @@ def confirm_screen(
 ) -> dict[str, Any]:
     """Qty Screen diinput manual; tidak dipaksa sama dengan Qty jadwal."""
     alloc = _require_allocation(db, allocation_id)
+    _require_accepted_po(db, str(alloc["accurate_po_id"]))
     key = screen_task_key(alloc)
     if tasks.get_task(db, key) is None:
         raise LookupError("Tugas Screen belum terbit untuk alokasi ini.")
@@ -176,6 +196,7 @@ def submit_sample(
     """Sampel milik satu alokasi operator; revisi menambah versi baru."""
     require_action(db, user, task_type=SAMPLE_TASK, action="input")
     alloc = _require_allocation(db, allocation_id)
+    _require_accepted_po(db, str(alloc["accurate_po_id"]))
     if screen_confirmed_qty(db, alloc) <= 0:
         raise ProductionGateError(
             "Screen untuk alokasi ini belum dikonfirmasi Screener."
@@ -263,6 +284,7 @@ def decide_sample(
 ) -> dict[str, Any]:
     require_action(db, user, task_type=APPROVAL_TASK, action="approve")
     alloc = _require_allocation(db, allocation_id)
+    _require_accepted_po(db, str(alloc["accurate_po_id"]))
     if not approved and not (reason or "").strip():
         raise ValueError("Alasan penolakan sampel wajib diisi.")
 
@@ -343,6 +365,7 @@ def confirm_print(
     alloc = _require_allocation(db, allocation_id)
     accurate_po_id = str(alloc["accurate_po_id"])
     accurate_line_id = str(alloc["accurate_line_id"])
+    _require_accepted_po(db, accurate_po_id)
 
     if screen_confirmed_qty(db, alloc) <= 0:
         raise ProductionGateError("Gate Screen belum terpenuhi untuk alokasi ini.")
@@ -434,6 +457,7 @@ def confirm_qc_packing(
     note: str | None = None,
 ) -> dict[str, Any]:
     """Satu Qty berarti lolos QC sekaligus selesai Packing."""
+    _require_accepted_po(db, accurate_po_id)
     key = qc_task_key(accurate_po_id, accurate_line_id)
     task = tasks.get_task(db, key)
     if task is None:

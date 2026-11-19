@@ -15,6 +15,8 @@ import { ProductionFlowPage } from "./pages/ProductionFlowPage";
 import { SettingsMasterPage } from "./pages/SettingsMasterPage";
 import { TeamTaskPage } from "./pages/TeamTaskPage";
 import { TeamTasksSummaryPage } from "./pages/TeamTasksSummaryPage";
+import { LiveTrackingPage } from "./pages/tracking/LiveTrackingPage";
+import { TrackingAdminPage } from "./pages/tracking/TrackingAdminPage";
 
 function ProtectedRoute({ children }: { children: React.ReactNode }) {
   const { user, loading } = useAuth();
@@ -51,6 +53,10 @@ export default function App() {
     <Routes>
       <Route path="/" element={<Navigate to="/app/schedule" replace />} />
       <Route
+        path="/t/:customerSlug/:poSlug/:token"
+        element={<LiveTrackingPage />}
+      />
+      <Route
         path="/login"
         element={
           <PublicOnly>
@@ -72,6 +78,7 @@ export default function App() {
         <Route path="schedule" element={<ControlPage />} />
         <Route path="control" element={<Navigate to="/app/schedule" replace />} />
         <Route path="inbox" element={<InboxPage />} />
+        <Route path="tracking" element={<TrackingAdminPage />} />
         <Route path="dashboard" element={<DashboardPage />} />
         <Route path="production-flow" element={<ProductionFlowPage />} />
         <Route path="tasks" element={<TeamTasksSummaryPage />} />

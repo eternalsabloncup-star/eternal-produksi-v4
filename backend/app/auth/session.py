@@ -103,10 +103,11 @@ def verify_csrf(session: dict[str, Any], csrf_token: str | None) -> bool:
     return secrets.compare_digest(expected, hash_token(csrf_token))
 
 
-def public_user(user: dict[str, Any]) -> dict[str, str]:
+def public_user(user: dict[str, Any]) -> dict[str, str | None]:
     return {
         "id": str(user["_id"]),
         "email": user.get("email_normalized", ""),
         "display_name": user.get("display_name", ""),
         "role": user.get("role", "user"),
+        "operational_role": user.get("operational_role"),
     }

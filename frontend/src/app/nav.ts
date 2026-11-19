@@ -5,6 +5,7 @@ export type AppNavId =
   | "inbox"
   | "production-flow"
   | "schedule"
+  | "tracking"
   | "tasks"
   | "buffer-stock"
   | "qc"
@@ -141,6 +142,15 @@ export const APP_NAV: AppNavItem[] = [
     label: "Alur Produksi",
     box: "#1F4F58",
     fg: "#7ED4C8",
+  },
+  {
+    id: "tracking",
+    path: "/app/tracking",
+    icon: "truck",
+    label: "Live Tracking",
+    box: "#1F4F58",
+    fg: "#7ED4C8",
+    showcase: true,
   },
   {
     id: "tasks",

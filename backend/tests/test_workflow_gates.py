@@ -33,6 +33,8 @@ OPERATOR = {
 
 def _sync_po(db: Database, payload=None) -> dict:
     sync_sales_order_payload(db, payload or SAMPLE_SALES_ORDER_STRUCTURE)
+    from tests.po_accept_helpers import mark_po_accepted
+    mark_po_accepted(db)
     return get_by_accurate_id(db, PO_ID)
 
 
