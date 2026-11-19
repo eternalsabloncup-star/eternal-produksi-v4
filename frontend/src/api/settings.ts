@@ -233,3 +233,21 @@ export async function createManualTaskType(body: {
     body: JSON.stringify(body),
   });
 }
+
+export async function fetchSettingsProducts() {
+  return request<{
+    items: Array<{ item_code: string; screen_size?: string }>;
+    screen_unset_label: string;
+    source: string;
+  }>("/api/settings/products");
+}
+
+export async function saveProductScreenSize(itemCode: string, screenSize: string) {
+  return request<{
+    item: { item_code: string; screen_size?: string };
+    display_screen_size: string;
+  }>("/api/settings/products/screen-size", {
+    method: "PUT",
+    body: JSON.stringify({ item_code: itemCode, screen_size: screenSize }),
+  });
+}

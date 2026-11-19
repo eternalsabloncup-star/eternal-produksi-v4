@@ -375,15 +375,33 @@ def put_shift(
         raise _handle(exc) from exc
 
 
+class ProductScreenBody(BaseModel):
+    item_code: str
+    screen_size: str = Field(default="", max_length=120)
+
+
 @router.get("/products")
-def get_products_blocked(auth: AuthContext = Depends(require_session)) -> dict[str, Any]:
-    """Master Produk bergantung PR #9 — belum di baseline."""
-    del auth
-    raise HTTPException(
-        status.HTTP_501_NOT_IMPLEMENTED,
-        "Master Produk screen_size bergantung PR #9 yang belum di-merge ke main. "
-        "Jangan cherry-pick diam-diam.",
-    )
+def get_products(auth: AuthContext = Depends(require_session)) -> dict[str, Any]:
+    """Adapter ke Master Produk — satu koleksi master_products."""
+    try:
+        return svc.list_products_master(get_db(), auth.user)
+    except Exception as exc:  # noqa: BLE001
+        raise _handle(exc) from exc
+
+
+@router.put("/products/screen-size")
+def put_product_screen(
+    body: ProductScreenBody, auth: AuthContext = Depends(require_csrf)
+) -> dict[str, Any]:
+    try:
+        return svc.set_product_screen_size(
+            get_db(),
+            auth.user,
+            item_code=body.item_code,
+            screen_size=body.screen_size,
+        )
+    except Exception as exc:  # noqa: BLE001
+        raise _handle(exc) from exc
 
 
 @router.get("/accurate")

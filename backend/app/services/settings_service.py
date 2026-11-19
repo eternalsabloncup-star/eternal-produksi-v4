@@ -540,6 +540,54 @@ def save_shift(db: Database, actor: dict[str, Any], body: dict[str, Any]) -> dic
     return doc
 
 
+
+
+# ----- Master Produk (adapter → product_master_repository) -----
+
+
+def list_products_master(db: Database, actor: dict[str, Any]) -> dict[str, Any]:
+    """Satu sumber data: master_products.screen_size (bukan Master kedua)."""
+    _require(actor, PERM_MANAGE_SETTINGS)
+    from app.repositories import product_master_repository as products
+
+    return {
+        "items": products.list_products(db),
+        "screen_unset_label": products.SCREEN_UNSET,
+        "source": "product_master_repository",
+    }
+
+
+def set_product_screen_size(
+    db: Database, actor: dict[str, Any], *, item_code: str, screen_size: str
+) -> dict[str, Any]:
+    _require(actor, PERM_MANAGE_SETTINGS)
+    from app.repositories import product_master_repository as products
+
+    before = products.get_product(db, item_code) or {}
+    doc = products.upsert_product_screen_size(
+        db,
+        item_code=item_code,
+        screen_size=screen_size,
+        actor_email=_actor(actor),
+    )
+    append_audit_event(
+        db,
+        action="settings.product.screen_size.set",
+        actor_email=_actor(actor),
+        target_email=None,
+        detail={
+            "item_code": doc.get("item_code"),
+            "before": before.get("screen_size") or None,
+            "after": doc.get("screen_size") or None,
+        },
+    )
+    return {
+        "item": doc,
+        "display_screen_size": products.screen_size_for_item(
+            db, str(doc.get("item_code") or "")
+        ),
+    }
+
 # ----- Accurate status (non-secret) + Audit -----
 
 
@@ -628,8 +676,8 @@ def workflow_policy_status() -> dict[str, Any]:
             {
                 "id": "master_products_screen_size",
                 "label": "Master Produk screen_size",
-                "status": "blocked_dependency",
-                "note": "Kontrak di PR #9 — belum di baseline main; jangan cherry-pick.",
+                "status": "available",
+                "note": "Adapter Settings → product_master_repository (satu sumber master_products).",
             },
         ]
     }

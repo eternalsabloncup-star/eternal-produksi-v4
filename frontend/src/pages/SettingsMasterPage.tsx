@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState, type FormEvent } from "react";
 import {
   assignTaskTypeRole,
   fetchRoleActions,
@@ -18,9 +18,11 @@ import {
   fetchBranches,
   fetchMachines,
   fetchSettingsCatalog,
+  fetchSettingsProducts,
   fetchSettingsRoles,
   fetchSettingsUsers,
   fetchShifts,
+  saveProductScreenSize,
   saveRolePermissions,
   setUserActive,
   SettingsApiError,
@@ -807,13 +809,7 @@ export function SettingsMasterPage() {
       ) : null}
 
       {tab === "products" ? (
-        <div className="ep-placeholder">
-          <h3>Master Produk — belum tersedia di baseline</h3>
-          <p>
-            Kontrak <code>screen_size</code> ada di PR #9 yang belum di-merge. Endpoint Settings
-            mengembalikan 501 sampai merge resmi — tidak ada cherry-pick diam-diam.
-          </p>
-        </div>
+        <ProductsSettingsPanel onError={setError} />
       ) : null}
 
       {tab === "workflow" ? (
@@ -904,3 +900,74 @@ export function SettingsMasterPage() {
     </div>
   );
 }
+
+
+function ProductsSettingsPanel({ onError }: { onError: (msg: string | null) => void }) {
+  const [items, setItems] = useState<Array<{ item_code: string; screen_size?: string }>>([]);
+  const [unsetLabel, setUnsetLabel] = useState("Belum diatur");
+  const [itemCode, setItemCode] = useState("");
+  const [screenSize, setScreenSize] = useState("");
+  const [busy, setBusy] = useState(false);
+
+  useEffect(() => {
+    void (async () => {
+      try {
+        const res = await fetchSettingsProducts();
+        setItems(res.items);
+        setUnsetLabel(res.screen_unset_label);
+      } catch (err) {
+        onError(err instanceof Error ? err.message : "Gagal memuat Master Produk");
+      }
+    })();
+  }, [onError]);
+
+  async function onSave(e: FormEvent) {
+    e.preventDefault();
+    setBusy(true);
+    onError(null);
+    try {
+      await saveProductScreenSize(itemCode.trim(), screenSize);
+      const res = await fetchSettingsProducts();
+      setItems(res.items);
+      setItemCode("");
+      setScreenSize("");
+    } catch (err) {
+      onError(err instanceof Error ? err.message : "Gagal menyimpan ukuran screen");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <section>
+      <h3>Master Produk — screen_size</h3>
+      <p className="ep-muted">
+        Satu sumber data <code>master_products</code>. String kosong = {unsetLabel}.
+      </p>
+      <form className="ep-settings-form" onSubmit={onSave}>
+        <input
+          placeholder="item_code"
+          value={itemCode}
+          onChange={(e) => setItemCode(e.target.value)}
+          required
+        />
+        <input
+          placeholder="ukuran screen"
+          value={screenSize}
+          onChange={(e) => setScreenSize(e.target.value)}
+        />
+        <button type="submit" className="ep-btn" disabled={busy}>
+          Simpan
+        </button>
+      </form>
+      <ul>
+        {items.map((it) => (
+          <li key={it.item_code}>
+            {it.item_code}: {it.screen_size?.trim() ? it.screen_size : unsetLabel}
+          </li>
+        ))}
+      </ul>
+    </section>
+  );
+}
+

@@ -211,11 +211,27 @@ def test_branch_machine_shift_and_audit_read(
     assert all("password" not in str(i.get("detail")) for i in audit.json()["items"])
 
 
-def test_products_blocked_without_pr9(app_client: TestClient, db: Database) -> None:
+def test_products_adapter_uses_product_master(app_client: TestClient, db: Database) -> None:
     _seed_owner(db)
-    _login(app_client)
-    res = app_client.get("/api/settings/products")
-    assert res.status_code == 501
+    csrf = _login(app_client)
+    listed = app_client.get("/api/settings/products")
+    assert listed.status_code == 200, listed.text
+    assert listed.json()["source"] == "product_master_repository"
+    assert listed.json()["screen_unset_label"] == "Belum diatur"
+
+    saved = app_client.put(
+        "/api/settings/products/screen-size",
+        json={"item_code": "ITEM-A", "screen_size": "40x50"},
+        headers={"X-CSRF-Token": csrf},
+    )
+    assert saved.status_code == 200, saved.text
+    assert saved.json()["display_screen_size"] == "40x50"
+
+    # Satu sumber: operational master products melihat data yang sama
+    via_ops = app_client.get("/api/master/products")
+    assert via_ops.status_code == 200, via_ops.text
+    codes = {i["item_code"] for i in via_ops.json()["items"]}
+    assert "ITEM-A" in codes
 
 
 def test_accurate_status_no_secrets(app_client: TestClient, db: Database) -> None:
@@ -297,6 +313,6 @@ def test_sessions_list_hides_token_and_workflow_policies_readonly(
     assert any(p["id"] == "payment_bypass" for p in items)
     assert any(p["id"] == "freeform_transition_editor" and p["status"] == "unavailable" for p in items)
     assert any(
-        p["id"] == "master_products_screen_size" and p["status"] == "blocked_dependency"
+        p["id"] == "master_products_screen_size" and p["status"] == "available"
         for p in items
     )
