@@ -109,15 +109,9 @@ def _produce_packed(db: Database, packed_qty: float) -> dict:
         idempotency_key="e-prep",
     )
     prod.confirm_screen(db, SCREENER, allocation_id=alloc, qty=50, idempotency_key="e-screen")
-    prod.submit_sample(
-        db,
-        OPERATOR,
-        allocation_id=alloc,
-        filename="s.png",
-        content_type="image/png",
-        content=PNG,
-    )
-    prod.decide_sample(db, HEAD, allocation_id=alloc, version=1, approved=True)
+    from tests.sample_flow_helpers import approve_sample
+
+    approve_sample(db, OPERATOR, HEAD, alloc)
     prod.confirm_print(
         db, OPERATOR, allocation_id=alloc, qty=packed_qty, idempotency_key="e-print"
     )

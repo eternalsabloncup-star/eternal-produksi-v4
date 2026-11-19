@@ -120,15 +120,9 @@ def _seed_packed(db: Database, qty: float = 200) -> None:
         idempotency_key="api-e-prep",
     )
     prod.confirm_screen(db, SCREENER, allocation_id=alloc, qty=20, idempotency_key="api-e-screen")
-    prod.submit_sample(
-        db,
-        OPERATOR,
-        allocation_id=alloc,
-        filename="s.png",
-        content_type="image/png",
-        content=PNG,
-    )
-    prod.decide_sample(db, HEAD, allocation_id=alloc, version=1, approved=True)
+    from tests.sample_flow_helpers import approve_sample
+
+    approve_sample(db, OPERATOR, HEAD, alloc)
     prod.confirm_print(
         db, OPERATOR, allocation_id=alloc, qty=qty, idempotency_key="api-e-print"
     )
@@ -629,3 +623,98 @@ def test_detail_endpoint_matches_schedule_row_values(
     assert row["items"] == note["items"]
     assert note["items"][0]["warehouse_name"] == "GUDANG-API-TEST"
     assert note["items"][0]["detail_notes"] == "CATATAN-API-TEST"
+
+
+def test_delivery_evidence_content_scoped_and_auth(
+    app_client: TestClient, db: Database
+) -> None:
+    """GET /api/delivery/{sj}/evidence/{id}/content — session, scope SJ, soft-delete."""
+    from app.repositories import evidence_repository as evidence
+    from app.services import delivery_service
+
+    _seed_users(db)
+    _seed_packed(db, qty=200)
+    owner_csrf = _login(app_client, "owner@eternal.local")
+    app_client.post(
+        "/api/delivery/notes",
+        json={"delivery_notes": [_sj_payload()]},
+        headers={"X-CSRF-Token": owner_csrf},
+    )
+    sj_other = "SJ-API-7002"
+    app_client.post(
+        "/api/delivery/notes",
+        json={
+            "delivery_notes": [
+                _sj_payload(id=sj_other, number="SJ/API/0002")
+            ]
+        },
+        headers={"X-CSRF-Token": owner_csrf},
+    )
+
+    driver_csrf = _login(app_client, "driver@eternal.local")
+    app_client.post(
+        f"/api/delivery/{SJ_ID}/loading",
+        json={"idempotency_key": "api-load-evid-content"},
+        headers={"X-CSRF-Token": driver_csrf},
+    )
+    delivered = app_client.post(
+        f"/api/delivery/{SJ_ID}/delivered",
+        data={"recipient_name": "Penerima Content"},
+        files=[
+            ("photos", ("p1.png", PNG + b"-photo1", "image/png")),
+            ("photos", ("p2.png", PNG + b"-photo2", "image/png")),
+            ("signature", ("sig.png", PNG + b"-sig", "image/png")),
+        ],
+        headers={"X-CSRF-Token": driver_csrf},
+    )
+    assert delivered.status_code == 200, delivered.text
+    photo_id = delivered.json()["photo_evidence_ids"][0]
+    sig_id = delivered.json()["signature_evidence_id"]
+
+    # Tanpa session → 401
+    bare = TestClient(app_client.app)
+    unauth = bare.get(f"/api/delivery/{SJ_ID}/evidence/{photo_id}/content")
+    assert unauth.status_code in (401, 403)
+
+    # Driver boleh stream
+    ok = app_client.get(f"/api/delivery/{SJ_ID}/evidence/{photo_id}/content")
+    assert ok.status_code == 200, ok.text
+    assert ok.headers.get("content-type", "").startswith("image/")
+    assert ok.content.startswith(b"\x89PNG")
+
+    sig_ok = app_client.get(f"/api/delivery/{SJ_ID}/evidence/{sig_id}/content")
+    assert sig_ok.status_code == 200
+    assert sig_ok.content.startswith(b"\x89PNG")
+
+    # Cross-SJ: evidence SJ_ID dipanggil lewat SJ lain → 404/403
+    cross = app_client.get(f"/api/delivery/{sj_other}/evidence/{photo_id}/content")
+    assert cross.status_code in (403, 404)
+
+    # Evidence ID asing
+    fake = app_client.get(f"/api/delivery/{SJ_ID}/evidence/evid:fake/content")
+    assert fake.status_code == 404
+
+    # Helper tanpa izin view pengiriman → 403
+    _login(app_client, "helper@eternal.local")
+    denied = app_client.get(f"/api/delivery/{SJ_ID}/evidence/{photo_id}/content")
+    assert denied.status_code == 403
+
+    # Soft-delete → tidak bisa dibuka lewat content endpoint
+    driver_csrf = _login(app_client, "driver@eternal.local")
+    soft = app_client.post(
+        "/api/delivery/evidence/soft-delete",
+        json={"evidence_id": photo_id, "reason": "salah unggah uji"},
+        headers={"X-CSRF-Token": driver_csrf},
+    )
+    assert soft.status_code == 200, soft.text
+    gone = app_client.get(f"/api/delivery/{SJ_ID}/evidence/{photo_id}/content")
+    assert gone.status_code == 404
+    meta = evidence.get_evidence(db, photo_id)
+    assert meta is not None
+    assert meta.get("deleted_at") is not None
+    # Soft-deleted tidak lagi di active list
+    active_ids = {
+        str(p.get("evidence_id"))
+        for p in delivery_service.active_delivery_evidence(db, SJ_ID)["photos"]
+    }
+    assert photo_id not in active_ids

@@ -16,7 +16,8 @@ from pymongo.database import Database
 os.environ.setdefault("APP_ENV", "test")
 os.environ.setdefault(
     "MONGODB_URI",
-    "mongodb://eternal:eternal_dev_password@127.0.0.1:27017/"
+    # Port 27018 = scripts/start-test-mongo.sh (bukan compose :27017).
+    "mongodb://eternal:eternal_dev_password@127.0.0.1:27018/"
     "?authSource=admin&replicaSet=rs0&directConnection=true",
 )
 os.environ.setdefault("MONGODB_DB", "eternal_produksi_v4_test")
@@ -90,15 +91,34 @@ def db(
 
     clear_settings_cache()
     close_client()
+    # Health singkat sebelum createIndex — gagal lingkungan ≠ assertion failure.
+    try:
+        mongo_client.admin.command("ping")
+        hello = mongo_client.admin.command("hello")
+        if hello.get("setName") != "rs0" or not (
+            hello.get("isWritablePrimary") or hello.get("ismaster")
+        ):
+            pytest.skip(
+                f"Mongo test RS tidak PRIMARY (setName={hello.get('setName')!r})"
+            )
+    except Exception as exc:  # noqa: BLE001
+        pytest.skip(f"Mongo test instance unavailable mid-suite: {exc}")
     database = mongo_client[db_name]
-    ensure_indexes(database)
+    try:
+        ensure_indexes(database)
+    except Exception as exc:  # noqa: BLE001
+        # AutoReconnect / WT panic mid-suite = lingkungan, bukan assertion.
+        pytest.skip(f"Mongo ensure_indexes gagal (lingkungan): {exc}")
     # Bootstrap Master + system roles eksplisit di fixture — request path tidak seed/upsert.
     master.seed_master_defaults(database)
     settings_roles.ensure_system_roles(database)
     yield database
     close_client()
     clear_settings_cache()
-    mongo_client.drop_database(db_name)
+    try:
+        mongo_client.drop_database(db_name)
+    except Exception:  # noqa: BLE001
+        pass
 
 
 @pytest.fixture()

@@ -175,7 +175,15 @@ def test_full_production_flow_over_http(app_client: TestClient, db: Database) ->
         headers={"X-CSRF-Token": op_csrf},
     )
     assert uploaded.status_code == 200
+    assert uploaded.json()["sample"]["status"] == "draft"
     assert uploaded.json()["sample"]["version"] == 1
+
+    confirmed = app_client.post(
+        f"/api/production/allocations/{alloc}/samples/confirm",
+        headers={"X-CSRF-Token": op_csrf},
+    )
+    assert confirmed.status_code == 200
+    assert confirmed.json()["sample"]["status"] == "menunggu_approval"
 
     kp_csrf = _login(app_client, "kp@eternal.local")
     rejected = app_client.post(
@@ -192,6 +200,12 @@ def test_full_production_flow_over_http(app_client: TestClient, db: Database) ->
         files={"file": ("sample-v2.png", b"\x89PNG v2", "image/png")},
         headers={"X-CSRF-Token": op_csrf},
     )
+    confirmed_v2 = app_client.post(
+        f"/api/production/allocations/{alloc}/samples/confirm",
+        headers={"X-CSRF-Token": op_csrf},
+    )
+    assert confirmed_v2.status_code == 200
+    assert confirmed_v2.json()["sample"]["version"] == 2
     kp_csrf = _login(app_client, "kp@eternal.local")
     approved = app_client.post(
         f"/api/production/allocations/{alloc}/samples/decision",
