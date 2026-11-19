@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import Any
 
 from pymongo.database import Database
+from pymongo.errors import DuplicateKeyError
 
 from app.domain.operational import TaskRef, build_task_key
 from app.repositories import delivery_repository as deliveries
@@ -203,6 +204,17 @@ def validate_loading(db: Database, accurate_sj_id: str) -> dict[str, Any]:
     }
 
 
+def _prepare_delivery_txn(db: Database) -> None:
+    """Verifikasi indeks wajib + seed master di LUAR transaksi.
+
+    Tidak createIndex di request path. DDL dilarang di dalam transaksi.
+    """
+    from app.services.index_preflight import require_delivery_txn_indexes
+
+    require_delivery_txn_indexes(db)
+    master.seed_master_defaults(db)
+
+
 def confirm_loading(
     db: Database,
     user: dict[str, Any],
@@ -210,8 +222,9 @@ def confirm_loading(
     accurate_sj_id: str,
     idempotency_key: str,
 ) -> dict[str, Any]:
-    """Satu aksi Loading untuk seluruh item SJ, konsumsi Qty QC atomik."""
+    """Satu aksi Loading untuk seluruh item SJ — Qty QC + Loading + Driver + audit atomik."""
     require_action(db, user, task_type=DRIVER_TASK, action="confirm")
+    _prepare_delivery_txn(db)
 
     existing = deliveries.get_loading_event(db, accurate_sj_id)
     if existing is not None:
@@ -221,7 +234,15 @@ def confirm_loading(
                 "Surat Jalan direvisi: batalkan Loading lama terlebih dahulu "
                 "sebelum Loading ulang."
             )
-        return {"loading": existing, "duplicate": True}
+        return {
+            "loading": existing,
+            "driver_task_key": build_task_key(
+                DRIVER_TASK, "delivery_note", _sj_ref(note_now)
+            )
+            if note_now
+            else None,
+            "duplicate": True,
+        }
 
     validation = validate_loading(db, accurate_sj_id)
     if not validation["all_matched"]:
@@ -232,8 +253,21 @@ def confirm_loading(
     note = deliveries.get_delivery_note(db, accurate_sj_id)
     actor = str(user.get("email_normalized") or "")
     sequence = deliveries.next_loading_sequence(db, accurate_sj_id)
+    assigned_role = master.assigned_role_for(db, DRIVER_TASK) or "driver"
 
     def _operation(session: Any) -> dict[str, Any]:
+        # Race: Loading aktif muncul setelah cek di luar txn.
+        raced = deliveries.loading_events_collection(db).find_one(
+            {
+                "accurate_sj_id": str(accurate_sj_id),
+                "status": deliveries.LOADING_ACTIVE,
+            },
+            {"_id": 0},
+            session=session,
+        )
+        if raced is not None:
+            return {"loading": raced, "driver_task": None, "duplicate": True}
+
         for check in validation["items"]:
             if check["process_kind"] != "Cetak":
                 continue
@@ -250,7 +284,7 @@ def confirm_loading(
                     f"Qty QC & Packing untuk item line {check['accurate_line_id']} "
                     "tidak lagi mencukupi."
                 )
-        return deliveries.insert_loading_event(
+        loading = deliveries.insert_loading_event(
             db,
             accurate_sj_id=str(note["accurate_sj_id"]),
             accurate_po_id=str(note["accurate_po_id"]),
@@ -272,40 +306,87 @@ def confirm_loading(
             sequence=sequence,
             session=session,
         )
+        deliveries.set_revision_status(
+            db,
+            accurate_sj_id=accurate_sj_id,
+            status=deliveries.REVISION_ACTIVE,
+            reason="Loading dikonfirmasi untuk versi SJ terbaru.",
+            session=session,
+        )
+        driver_task = _ensure_driver_task(
+            db, note, loading, assigned_role=assigned_role, session=session
+        )
+        append_audit_event(
+            db,
+            action="delivery.loading.confirm",
+            actor_email=actor,
+            target_email=None,
+            detail={
+                "accurate_sj_id": accurate_sj_id,
+                "sj_no": note["sj_no"],
+                "loading_id": loading["loading_id"],
+                "sj_version": loading.get("sj_version"),
+                "item_count": len(loading["items"]),
+                "qty_by_line": [
+                    {
+                        "accurate_line_id": i["accurate_line_id"],
+                        "qty": i["qty"],
+                        "process_kind": i.get("process_kind"),
+                    }
+                    for i in loading["items"]
+                ],
+            },
+            session=session,
+        )
+        return {"loading": loading, "driver_task": driver_task, "duplicate": False}
 
-    loading = tasks.run_in_transaction(db, _operation)
-    deliveries.set_revision_status(
-        db,
-        accurate_sj_id=accurate_sj_id,
-        status=deliveries.REVISION_ACTIVE,
-        reason="Loading dikonfirmasi untuk versi SJ terbaru.",
-    )
-    driver_task = _ensure_driver_task(db, note, loading)
+    try:
+        result = tasks.run_in_transaction(db, _operation)
+    except DuplicateKeyError:
+        # Unique partial index aktif Loading: konfirmasi paralel kalah → treat as duplicate.
+        existing_after = deliveries.get_loading_event(db, accurate_sj_id)
+        if existing_after is None:
+            raise
+        return {
+            "loading": existing_after,
+            "driver_task_key": build_task_key(
+                DRIVER_TASK, "delivery_note", _sj_ref(note)
+            ),
+            "duplicate": True,
+        }
 
-    append_audit_event(
-        db,
-        action="delivery.loading.confirm",
-        actor_email=actor,
-        target_email=None,
-        detail={
-            "accurate_sj_id": accurate_sj_id,
-            "sj_no": note["sj_no"],
-            "item_count": len(loading["items"]),
-        },
-    )
-    return {"loading": loading, "driver_task_key": driver_task["task_key"], "duplicate": False}
+    if result["duplicate"]:
+        return {
+            "loading": result["loading"],
+            "driver_task_key": build_task_key(
+                DRIVER_TASK, "delivery_note", _sj_ref(note)
+            ),
+            "duplicate": True,
+        }
+    return {
+        "loading": result["loading"],
+        "driver_task_key": result["driver_task"]["task_key"],
+        "duplicate": False,
+    }
 
 
 def _ensure_driver_task(
-    db: Database, note: dict[str, Any], loading: dict[str, Any]
+    db: Database,
+    note: dict[str, Any],
+    loading: dict[str, Any],
+    *,
+    assigned_role: str | None = None,
+    session: Any | None = None,
 ) -> dict[str, Any]:
     """Satu tugas Driver per SJ, terikat pada Loading aktif (bukan per item)."""
-    master.seed_master_defaults(db)
+    if session is None:
+        master.seed_master_defaults(db)
+    role = assigned_role or master.assigned_role_for(db, DRIVER_TASK) or "driver"
     task = tasks.upsert_task(
         db,
         task_type=DRIVER_TASK,
         scope="delivery_note",
-        assigned_role=master.assigned_role_for(db, DRIVER_TASK) or "driver",
+        assigned_role=role,
         ref=_sj_ref(note),
         label="Pengiriman",
         context={
@@ -317,13 +398,15 @@ def _ensure_driver_task(
             "sj_version": loading.get("sj_version"),
             "loading_cancelled": False,
         },
+        session=session,
     )
     # Loading ulang mengaktifkan kembali tugas yang sama dengan Loading baru.
     tasks.tasks_collection(db).update_one(
         {"task_key": task["task_key"]},
         {"$set": {"status": tasks.TASK_STATUS_OPEN}},
+        session=session,
     )
-    return tasks.get_task(db, task["task_key"]) or task
+    return tasks.get_task(db, task["task_key"], session=session) or task
 
 
 def _require_active_loading(db: Database, accurate_sj_id: str) -> dict[str, Any]:
@@ -353,10 +436,11 @@ def cancel_loading(
     accurate_sj_id: str,
     reason: str,
 ) -> dict[str, Any]:
-    """Batalkan Loading aktif dan kembalikan Qty QC yang benar-benar dipakai."""
+    """Batalkan Loading aktif; reversal Qty + Driver + audit dalam satu transaksi."""
     require_action(db, user, task_type=DRIVER_TASK, action="cancel")
     if not reason.strip():
         raise ValueError("Alasan pembatalan Loading wajib diisi.")
+    _prepare_delivery_txn(db)
 
     note = deliveries.get_delivery_note(db, accurate_sj_id)
     if note is None:
@@ -373,78 +457,88 @@ def cancel_loading(
 
     actor = str(user.get("email_normalized") or "")
     loading_id = str(loading["loading_id"])
+    driver_key = build_task_key(DRIVER_TASK, "delivery_note", _sj_ref(note))
+    cancel_reason = reason.strip()
 
     def _operation(session: Any) -> dict[str, Any]:
         cancelled = deliveries.cancel_loading_event(
             db,
             loading_id=loading_id,
             actor_email=actor,
-            reason=reason.strip(),
+            reason=cancel_reason,
             session=session,
         )
         if cancelled is None:
             # Pembatalan paralel/berulang: tidak ada reversal kedua.
             return {"cancelled": False, "duplicate": True, "loading": None}
 
+        reverted_items: list[dict[str, Any]] = []
+        qty_reverted_total = 0.0
         # Reversal memakai Qty yang benar-benar dikonsumsi Loading tersebut.
         for item in cancelled.get("items") or []:
             if item.get("process_kind") != "Cetak":
                 continue
+            qty = float(item["qty"])
             tasks.tasks_collection(db).update_one(
                 {
                     "task_key": production.qc_task_key(
                         str(cancelled["accurate_po_id"]), str(item["accurate_line_id"])
                     )
                 },
-                {"$inc": {"qty_consumed": -float(item["qty"])}},
+                {"$inc": {"qty_consumed": -qty}},
                 session=session,
             )
+            reverted_items.append(
+                {
+                    "accurate_line_id": item["accurate_line_id"],
+                    "qty": qty,
+                    "process_kind": item.get("process_kind"),
+                }
+            )
+            qty_reverted_total += qty
 
         deliveries.set_revision_status(
             db,
             accurate_sj_id=accurate_sj_id,
             status=deliveries.REVISION_NEEDS_RELOADING,
-            reason=reason.strip(),
+            reason=cancel_reason,
+            session=session,
+        )
+        # Tugas Driver tidak actionable untuk Loading yang dibatalkan.
+        tasks.tasks_collection(db).update_one(
+            {"task_key": driver_key},
+            {
+                "$set": {
+                    "context.loading_cancelled": True,
+                    "context.cancelled_loading_id": loading_id,
+                    "status": tasks.TASK_STATUS_OPEN,
+                }
+            },
+            session=session,
+        )
+        append_audit_event(
+            db,
+            action="delivery.loading.cancel",
+            actor_email=actor,
+            target_email=None,
+            detail={
+                "accurate_sj_id": accurate_sj_id,
+                "sj_no": note.get("sj_no"),
+                "loading_id": loading_id,
+                "reason": cancel_reason,
+                "actor_email": actor,
+                "cancelled_at": (cancelled.get("cancelled_at") or "").isoformat()
+                if hasattr(cancelled.get("cancelled_at"), "isoformat")
+                else str(cancelled.get("cancelled_at") or ""),
+                "reverted_items": reverted_items,
+                "qty_reverted_total": qty_reverted_total,
+                "sj_version_at_cancel": note.get("sj_version"),
+            },
             session=session,
         )
         return {"cancelled": True, "duplicate": False, "loading": cancelled}
 
-    result = tasks.run_in_transaction(db, _operation)
-    if not result["cancelled"]:
-        return result
-
-    driver_key = build_task_key(DRIVER_TASK, "delivery_note", _sj_ref(note))
-    tasks.tasks_collection(db).update_one(
-        {"task_key": driver_key},
-        {
-            "$set": {
-                "context.loading_cancelled": True,
-                "context.cancelled_loading_id": loading_id,
-                "status": tasks.TASK_STATUS_OPEN,
-            }
-        },
-    )
-    append_audit_event(
-        db,
-        action="delivery.loading.cancel",
-        actor_email=actor,
-        target_email=None,
-        detail={
-            "accurate_sj_id": accurate_sj_id,
-            "loading_id": loading_id,
-            "reason": reason.strip(),
-            "reverted_items": [
-                {
-                    "accurate_line_id": i["accurate_line_id"],
-                    "qty": i["qty"],
-                    "process_kind": i.get("process_kind"),
-                }
-                for i in (result["loading"].get("items") or [])
-            ],
-            "sj_version_at_cancel": note.get("sj_version"),
-        },
-    )
-    return result
+    return tasks.run_in_transaction(db, _operation)
 
 
 def raise_quantity_discrepancy(

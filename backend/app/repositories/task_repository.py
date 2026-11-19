@@ -25,6 +25,41 @@ TASK_STATUS_OPEN = "belum_dikerjakan"
 TASK_STATUS_PARTIAL = "sebagian"
 TASK_STATUS_DONE = "selesai"
 
+# Spek indeks wajib untuk konkurensi Loading/konfirmasi.
+# createIndex hanya via ensure_task_indexes (bootstrap/test) — bukan request path.
+REQUIRED_TASK_INDEX_SPECS: list[dict[str, Any]] = [
+    {
+        "collection": TASKS_COLLECTION,
+        "keys": [("task_key", ASCENDING)],
+        "name": "uniq_task_key",
+        "unique": True,
+    },
+    {
+        "collection": TASKS_COLLECTION,
+        "keys": [("assigned_role", ASCENDING), ("status", ASCENDING)],
+        "name": "idx_task_role_status",
+        "unique": False,
+    },
+    {
+        "collection": TASKS_COLLECTION,
+        "keys": [("ref.accurate_po_id", ASCENDING), ("task_type", ASCENDING)],
+        "name": "idx_task_po_type",
+        "unique": False,
+    },
+    {
+        "collection": CONFIRMATIONS_COLLECTION,
+        "keys": [("idempotency_key", ASCENDING)],
+        "name": "uniq_confirmation_idempotency",
+        "unique": True,
+    },
+    {
+        "collection": CONFIRMATIONS_COLLECTION,
+        "keys": [("task_key", ASCENDING), ("created_at", DESCENDING)],
+        "name": "idx_confirmation_task_created",
+        "unique": False,
+    },
+]
+
 
 class TaskQuantityError(ValueError):
     """Konfirmasi melampaui Qty target atau kuota yang tersedia."""
@@ -38,52 +73,29 @@ def confirmations_collection(db: Database) -> Collection:
     return db[CONFIRMATIONS_COLLECTION]
 
 
-# Index hanya dibuat sekali per database dalam proses ini; jalur tulis panas
-# tidak boleh mengirim createIndex pada setiap konfirmasi.
-_INDEXED_DATABASES: set[str] = set()
-
-
-def _ensure_task_indexes_once(db: Database) -> None:
-    if db.name in _INDEXED_DATABASES:
-        return
-    ensure_task_indexes(db)
-
-
 def ensure_task_indexes(db: Database) -> list[str]:
+    """Buat indeks task. Hanya bootstrap eksplisit / test — bukan request path."""
     created: list[str] = []
-    tasks = tasks_collection(db)
-    created.append(
-        tasks.create_index([("task_key", ASCENDING)], name="uniq_task_key", unique=True)
-    )
-    created.append(
-        tasks.create_index(
-            [("assigned_role", ASCENDING), ("status", ASCENDING)],
-            name="idx_task_role_status",
+    for spec in REQUIRED_TASK_INDEX_SPECS:
+        coll = db[spec["collection"]]
+        created.append(
+            coll.create_index(
+                spec["keys"],
+                name=spec["name"],
+                unique=bool(spec.get("unique")),
+            )
         )
-    )
-    created.append(
-        tasks.create_index(
-            [("ref.accurate_po_id", ASCENDING), ("task_type", ASCENDING)],
-            name="idx_task_po_type",
-        )
-    )
+    from app.services.index_preflight import mark_index_specs_verified
 
-    conf = confirmations_collection(db)
-    created.append(
-        conf.create_index(
-            [("idempotency_key", ASCENDING)],
-            name="uniq_confirmation_idempotency",
-            unique=True,
-        )
-    )
-    created.append(
-        conf.create_index(
-            [("task_key", ASCENDING), ("created_at", DESCENDING)],
-            name="idx_confirmation_task_created",
-        )
-    )
-    _INDEXED_DATABASES.add(db.name)
+    mark_index_specs_verified(db.name, [s["name"] for s in REQUIRED_TASK_INDEX_SPECS])
     return created
+
+
+def require_task_indexes(db: Database) -> None:
+    """Fail-closed: tidak createIndex pada request path."""
+    from app.services.index_preflight import require_index_specs
+
+    require_index_specs(db, REQUIRED_TASK_INDEX_SPECS)
 
 
 def _status_for(qty_target: float | int | None, qty_confirmed: float | int) -> str:
@@ -107,9 +119,15 @@ def upsert_task(
     label: str | None = None,
     coordination: bool = False,
     context: dict[str, Any] | None = None,
+    session: Any | None = None,
 ) -> dict[str, Any]:
-    """Buat tugas bila belum ada. Pemanggilan ulang tidak menggandakan tugas."""
-    _ensure_task_indexes_once(db)
+    """Buat tugas bila belum ada. Pemanggilan ulang tidak menggandakan tugas.
+
+    ``session``: ikut transaksi. createIndex dilarang di request path —
+    indeks diverifikasi fail-closed (atau bootstrap eksplisit).
+    """
+    if session is None:
+        require_task_indexes(db)
     task_key = build_task_key(task_type, scope, ref)  # type: ignore[arg-type]
     now = datetime.now(timezone.utc)
 
@@ -140,6 +158,7 @@ def upsert_task(
         upsert=True,
         projection={"_id": 0},
         return_document=ReturnDocument.AFTER,
+        session=session,
     )
 
 
@@ -210,7 +229,8 @@ def confirm_task_qty(
     if not idempotency_key or not idempotency_key.strip():
         raise ValueError("idempotency_key wajib diisi.")
 
-    _ensure_task_indexes_once(db)
+    if session is None:
+        require_task_indexes(db)
     task = get_task(db, task_key, session=session)
     if task is None:
         raise LookupError(f"Tugas tidak ditemukan: {task_key}")
@@ -293,7 +313,7 @@ def confirm_task_qty(
 
 
 def find_confirmation(db: Database, idempotency_key: str) -> dict[str, Any] | None:
-    _ensure_task_indexes_once(db)
+    require_task_indexes(db)
     return confirmations_collection(db).find_one(
         {"idempotency_key": idempotency_key.strip()}, {"_id": 0}
     )

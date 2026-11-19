@@ -13,7 +13,7 @@ from typing import Any
 from pymongo import ASCENDING, ReturnDocument
 from pymongo.collection import Collection
 from pymongo.database import Database
-from pymongo.errors import DuplicateKeyError
+from pymongo.errors import DuplicateKeyError, OperationFailure
 
 from app.integrations.accurate.fields import as_text, business_label, nested_label
 
@@ -33,8 +33,6 @@ REVISION_NEEDS_ADMIN_CORRECTION = "PERLU_KOREKSI_ADMINISTRASI"
 
 LOADING_ACTIVE = "aktif"
 LOADING_CANCELLED = "dibatalkan"
-
-_INDEXED_DATABASES: set[str] = set()
 
 
 class DeliveryNoteIdentityError(ValueError):
@@ -61,45 +59,88 @@ def note_revisions_collection(db: Database) -> Collection:
     return db[NOTE_REVISIONS_COLLECTION]
 
 
+# Spesifikasi indeks delivery — sumber kebenaran untuk createIndex + preflight.
+# createIndex tidak boleh dijalankan di dalam transaksi MongoDB.
+REQUIRED_DELIVERY_INDEX_SPECS: list[dict[str, Any]] = [
+    {
+        "collection": DELIVERY_NOTES_COLLECTION,
+        "keys": [("accurate_sj_id", ASCENDING)],
+        "name": "uniq_accurate_sj_id",
+        "unique": True,
+    },
+    {
+        "collection": DELIVERY_NOTES_COLLECTION,
+        "keys": [("accurate_po_id", ASCENDING)],
+        "name": "idx_sj_po",
+        "unique": False,
+    },
+    {
+        "collection": DELIVERY_NOTES_COLLECTION,
+        "keys": [("ship_date", ASCENDING)],
+        "name": "idx_sj_ship_date",
+        "unique": False,
+    },
+    {
+        "collection": LOADING_EVENTS_COLLECTION,
+        "keys": [("accurate_sj_id", ASCENDING)],
+        "name": "uniq_active_loading_per_sj",
+        "unique": True,
+        "partialFilterExpression": {"status": LOADING_ACTIVE},
+    },
+    {
+        "collection": LOADING_EVENTS_COLLECTION,
+        "keys": [("loading_id", ASCENDING)],
+        "name": "uniq_loading_id",
+        "unique": True,
+    },
+    {
+        "collection": NOTE_REVISIONS_COLLECTION,
+        "keys": [("accurate_sj_id", ASCENDING), ("version", ASCENDING)],
+        "name": "uniq_note_revision_version",
+        "unique": True,
+    },
+    {
+        "collection": DELIVERY_EVENTS_COLLECTION,
+        "keys": [("accurate_sj_id", ASCENDING), ("attempt", ASCENDING)],
+        "name": "uniq_delivery_attempt",
+        "unique": True,
+    },
+]
+
+
 def ensure_delivery_indexes(db: Database) -> list[str]:
-    created = [
-        delivery_notes_collection(db).create_index(
-            [("accurate_sj_id", ASCENDING)], name="uniq_accurate_sj_id", unique=True
-        ),
-        delivery_notes_collection(db).create_index(
-            [("accurate_po_id", ASCENDING)], name="idx_sj_po"
-        ),
-        delivery_notes_collection(db).create_index(
-            [("ship_date", ASCENDING)], name="idx_sj_ship_date"
-        ),
-        # Hanya satu Loading aktif per SJ; Loading batal tetap tersimpan.
-        loading_events_collection(db).create_index(
-            [("accurate_sj_id", ASCENDING)],
-            name="uniq_active_loading_per_sj",
-            unique=True,
-            partialFilterExpression={"status": LOADING_ACTIVE},
-        ),
-        loading_events_collection(db).create_index(
-            [("loading_id", ASCENDING)], name="uniq_loading_id", unique=True
-        ),
-        note_revisions_collection(db).create_index(
-            [("accurate_sj_id", ASCENDING), ("version", ASCENDING)],
-            name="uniq_note_revision_version",
-            unique=True,
-        ),
-        delivery_events_collection(db).create_index(
-            [("accurate_sj_id", ASCENDING), ("attempt", ASCENDING)],
-            name="uniq_delivery_attempt",
-            unique=True,
-        ),
-    ]
-    _INDEXED_DATABASES.add(db.name)
+    """Buat indeks delivery. Hanya untuk bootstrap eksplisit / test — bukan startup API."""
+    created: list[str] = []
+    for spec in REQUIRED_DELIVERY_INDEX_SPECS:
+        coll = db[spec["collection"]]
+        kwargs: dict[str, Any] = {"name": spec["name"], "unique": bool(spec.get("unique"))}
+        if "partialFilterExpression" in spec:
+            kwargs["partialFilterExpression"] = spec["partialFilterExpression"]
+        created.append(coll.create_index(spec["keys"], **kwargs))
+    from app.services.index_preflight import mark_index_specs_verified
+
+    mark_index_specs_verified(
+        db.name, [s["name"] for s in REQUIRED_DELIVERY_INDEX_SPECS]
+    )
     return created
 
 
-def _ensure_once(db: Database) -> None:
-    if db.name not in _INDEXED_DATABASES:
-        ensure_delivery_indexes(db)
+def require_delivery_indexes(db: Database, *, session: Any | None = None) -> None:
+    """Fail-closed: verifikasi spek indeks tanpa createIndex.
+
+    Di dalam transaksi (``session`` set) tidak ada DDL dan tidak ada listIndexes
+    ulang — pemanggil wajib ``require_*`` di luar transaksi terlebih dulu.
+    """
+    if session is not None:
+        return
+    from app.services.index_preflight import require_index_specs
+
+    require_index_specs(db, REQUIRED_DELIVERY_INDEX_SPECS)
+
+
+def _ensure_once(db: Database, *, session: Any | None = None) -> None:
+    """Alias request-path: fail-closed require (bukan lazy createIndex)."""
+    require_delivery_indexes(db, session=session)
 
 
 def _as_float(value: Any) -> float:
@@ -490,36 +531,54 @@ def diff_note_items(
 
 
 def upsert_delivery_note(db: Database, payload: dict[str, Any]) -> dict[str, Any]:
-    """Idempoten per ``accurate_sj_id``; revisi disimpan sebagai versi baru."""
+    """Idempoten per ``accurate_sj_id``; snapshot + histori revisi atomik.
+
+    Update snapshot dan insert histori versi di satu transaksi replica set.
+    Payload tidak berubah → tidak menambah versi / histori.
+    """
+    from app.repositories import task_repository as tasks
+
     _ensure_once(db)
     doc = normalize_delivery_note(payload)
-    now = datetime.now(timezone.utc)
-    before = delivery_notes_collection(db).find_one(
-        {"accurate_sj_id": doc["accurate_sj_id"]}, {"_id": 0}
-    )
 
-    changes = diff_note_items(before, doc)
-    header_changes = diff_note_header(before, doc)
-    ship_date_changed = before is not None and before.get("ship_date") != doc.get(
-        "ship_date"
-    )
-    changed = bool(changes) or ship_date_changed
-    version = int((before or {}).get("sj_version") or 0) + (1 if changed or before is None else 0)
-    if before is not None and not changed:
-        version = int(before.get("sj_version") or 1)
+    def _operation(session: Any) -> dict[str, Any]:
+        now = datetime.now(timezone.utc)
+        before = delivery_notes_collection(db).find_one(
+            {"accurate_sj_id": doc["accurate_sj_id"]}, {"_id": 0}, session=session
+        )
 
-    update: dict[str, Any] = {**doc, "synced_at": now, "sj_version": version}
-    if before is None:
-        update["revision_status"] = REVISION_ACTIVE
+        changes = diff_note_items(before, doc)
+        header_changes = diff_note_header(before, doc)
+        ship_date_changed = before is not None and before.get("ship_date") != doc.get(
+            "ship_date"
+        )
+        changed = bool(changes) or ship_date_changed
+        version = int((before or {}).get("sj_version") or 0) + (
+            1 if changed or before is None else 0
+        )
+        if before is not None and not changed:
+            version = int(before.get("sj_version") or 1)
+            return {
+                "delivery_note": before,
+                "was_insert": False,
+                "source_changed": False,
+                "changed_items": [],
+                "changed_header_fields": [],
+                "sj_version": version,
+            }
 
-    delivery_notes_collection(db).update_one(
-        {"accurate_sj_id": doc["accurate_sj_id"]},
-        {"$set": update, "$setOnInsert": {"created_at": now}},
-        upsert=True,
-    )
+        update: dict[str, Any] = {**doc, "synced_at": now, "sj_version": version}
+        if before is None:
+            update["revision_status"] = REVISION_ACTIVE
 
-    # Versi pertama juga dicatat agar histori snapshot lengkap sejak awal.
-    if changed or before is None:
+        delivery_notes_collection(db).update_one(
+            {"accurate_sj_id": doc["accurate_sj_id"]},
+            {"$set": update, "$setOnInsert": {"created_at": now}},
+            upsert=True,
+            session=session,
+        )
+
+        # Versi pertama / perubahan: histori wajib ikut commit yang sama.
         note_revisions_collection(db).insert_one(
             {
                 "accurate_sj_id": doc["accurate_sj_id"],
@@ -530,20 +589,36 @@ def upsert_delivery_note(db: Database, payload: dict[str, Any]) -> dict[str, Any
                 "changed_header_fields": header_changes,
                 "ship_date_changed": ship_date_changed,
                 "created_at": now,
-            }
+            },
+            session=session,
         )
 
-    after = delivery_notes_collection(db).find_one(
-        {"accurate_sj_id": doc["accurate_sj_id"]}, {"_id": 0}
-    )
-    return {
-        "delivery_note": after,
-        "was_insert": before is None,
-        "source_changed": changed,
-        "changed_items": changes,
-        "changed_header_fields": header_changes,
-        "sj_version": version,
-    }
+        after = delivery_notes_collection(db).find_one(
+            {"accurate_sj_id": doc["accurate_sj_id"]}, {"_id": 0}, session=session
+        )
+        return {
+            "delivery_note": after,
+            "was_insert": before is None,
+            "source_changed": changed,
+            "changed_items": changes,
+            "changed_header_fields": header_changes,
+            "sj_version": version,
+        }
+
+    # Race concurrent: WriteConflict / DuplicateKey versi → retry.
+    last_err: Exception | None = None
+    for _ in range(12):
+        try:
+            return tasks.run_in_transaction(db, _operation, attempts=8)
+        except DuplicateKeyError as exc:
+            last_err = exc
+            continue
+        except OperationFailure as exc:
+            if exc.has_error_label("TransientTransactionError"):
+                last_err = exc
+                continue
+            raise
+    raise last_err if last_err else RuntimeError("upsert_delivery_note gagal")
 
 
 def list_note_revisions(db: Database, accurate_sj_id: str) -> list[dict[str, Any]]:
@@ -563,7 +638,7 @@ def set_revision_status(
     reason: str | None = None,
     session: Any | None = None,
 ) -> dict[str, Any] | None:
-    _ensure_once(db)
+    _ensure_once(db, session=session)
     return delivery_notes_collection(db).find_one_and_update(
         {"accurate_sj_id": str(accurate_sj_id)},
         {
@@ -648,7 +723,7 @@ def insert_loading_event(
     session: Any | None = None,
 ) -> dict[str, Any]:
     """Satu Loading aktif per SJ; versi batal tetap tersimpan sebagai histori."""
-    _ensure_once(db)
+    _ensure_once(db, session=session)
     doc = {
         "loading_id": f"loading:{accurate_sj_id}:v{sequence}",
         "accurate_sj_id": str(accurate_sj_id),
@@ -701,7 +776,7 @@ def cancel_loading_event(
     session: Any | None = None,
 ) -> dict[str, Any] | None:
     """Batalkan satu Loading aktif. Dua kali pembatalan menghasilkan None."""
-    _ensure_once(db)
+    _ensure_once(db, session=session)
     return loading_events_collection(db).find_one_and_update(
         {"loading_id": loading_id, "status": LOADING_ACTIVE},
         {
