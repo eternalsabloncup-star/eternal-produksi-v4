@@ -86,12 +86,15 @@ def db(
     from app.db import close_client, ensure_indexes
     from app.repositories import master_repository as master
 
+    from app.repositories import settings_role_repository as settings_roles
+
     clear_settings_cache()
     close_client()
     database = mongo_client[db_name]
     ensure_indexes(database)
-    # Bootstrap Master eksplisit di fixture — request path tidak seed/upsert.
+    # Bootstrap Master + system roles eksplisit di fixture — request path tidak seed/upsert.
     master.seed_master_defaults(database)
+    settings_roles.ensure_system_roles(database)
     yield database
     close_client()
     clear_settings_cache()

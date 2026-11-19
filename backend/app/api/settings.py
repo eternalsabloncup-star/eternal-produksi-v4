@@ -112,7 +112,7 @@ class ShiftBody(BaseModel):
 def get_catalog(auth: AuthContext = Depends(require_session)) -> dict[str, Any]:
     del auth
     return {
-        **svc.permission_catalog(),
+        **svc.permission_catalog(get_db()),
         "workflow_policies": svc.workflow_policy_status(),
     }
 
@@ -208,7 +208,7 @@ def delete_session(
 @router.get("/roles")
 def get_roles(auth: AuthContext = Depends(require_session)) -> dict[str, Any]:
     try:
-        return {"items": svc.list_roles(get_db(), auth.user)}
+        return svc.list_roles(get_db(), auth.user)
     except Exception as exc:  # noqa: BLE001
         raise _handle(exc) from exc
 

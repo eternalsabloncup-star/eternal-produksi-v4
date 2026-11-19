@@ -207,9 +207,12 @@ def revoke_user_session(
 # ----- Roles & module permissions -----
 
 
-def list_roles(db: Database, actor: dict[str, Any]) -> list[dict[str, Any]]:
+def list_roles(db: Database, actor: dict[str, Any]) -> dict[str, Any]:
     _require(actor, PERM_MANAGE_ROLES)
-    return roles.list_roles(db)
+    return {
+        "items": roles.list_roles(db),
+        "system_roles_bootstrap": roles.system_roles_bootstrap_status(db),
+    }
 
 
 def create_role(db: Database, actor: dict[str, Any], body: dict[str, Any]) -> dict[str, Any]:
@@ -617,14 +620,17 @@ def read_audit(db: Database, actor: dict[str, Any], **filters: Any) -> dict[str,
     return list_audit_events(db, **filters)
 
 
-def permission_catalog() -> dict[str, Any]:
-    return {
+def permission_catalog(db: Database | None = None) -> dict[str, Any]:
+    payload: dict[str, Any] = {
         "module_permissions": sorted(ALL_PERMISSIONS),
         "sensitive_module_permissions": sorted(SENSITIVE_MODULE_PERMISSIONS),
         "operational_roles": list(OPERATIONAL_ROLES),
         "task_actions": list(TASK_ACTIONS),
         "system_roles": [ROLE_SUPER_ADMIN, ROLE_ADMIN, ROLE_USER],
     }
+    if db is not None:
+        payload["system_roles_bootstrap"] = roles.system_roles_bootstrap_status(db)
+    return payload
 
 
 def workflow_policy_status() -> dict[str, Any]:
