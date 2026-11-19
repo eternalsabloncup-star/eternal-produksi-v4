@@ -1,7 +1,7 @@
 """Master/Pengaturan — jenis pekerjaan, pemetaan role, permission aksi.
 
-Default Owner di-seed idempoten, tetapi konfigurasi tetap milik Master:
-Owner dapat memindahkan jenis pekerjaan ke role lain tanpa ubah kode.
+Seed defaults hanya via maintenance/bootstrap/test eksplisit.
+Request path: read-only require (fail-closed) — tanpa seed/createIndex.
 """
 
 from __future__ import annotations
@@ -23,20 +23,40 @@ from app.domain.operational import (
 TASK_TYPES_COLLECTION = "master_task_types"
 ROLE_ACTION_COLLECTION = "master_role_actions"
 
+REQUIRED_MASTER_INDEX_SPECS: list[dict[str, Any]] = [
+    {
+        "collection": TASK_TYPES_COLLECTION,
+        "keys": [("task_type", ASCENDING)],
+        "name": "uniq_master_task_type",
+        "unique": True,
+    },
+    {
+        "collection": ROLE_ACTION_COLLECTION,
+        "keys": [("role", ASCENDING), ("task_type", ASCENDING)],
+        "name": "uniq_master_role_task",
+        "unique": True,
+    },
+]
+
+# Alias spek untuk bootstrap/ensure (kompatibilitas).
 MASTER_INDEXES: dict[str, list[dict[str, Any]]] = {
     TASK_TYPES_COLLECTION: [
         {
-            "keys": [("task_type", ASCENDING)],
-            "name": "uniq_master_task_type",
-            "unique": True,
+            "keys": spec["keys"],
+            "name": spec["name"],
+            "unique": bool(spec.get("unique")),
         }
+        for spec in REQUIRED_MASTER_INDEX_SPECS
+        if spec["collection"] == TASK_TYPES_COLLECTION
     ],
     ROLE_ACTION_COLLECTION: [
         {
-            "keys": [("role", ASCENDING), ("task_type", ASCENDING)],
-            "name": "uniq_master_role_task",
-            "unique": True,
+            "keys": spec["keys"],
+            "name": spec["name"],
+            "unique": bool(spec.get("unique")),
         }
+        for spec in REQUIRED_MASTER_INDEX_SPECS
+        if spec["collection"] == ROLE_ACTION_COLLECTION
     ],
 }
 
@@ -49,29 +69,38 @@ def role_actions_collection(db: Database) -> Collection:
     return db[ROLE_ACTION_COLLECTION]
 
 
-_INDEXED_DATABASES: set[str] = set()
-
-
 def ensure_master_indexes(db: Database) -> list[str]:
+    """Buat indeks Master — HANYA bootstrap/maintenance/test eksplisit."""
     created: list[str] = []
-    for coll_name, specs in MASTER_INDEXES.items():
-        coll = db[coll_name]
-        for spec in specs:
-            created.append(
-                coll.create_index(
-                    spec["keys"],
-                    name=spec["name"],
-                    unique=spec.get("unique", False),
-                )
+    for spec in REQUIRED_MASTER_INDEX_SPECS:
+        coll = db[spec["collection"]]
+        created.append(
+            coll.create_index(
+                spec["keys"],
+                name=spec["name"],
+                unique=bool(spec.get("unique")),
             )
-    _INDEXED_DATABASES.add(db.name)
+        )
+    from app.services.index_preflight import mark_index_specs_verified
+
+    mark_index_specs_verified(
+        [s["name"] for s in REQUIRED_MASTER_INDEX_SPECS], db=db
+    )
     return created
 
 
-def _ensure_master_indexes_once(db: Database) -> None:
-    if db.name in _INDEXED_DATABASES:
-        return
-    ensure_master_indexes(db)
+def require_master_indexes(db: Database) -> None:
+    """Fail-closed request path: listIndexes only, tidak createIndex."""
+    from app.services.index_preflight import require_index_specs
+
+    require_index_specs(db, REQUIRED_MASTER_INDEX_SPECS)
+
+
+def inspect_master_indexes(db: Database) -> dict[str, Any]:
+    """Read-only: required / present / missing / conflict."""
+    from app.services.index_preflight import inspect_index_specs
+
+    return inspect_index_specs(db, REQUIRED_MASTER_INDEX_SPECS)
 
 
 def _spec_to_doc(spec: TaskTypeSpec, now: datetime) -> dict[str, Any]:
@@ -89,8 +118,11 @@ def _spec_to_doc(spec: TaskTypeSpec, now: datetime) -> dict[str, Any]:
 
 
 def seed_master_defaults(db: Database) -> dict[str, int]:
-    """Seed default terkunci. Tidak menimpa konfigurasi yang sudah diubah Owner."""
-    _ensure_master_indexes_once(db)
+    """Seed default terkunci. Hanya maintenance/bootstrap/test — bukan request.
+
+    Tidak menimpa konfigurasi yang sudah diubah Owner ($setOnInsert).
+    """
+    ensure_master_indexes(db)
     now = datetime.now(timezone.utc)
     types_coll = task_types_collection(db)
     actions_coll = role_actions_collection(db)
@@ -130,6 +162,7 @@ def seed_master_defaults(db: Database) -> dict[str, int]:
 
 
 def list_task_types(db: Database) -> list[dict[str, Any]]:
+    require_master_indexes(db)
     return list(task_types_collection(db).find({}, {"_id": 0}).sort("task_type", ASCENDING))
 
 
@@ -144,6 +177,7 @@ def set_task_type_role(
     role: str,
 ) -> dict[str, Any]:
     """Pindahkan jenis pekerjaan ke role lain (konfigurasi Master)."""
+    require_master_indexes(db)
     if role not in OPERATIONAL_ROLES:
         raise ValueError(f"Role operasional tidak dikenal: {role}")
     doc = task_types_collection(db).find_one_and_update(
@@ -171,6 +205,7 @@ def set_role_actions(
     actions: list[str],
 ) -> dict[str, Any]:
     """Berikan/cabut izin aksi granular untuk satu role pada satu jenis pekerjaan."""
+    require_master_indexes(db)
     if role not in OPERATIONAL_ROLES:
         raise ValueError(f"Role operasional tidak dikenal: {role}")
     unknown = [a for a in actions if a not in TASK_ACTIONS]
@@ -198,6 +233,7 @@ def set_role_actions(
 
 
 def list_role_actions(db: Database, *, role: str | None = None) -> list[dict[str, Any]]:
+    require_master_indexes(db)
     query: dict[str, Any] = {} if role is None else {"role": role}
     return list(
         role_actions_collection(db)
@@ -224,7 +260,7 @@ def assigned_role_for(db: Database, task_type: str) -> str | None:
 
 
 class MissingMasterConfigError(RuntimeError):
-    """Konfigurasi Master wajib belum siap — mutasi Loading ditolak (fail-closed)."""
+    """Konfigurasi Master wajib belum siap — mutasi ditolak (fail-closed)."""
 
     code = "MISSING_MASTER_CONFIG"
 
@@ -234,11 +270,12 @@ def require_task_type_assigned_role(db: Database, task_type: str) -> str:
 
     Tidak createIndex, tidak seed/upsert. Bootstrap Master harus eksplisit.
     """
+    require_master_indexes(db)
     doc = get_task_type(db, task_type)
     role = (doc or {}).get("assigned_role") if doc else None
     if not doc or not role:
         raise MissingMasterConfigError(
             f"Konfigurasi Master untuk task_type={task_type!r} belum siap "
-            "(assigned_role wajib). Jalankan bootstrap Master sebelum Loading."
+            "(assigned_role wajib). Jalankan bootstrap Master sebelum operasi."
         )
     return str(role)

@@ -3,9 +3,11 @@
 
 Usage examples:
   python scripts/bootstrap_mongo.py --ensure-indexes
+  python scripts/bootstrap_mongo.py --seed-master
   python scripts/bootstrap_mongo.py --create-admin
 
 Akun pertama dibuat sebagai role ``super_admin``.
+Seed Master memakai $setOnInsert — tidak menimpa mapping Owner yang sudah diubah.
 
 Never run from API startup, Docker app entrypoint, or deploy.
 """
@@ -38,7 +40,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--ensure-indexes",
         action="store_true",
-        help="Create users/sessions indexes idempotently.",
+        help="Create required indexes idempotently (maintenance only).",
+    )
+    parser.add_argument(
+        "--seed-master",
+        action="store_true",
+        help="Seed Master task types + role actions defaults (idempotent; maintenance only).",
     )
     parser.add_argument(
         "--create-admin",
@@ -60,9 +67,10 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> int:
     args = parse_args()
-    if not args.ensure_indexes and not args.create_admin:
+    if not args.ensure_indexes and not args.create_admin and not args.seed_master:
         print(
-            "Pilih minimal satu aksi: --ensure-indexes dan/atau --create-admin",
+            "Pilih minimal satu aksi: --ensure-indexes, --seed-master, "
+            "dan/atau --create-admin",
             file=sys.stderr,
         )
         return 2
@@ -81,6 +89,16 @@ def main() -> int:
         print("Indexes OK:")
         for collection, names in created.items():
             print(f"  {collection}: {', '.join(names)}")
+
+    if args.seed_master:
+        from app.repositories import master_repository as master
+
+        seeded = master.seed_master_defaults(db)
+        print(
+            "Master seed OK (idempotent): "
+            f"task_types_inserted={seeded['task_types']} "
+            f"role_actions_inserted={seeded['role_actions']}"
+        )
 
     if args.create_admin:
         if admin_exists(db):

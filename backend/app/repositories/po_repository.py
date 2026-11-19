@@ -30,12 +30,23 @@ PO_INDEXES: list[dict[str, Any]] = [
     },
 ]
 
+REQUIRED_PO_INDEX_SPECS: list[dict[str, Any]] = [
+    {
+        "collection": COLLECTION_NAME,
+        "keys": spec["keys"],
+        "name": spec["name"],
+        "unique": bool(spec.get("unique")),
+    }
+    for spec in PO_INDEXES
+]
+
 
 def po_collection(db: Database) -> Collection:
     return db[COLLECTION_NAME]
 
 
 def ensure_po_indexes(db: Database) -> list[str]:
+    """Buat indeks PO — HANYA bootstrap/maintenance/test."""
     created: list[str] = []
     coll = po_collection(db)
     for spec in PO_INDEXES:
@@ -45,7 +56,23 @@ def ensure_po_indexes(db: Database) -> list[str]:
             unique=spec.get("unique", False),
         )
         created.append(name)
+    from app.services.index_preflight import mark_index_specs_verified
+
+    mark_index_specs_verified([s["name"] for s in REQUIRED_PO_INDEX_SPECS], db=db)
     return created
+
+
+def require_po_indexes(db: Database) -> None:
+    """Fail-closed request/sync path — tidak createIndex."""
+    from app.services.index_preflight import require_index_specs
+
+    require_index_specs(db, REQUIRED_PO_INDEX_SPECS)
+
+
+def inspect_po_indexes(db: Database) -> dict[str, Any]:
+    from app.services.index_preflight import inspect_index_specs
+
+    return inspect_index_specs(db, REQUIRED_PO_INDEX_SPECS)
 
 
 def _to_document(po: PoHeaderModel) -> dict[str, Any]:
@@ -75,7 +102,7 @@ def upsert_sales_order(
 
     Field ``operational`` (riwayat/manual V4) tidak ditimpa sync.
     """
-    ensure_po_indexes(db)
+    require_po_indexes(db)
     doc = _to_document(po)
     coll = po_collection(db)
     set_fields: dict[str, Any] = {

@@ -16,7 +16,20 @@ from pymongo.database import Database
 
 RECEIPTS_COLLECTION = "accurate_payment_receipts"
 
-_INDEXED_DATABASES: set[str] = set()
+REQUIRED_PAYMENT_INDEX_SPECS: list[dict[str, Any]] = [
+    {
+        "collection": RECEIPTS_COLLECTION,
+        "keys": [("accurate_receipt_id", ASCENDING)],
+        "name": "uniq_accurate_receipt_id",
+        "unique": True,
+    },
+    {
+        "collection": RECEIPTS_COLLECTION,
+        "keys": [("accurate_po_id", ASCENDING)],
+        "name": "idx_receipt_po",
+        "unique": False,
+    },
+]
 
 
 def receipts_collection(db: Database) -> Collection:
@@ -24,23 +37,39 @@ def receipts_collection(db: Database) -> Collection:
 
 
 def ensure_payment_indexes(db: Database) -> list[str]:
-    created = [
-        receipts_collection(db).create_index(
-            [("accurate_receipt_id", ASCENDING)],
-            name="uniq_accurate_receipt_id",
-            unique=True,
-        ),
-        receipts_collection(db).create_index(
-            [("accurate_po_id", ASCENDING)], name="idx_receipt_po"
-        ),
-    ]
-    _INDEXED_DATABASES.add(db.name)
+    """Buat indeks payment — HANYA bootstrap/maintenance/test."""
+    created: list[str] = []
+    for spec in REQUIRED_PAYMENT_INDEX_SPECS:
+        created.append(
+            db[spec["collection"]].create_index(
+                spec["keys"],
+                name=spec["name"],
+                unique=bool(spec.get("unique")),
+            )
+        )
+    from app.services.index_preflight import mark_index_specs_verified
+
+    mark_index_specs_verified(
+        [s["name"] for s in REQUIRED_PAYMENT_INDEX_SPECS], db=db
+    )
     return created
 
 
+def require_payment_indexes(db: Database) -> None:
+    from app.services.index_preflight import require_index_specs
+
+    require_index_specs(db, REQUIRED_PAYMENT_INDEX_SPECS)
+
+
+def inspect_payment_indexes(db: Database) -> dict[str, Any]:
+    from app.services.index_preflight import inspect_index_specs
+
+    return inspect_index_specs(db, REQUIRED_PAYMENT_INDEX_SPECS)
+
+
 def _ensure_once(db: Database) -> None:
-    if db.name not in _INDEXED_DATABASES:
-        ensure_payment_indexes(db)
+    """Alias request-path: require (bukan lazy createIndex)."""
+    require_payment_indexes(db)
 
 
 def _as_float(value: Any) -> float:

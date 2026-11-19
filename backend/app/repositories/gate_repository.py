@@ -18,7 +18,20 @@ GATE_CLOSED: GateState = "closed"
 GATE_OPEN: GateState = "open"
 GATE_REVIEW: GateState = "review"
 
-_INDEXED_DATABASES: set[str] = set()
+REQUIRED_GATE_INDEX_SPECS: list[dict[str, Any]] = [
+    {
+        "collection": GATES_COLLECTION,
+        "keys": [("accurate_po_id", ASCENDING)],
+        "name": "uniq_po_gates",
+        "unique": True,
+    },
+    {
+        "collection": GATE_HISTORY_COLLECTION,
+        "keys": [("accurate_po_id", ASCENDING), ("created_at", ASCENDING)],
+        "name": "idx_gate_history_po",
+        "unique": False,
+    },
+]
 
 
 def gates_collection(db: Database) -> Collection:
@@ -30,22 +43,37 @@ def gate_history_collection(db: Database) -> Collection:
 
 
 def ensure_gate_indexes(db: Database) -> list[str]:
-    created = [
-        gates_collection(db).create_index(
-            [("accurate_po_id", ASCENDING)], name="uniq_po_gates", unique=True
-        ),
-        gate_history_collection(db).create_index(
-            [("accurate_po_id", ASCENDING), ("created_at", ASCENDING)],
-            name="idx_gate_history_po",
-        ),
-    ]
-    _INDEXED_DATABASES.add(db.name)
+    """Buat indeks gate — HANYA bootstrap/maintenance/test."""
+    created: list[str] = []
+    for spec in REQUIRED_GATE_INDEX_SPECS:
+        created.append(
+            db[spec["collection"]].create_index(
+                spec["keys"],
+                name=spec["name"],
+                unique=bool(spec.get("unique")),
+            )
+        )
+    from app.services.index_preflight import mark_index_specs_verified
+
+    mark_index_specs_verified([s["name"] for s in REQUIRED_GATE_INDEX_SPECS], db=db)
     return created
 
 
+def require_gate_indexes(db: Database) -> None:
+    from app.services.index_preflight import require_index_specs
+
+    require_index_specs(db, REQUIRED_GATE_INDEX_SPECS)
+
+
+def inspect_gate_indexes(db: Database) -> dict[str, Any]:
+    from app.services.index_preflight import inspect_index_specs
+
+    return inspect_index_specs(db, REQUIRED_GATE_INDEX_SPECS)
+
+
 def _ensure_once(db: Database) -> None:
-    if db.name not in _INDEXED_DATABASES:
-        ensure_gate_indexes(db)
+    """Alias request-path: require (bukan lazy createIndex)."""
+    require_gate_indexes(db)
 
 
 _DEFAULT_GATES: dict[str, dict[str, Any]] = {
