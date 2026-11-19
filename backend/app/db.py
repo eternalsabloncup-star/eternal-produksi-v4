@@ -91,6 +91,7 @@ def ensure_indexes(db: Database | None = None) -> dict[str, list[str]]:
     from app.repositories.evidence_repository import ensure_evidence_indexes
     from app.repositories.gate_repository import ensure_gate_indexes
     from app.repositories.master_repository import ensure_master_indexes
+    from app.repositories.product_master_repository import ensure_product_master_indexes
     from app.repositories.payment_repository import ensure_payment_indexes
     from app.repositories.po_repository import ensure_po_indexes
     from app.repositories.sample_repository import ensure_sample_indexes
@@ -140,6 +141,7 @@ def ensure_indexes(db: Database | None = None) -> dict[str, list[str]]:
     created["accurate_sales_orders"] = ensure_po_indexes(database)
     created["audit_logs"] = ensure_audit_indexes(database)
     created["master"] = ensure_master_indexes(database)
+    created["master_products"] = ensure_product_master_indexes(database)
     created["operational_tasks"] = ensure_task_indexes(database)
     created["po_gates"] = ensure_gate_indexes(database)
     created["design"] = ensure_design_indexes(database)

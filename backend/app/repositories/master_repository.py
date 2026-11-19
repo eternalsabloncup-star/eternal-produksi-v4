@@ -141,13 +141,17 @@ def seed_master_defaults(db: Database) -> dict[str, int]:
         if res.upserted_id is not None:
             inserted_types += 1
 
+        # payment-bypass: tersedia di Master tetapi tidak di-grant otomatis ke role mana pun.
+        seed_actions: list[str] = (
+            [] if spec.task_type == "payment-bypass" else list(spec.actions)
+        )
         grant = actions_coll.update_one(
             {"role": spec.default_role, "task_type": spec.task_type},
             {
                 "$setOnInsert": {
                     "role": spec.default_role,
                     "task_type": spec.task_type,
-                    "actions": list(spec.actions),
+                    "actions": seed_actions,
                     "is_default_mapping": True,
                     "created_at": now,
                     "updated_at": now,

@@ -291,9 +291,11 @@ def decide_sample(
     if not approved and not (reason or "").strip():
         raise ValueError("Alasan penolakan sampel wajib diisi.")
 
-    # Validasi Master cetak sebelum mutasi keputusan — cegah tugas parsial.
+    # Validasi Master sebelum mutasi keputusan — cegah tugas parsial.
     if approved:
         master.require_task_type_assigned_role(db, PRINT_TASK)
+    else:
+        master.require_task_type_assigned_role(db, SAMPLE_TASK)
 
     actor = str(user.get("email_normalized") or "")
     sample = samples.decide_sample(
@@ -306,21 +308,53 @@ def decide_sample(
     )
 
     approval_key = build_task_key(APPROVAL_TASK, "po_line_allocation", _alloc_ref(alloc))
-    tasks.tasks_collection(db).update_one(
-        {"task_key": approval_key},
-        {
-            "$set": {
-                "status": tasks.TASK_STATUS_DONE
-                if approved
-                else tasks.TASK_STATUS_OPEN,
-                "context.status": sample["status"],
-                "context.sample_version": version,
-            }
-        },
-    )
+    sample_key = build_task_key(SAMPLE_TASK, "po_line_allocation", _alloc_ref(alloc))
 
     if approved:
+        tasks.tasks_collection(db).update_one(
+            {"task_key": approval_key},
+            {
+                "$set": {
+                    "status": tasks.TASK_STATUS_DONE,
+                    "context.status": sample["status"],
+                    "context.sample_version": version,
+                }
+            },
+        )
         _ensure_print_task(db, alloc)
+    else:
+        # Penolakan: keputusan approval selesai; pekerjaan kembali ke operator
+        # untuk sampel ulang (versi baru). Tidak membuka tugas Designer.
+        tasks.tasks_collection(db).update_one(
+            {"task_key": approval_key},
+            {
+                "$set": {
+                    "status": tasks.TASK_STATUS_DONE,
+                    "context.status": sample["status"],
+                    "context.sample_version": version,
+                    "context.reject_reason": (reason or "").strip(),
+                }
+            },
+        )
+        sample_role = master.require_task_type_assigned_role(db, SAMPLE_TASK)
+        tasks.upsert_task(
+            db,
+            task_type=SAMPLE_TASK,
+            scope="po_line_allocation",
+            assigned_role=sample_role,
+            ref=_alloc_ref(alloc),
+            label="Upload/Konfirmasi Sample",
+            context={
+                "latest_version": version,
+                "status": sample["status"],
+                "reject_reason": (reason or "").strip(),
+                "needs_resubmit": True,
+            },
+        )
+        tasks.tasks_collection(db).update_one(
+            {"task_key": sample_key},
+            {"$set": {"status": tasks.TASK_STATUS_OPEN}},
+        )
 
     append_audit_event(
         db,

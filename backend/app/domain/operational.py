@@ -165,6 +165,14 @@ DEFAULT_TASK_TYPES: Final[tuple[TaskTypeSpec, ...]] = (
         default_role="driver",
         actions=["view", "input", "confirm", "manage_evidence"],
     ),
+    # Izin Bypass Payment — dikonfigurasi di Master; default grant kosong (bukan super_admin).
+    TaskTypeSpec(
+        task_type="payment-bypass",
+        label="Bypass Payment",
+        scope="po",
+        default_role="production-head",
+        actions=["approve"],
+    ),
 )
 
 DEFAULT_TASK_TYPE_BY_ID: Final[dict[str, TaskTypeSpec]] = {

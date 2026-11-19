@@ -6,10 +6,10 @@ from typing import Any
 
 from pymongo.database import Database
 
-from app.auth.permissions import PERM_BYPASS_PAYMENT, has_permission
 from app.repositories import gate_repository as gates
 from app.repositories import payment_repository as payments
 from app.services.audit_log import append_audit_event
+from app.services.task_engine import TaskPermissionError, require_action
 
 
 class PaymentPermissionError(PermissionError):
@@ -88,9 +88,15 @@ def bypass_payment_gate(
     accurate_po_id: str,
     reason: str,
 ) -> dict[str, Any]:
-    """Bypass hanya untuk pemegang izin ``payment.bypass`` — selalu teraudit."""
-    if not has_permission(user.get("role"), PERM_BYPASS_PAYMENT):
-        raise PaymentPermissionError("Akses Bypass Payment ditolak.")
+    """Bypass mengikuti grant Master ``payment-bypass`` / approve — selalu teraudit.
+
+    Super Admin lolos via task_engine.can_act. Role lain hanya jika Master
+    memberikan aksi approve pada jenis pekerjaan payment-bypass.
+    """
+    try:
+        require_action(db, user, task_type="payment-bypass", action="approve")
+    except TaskPermissionError as exc:
+        raise PaymentPermissionError(str(exc)) from exc
     if not reason.strip():
         raise ValueError("Alasan bypass wajib diisi.")
 

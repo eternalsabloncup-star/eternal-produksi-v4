@@ -198,7 +198,7 @@ export async function ingestPaymentReceipts(
 
 /**
  * POST /api/payment/{accurate_po_id}/bypass
- * Memerlukan PERM_BYPASS_PAYMENT; alasan wajib; teraudit.
+ * Memerlukan grant Master payment-bypass/approve; alasan wajib; teraudit.
  */
 export async function bypassPaymentGate(
   accuratePoId: string,

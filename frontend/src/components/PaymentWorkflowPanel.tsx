@@ -6,6 +6,7 @@ import {
   type PaymentStateResponse,
   WorkflowApiError,
 } from "../api/workflow";
+import { useAuth } from "../auth";
 
 type Props = {
   accuratePoId: string;
@@ -22,6 +23,8 @@ function gateLabel(state: string | undefined): string {
 
 /** Panel Payment API: ingest receipt snapshot + bypass berizin. */
 export function PaymentWorkflowPanel({ accuratePoId, poNo, onChanged }: Props) {
+  const { capabilities } = useAuth();
+  const canBypass = Boolean(capabilities.payment_bypass);
   const [state, setState] = useState<PaymentStateResponse | null>(null);
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
@@ -119,7 +122,11 @@ export function PaymentWorkflowPanel({ accuratePoId, poNo, onChanged }: Props) {
       await load();
       onChanged?.();
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Bypass ditolak.");
+      if (err instanceof WorkflowApiError && err.status === 403) {
+        setError("Akses ditolak: tidak memiliki izin Bypass Payment (Master).");
+      } else {
+        setError(err instanceof Error ? err.message : "Bypass ditolak.");
+      }
     } finally {
       setBusy(false);
     }
@@ -237,31 +244,46 @@ export function PaymentWorkflowPanel({ accuratePoId, poNo, onChanged }: Props) {
             </button>
           </div>
 
-          <p className="ep-sectionlabel">Bypass Payment (izin khusus)</p>
-          <div className="ep-filterbar">
-            <input
-              aria-label="Alasan bypass"
-              placeholder="Alasan bypass wajib"
-              value={bypassReason}
-              onChange={(e) => setBypassReason(e.target.value)}
-            />
-            <button
-              type="button"
-              className="ep-btn"
-              disabled={busy || paymentGate?.state === "open"}
-              title={
-                paymentGate?.state === "open"
-                  ? "Gate sudah terbuka"
-                  : "Membuka gate dengan audit"
-              }
-              onClick={() => void onBypass()}
-            >
-              Bypass Gate
-            </button>
-            <button type="button" className="ep-btn" disabled={busy} onClick={() => void load()}>
-              Muat ulang
-            </button>
-          </div>
+          {canBypass ? (
+            <>
+              <p className="ep-sectionlabel">Bypass Payment (izin Master)</p>
+              <div className="ep-filterbar">
+                <input
+                  aria-label="Alasan bypass"
+                  placeholder="Alasan bypass wajib"
+                  value={bypassReason}
+                  onChange={(e) => setBypassReason(e.target.value)}
+                />
+                <button
+                  type="button"
+                  className="ep-btn"
+                  disabled={busy || paymentGate?.state === "open"}
+                  title={
+                    paymentGate?.state === "open"
+                      ? "Gate sudah terbuka"
+                      : "Membuka gate dengan audit"
+                  }
+                  onClick={() => void onBypass()}
+                >
+                  Bypass Gate
+                </button>
+                <button
+                  type="button"
+                  className="ep-btn"
+                  disabled={busy}
+                  onClick={() => void load()}
+                >
+                  Muat ulang
+                </button>
+              </div>
+            </>
+          ) : (
+            <div className="ep-filterbar">
+              <button type="button" className="ep-btn" disabled={busy} onClick={() => void load()}>
+                Muat ulang
+              </button>
+            </div>
+          )}
         </>
       ) : null}
     </div>

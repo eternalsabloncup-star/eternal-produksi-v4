@@ -299,19 +299,24 @@ export function ScheduleApiPanel() {
         },
       },
       {
-        // Ukuran screen (Kecil/Besar) hanya ada di fixture DEMO.
-        // LineSchedule/Allocation API + payload F12 tidak menyediakan field ini.
         id: "screenSize",
         label: "Ukuran Screen",
         hideable: true,
         filterType: "text",
         defaultWidth: 120,
-        getFilterValue: () => "Belum tersedia",
-        render: () => (
-          <span className="ep-muted" title="Belum ada kontrak field di API scheduling">
-            Belum tersedia
-          </span>
-        ),
+        getFilterValue: (row) => row.screen_size || "Belum diatur",
+        render: (row) => {
+          const value = row.screen_size || "Belum diatur";
+          const unset = value === "Belum diatur";
+          return (
+            <span
+              className={unset ? "ep-muted" : undefined}
+              title="Dari Master Produk (bukan DEMO)"
+            >
+              {value}
+            </span>
+          );
+        },
       },
       {
         id: "gateDesign",
@@ -369,8 +374,8 @@ export function ScheduleApiPanel() {
       {error && !selected ? <p className="ep-error">{error}</p> : null}
       {notice && !selected ? <p className="ep-notice">{notice}</p> : null}
       <p className="ep-po-confirm-hint" data-testid="schedule-screen-size-note">
-        Kolom Ukuran Screen: Belum tersedia — field tidak ada di LineSchedule/Allocation
-        API maupun mapping F12 (hanya fixture DEMO Kecil/Besar). Tidak dikarang.
+        Ukuran Screen diambil dari Master Produk per kode barang. Belum diatur bila
+        Master kosong. Bukan daftar DEMO Kecil/Besar.
       </p>
 
       <DataTable
@@ -470,12 +475,14 @@ export function ScheduleApiPanel() {
               <dl className="ep-kv">
                 <dt>Qty Item</dt>
                 <dd>{qty(selected.qty_target)}</dd>
-                <dt>Belum Dialokasikan</dt>
+                <dt>Terjadwal (aktif)</dt>
+                <dd>{qty(selected.qty_allocated)}</dd>
+                <dt>Sisa menunggu jadwal</dt>
                 <dd>{qty(selected.qty_unallocated)}</dd>
+                <dt>Ukuran Screen</dt>
+                <dd>{selected.screen_size || "Belum diatur"}</dd>
                 <dt>Qty Cetak Terkonfirmasi</dt>
                 <dd>{qty(selected.qty_printed)}</dd>
-                <dt>Kekurangan Qty Alokasi</dt>
-                <dd>{qty(selected.qty_unallocated)}</dd>
               </dl>
 
               <p className="ep-sectionlabel">Alokasi Operator</p>

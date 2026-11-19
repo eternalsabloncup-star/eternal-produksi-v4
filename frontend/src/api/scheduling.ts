@@ -27,6 +27,8 @@ export type LineSchedule = {
   qty_allocated: number;
   qty_unallocated: number;
   qty_printed: number;
+  /** Dari Master Produk; kosong → "Belum diatur". */
+  screen_size?: string;
   allocations: Allocation[];
   gates: { design: GateState; payment: GateState };
   scheduling_unlocked: boolean;
