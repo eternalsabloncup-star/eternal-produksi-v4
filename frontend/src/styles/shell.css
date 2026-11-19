@@ -2693,3 +2693,7 @@
 .ep-row-active td {
   background: var(--ep-primary-soft);
 }
+.ep-muted {
+  color: #6b7c8a;
+  font-style: italic;
+}

@@ -64,7 +64,8 @@ export function BufferStockApiPanel() {
       {
         label: "Ready Gudang",
         value: num(kpi?.qty_ready_warehouse ?? NOT_CONFIGURED),
-        foot: "rumus mutasi belum diputuskan",
+        foot: "NOT_CONFIGURED · bukan qty cetak/QC/Loading",
+        kind: "warn",
       },
     ];
   }, [data]);
@@ -178,9 +179,19 @@ export function BufferStockApiPanel() {
         label: "Ready Gudang",
         hideable: true,
         filterType: "text",
-        defaultWidth: 120,
+        defaultWidth: 140,
         getFilterValue: (r) => String(r.qty_ready_warehouse),
-        render: (r) => num(r.qty_ready_warehouse),
+        render: (r) => {
+          const v = r.qty_ready_warehouse;
+          if (v === NOT_CONFIGURED || typeof v === "string") {
+            return (
+              <span className="ep-muted" title="Kontrak mutasi gudang belum diputuskan Owner">
+                {String(v)}
+              </span>
+            );
+          }
+          return num(v);
+        },
       },
       {
         id: "qtyShipped",

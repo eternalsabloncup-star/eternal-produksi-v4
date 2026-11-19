@@ -299,6 +299,21 @@ export function ScheduleApiPanel() {
         },
       },
       {
+        // Ukuran screen (Kecil/Besar) hanya ada di fixture DEMO.
+        // LineSchedule/Allocation API + payload F12 tidak menyediakan field ini.
+        id: "screenSize",
+        label: "Ukuran Screen",
+        hideable: true,
+        filterType: "text",
+        defaultWidth: 120,
+        getFilterValue: () => "Belum tersedia",
+        render: () => (
+          <span className="ep-muted" title="Belum ada kontrak field di API scheduling">
+            Belum tersedia
+          </span>
+        ),
+      },
+      {
         id: "gateDesign",
         label: "Gate Design",
         hideable: true,
@@ -353,6 +368,10 @@ export function ScheduleApiPanel() {
       {!loading ? <KpiSummary items={kpis} /> : null}
       {error && !selected ? <p className="ep-error">{error}</p> : null}
       {notice && !selected ? <p className="ep-notice">{notice}</p> : null}
+      <p className="ep-po-confirm-hint" data-testid="schedule-screen-size-note">
+        Kolom Ukuran Screen: Belum tersedia — field tidak ada di LineSchedule/Allocation
+        API maupun mapping F12 (hanya fixture DEMO Kecil/Besar). Tidak dikarang.
+      </p>
 
       <DataTable
         tableId="po-accurate:schedule-v1"
