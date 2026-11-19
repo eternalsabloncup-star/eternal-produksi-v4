@@ -136,6 +136,39 @@ def _ship_address_pic(payload: dict[str, Any]) -> str:
     return ""
 
 
+def _resolve_ship_zone(payload: dict[str, Any]) -> tuple[str, dict[str, Any]]:
+    """Zona Pengiriman dari charField3 / searchCharField3 (keputusan Owner).
+
+    Prioritas sama dengan field char Accurate lain: charField3 lalu
+    searchCharField3.name. Hanya trim whitespace; nilai Exact Accurate
+    (termasuk ``K``) tidak diterjemahkan dan tidak dihitung dari alamat.
+    """
+    meta: dict[str, Any] = {}
+    raw_char = payload.get("charField3")
+    raw_text = _as_str(raw_char)
+    if raw_text:
+        meta["char_field3_raw"] = raw_text
+    search = payload.get("searchCharField3")
+    if isinstance(search, dict) and search:
+        search_name = _business_label(search)
+        if search_name:
+            meta["search_char_field3_name"] = search_name
+
+    zone = _char_field_label(payload, 3)
+    if zone:
+        if raw_text:
+            meta["ship_zone_source"] = "charField3"
+        elif meta.get("search_char_field3_name"):
+            meta["ship_zone_source"] = "searchCharField3"
+        else:
+            meta["ship_zone_source"] = "charField3"
+        meta["ship_zone_owner_confirmed"] = True
+        return zone, meta
+
+    meta["ship_zone_source"] = "none"
+    return "", meta
+
+
 def normalize_sales_order(payload: dict[str, Any]) -> PoHeaderModel:
     if not isinstance(payload, dict):
         raise ValueError("Payload Sales Order harus berupa objek.")
@@ -194,8 +227,9 @@ def normalize_sales_order(payload: dict[str, Any]) -> PoHeaderModel:
     seller, seller_meta = _resolve_transaction_seller(payload, details)
     buffer_label = _char_field_label(payload, 5)
     priority_label = _char_field_label(payload, 4)
-    # charField3 ("K") — semantik zona BELUM TERBUKTI → jangan map ke ship_zone.
-    ship_zone = ""
+    # Owner (final): charField3 / searchCharField3 = Zona Pengiriman.
+    # Nilai Exact Accurate (mis. "K") — jangan diterjemahkan / dihitung dari alamat.
+    ship_zone, ship_zone_meta = _resolve_ship_zone(payload)
     # Penerima aktual tidak terbukti di F12; PIC alamat ≠ penerima.
     recipient = ""
     address_pic_name = _ship_address_pic(payload)
@@ -209,10 +243,8 @@ def normalize_sales_order(payload: dict[str, Any]) -> PoHeaderModel:
         "accurate_id": accurate_id,
         "line_count": len(items),
         **seller_meta,
+        **ship_zone_meta,
     }
-    if payload.get("charField3") is not None and _as_str(payload.get("charField3")):
-        meta["char_field3_raw"] = _as_str(payload.get("charField3"))
-        meta["char_field3_zone_unproven"] = True
 
     return PoHeaderModel(
         origin="accurate",

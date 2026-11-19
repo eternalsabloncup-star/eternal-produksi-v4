@@ -79,6 +79,18 @@ aktor, waktu, dan alasan. Riwayat bersifat append-only.
 
 ---
 
+## ATURAN TERKUNCI — ZONA PENGIRIMAN SALES ORDER ACCURATE
+
+- **Keputusan:** `charField3` / `searchCharField3` pada Sales Order Accurate
+  adalah Zona Pengiriman.
+- **Tanggal keputusan:** 20 November 2026.
+- **Nilai:** Exact Accurate (contoh `"K"`) disimpan dan ditampilkan apa adanya.
+- **Dilarang:** menerjemahkan kode zona, menghitung zona dari alamat pelanggan,
+  atau mengisi default palsu. Kosong → tampil `—`.
+
+Mapping V4: `charField3`/`searchCharField3` → `header.ship_zone` → API Inbox →
+kolom Zona Pengiriman.
+
 ## Status integrasi Accurate
 
 Konektor read-only Delivery Order + sync manual ber-guard sudah ada di kode
@@ -114,7 +126,7 @@ schema, nilainya tidak pernah diasumsikan ada.
 | `masterSalesman.name` | `salesman_name` | |
 | `createdByUserName` | `created_by_user_name` | |
 | `shipment.name` | `shipment` | |
-| `charField3` | `ship_zone` | Label halaman "Zona Pengiriman"; nilai **belum diverifikasi** → ditandai `source_meta.char_field3_zone_unproven` |
+| `charField3` | `ship_zone` | Label halaman "Zona Pengiriman". Semantik SO sudah dikunci Owner (nilai Exact, mis. `"K"`). Pada snapshot SJ, salinan field tetap dicatat di `source_meta` untuk audit |
 | `branch.name` | `branch_name` | |
 | `description` | `description` | |
 | `printedByUser` | `printed_by_user` | **Bukan** pembuat data |
