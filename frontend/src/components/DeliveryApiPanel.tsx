@@ -6,6 +6,7 @@ import {
   fetchDeliverySchedule,
   fetchLoadingValidation,
   raiseDiscrepancy,
+  softDeleteDeliveryEvidence,
   type DeliveryDetail,
   type DeliveryScheduleRow,
   type LoadingValidation,
@@ -218,6 +219,25 @@ export function DeliveryApiPanel() {
       setNotice("Tugas Kepala Produksi “Qty Loading dan SJ Berbeda” dibuat.");
     } catch (err) {
       setError(err instanceof Error ? err.message : "Gagal membuat tugas koordinasi.");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function onSoftDeleteEvidence(evidenceId: string, reason: string) {
+    if (!selected) return;
+    setBusy(true);
+    setError(null);
+    try {
+      await softDeleteDeliveryEvidence(evidenceId, reason);
+      await reopenAfterAction(
+        selected.accurate_sj_id,
+        "Bukti di-soft-delete; file dan audit tetap tersimpan.",
+      );
+    } catch (err) {
+      setError(
+        err instanceof Error ? err.message : "Soft-delete bukti gagal.",
+      );
     } finally {
       setBusy(false);
     }
@@ -596,6 +616,7 @@ export function DeliveryApiPanel() {
           onConfirmLoading={() => void onConfirmLoading()}
           onCancelLoading={() => void onCancelLoading()}
           onDiscrepancy={() => void onDiscrepancy()}
+          onSoftDeleteEvidence={(id, reason) => void onSoftDeleteEvidence(id, reason)}
           onClose={() => {
             setSelected(null);
             setDetail(null);

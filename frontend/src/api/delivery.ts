@@ -284,3 +284,17 @@ export async function fetchDeliveryDetail(
 ): Promise<DeliveryDetail> {
   return request(`/api/delivery/${encodeURIComponent(sjId)}`);
 }
+
+/**
+ * Soft-delete bukti pengiriman — file/audit tetap; butuh manage_evidence.
+ * POST /api/delivery/evidence/soft-delete
+ */
+export async function softDeleteDeliveryEvidence(
+  evidenceId: string,
+  reason: string,
+): Promise<{ evidence_id: string; deleted?: boolean }> {
+  return request("/api/delivery/evidence/soft-delete", {
+    method: "POST",
+    body: JSON.stringify({ evidence_id: evidenceId, reason }),
+  });
+}
