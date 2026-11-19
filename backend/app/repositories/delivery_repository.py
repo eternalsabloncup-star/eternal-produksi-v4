@@ -552,20 +552,13 @@ def upsert_delivery_note(db: Database, payload: dict[str, Any]) -> dict[str, Any
         ship_date_changed = before is not None and before.get("ship_date") != doc.get(
             "ship_date"
         )
+        # Item/ship_date = revisi versi; header-only = update snapshot tanpa bump versi.
         changed = bool(changes) or ship_date_changed
         version = int((before or {}).get("sj_version") or 0) + (
             1 if changed or before is None else 0
         )
         if before is not None and not changed:
             version = int(before.get("sj_version") or 1)
-            return {
-                "delivery_note": before,
-                "was_insert": False,
-                "source_changed": False,
-                "changed_items": [],
-                "changed_header_fields": [],
-                "sj_version": version,
-            }
 
         update: dict[str, Any] = {**doc, "synced_at": now, "sj_version": version}
         if before is None:
@@ -578,20 +571,21 @@ def upsert_delivery_note(db: Database, payload: dict[str, Any]) -> dict[str, Any
             session=session,
         )
 
-        # Versi pertama / perubahan: histori wajib ikut commit yang sama.
-        note_revisions_collection(db).insert_one(
-            {
-                "accurate_sj_id": doc["accurate_sj_id"],
-                "version": version,
-                "snapshot_before": before,
-                "snapshot_after": doc,
-                "changed_items": changes,
-                "changed_header_fields": header_changes,
-                "ship_date_changed": ship_date_changed,
-                "created_at": now,
-            },
-            session=session,
-        )
+        # Histori hanya untuk insert awal atau perubahan item/ship_date.
+        if changed or before is None:
+            note_revisions_collection(db).insert_one(
+                {
+                    "accurate_sj_id": doc["accurate_sj_id"],
+                    "version": version,
+                    "snapshot_before": before,
+                    "snapshot_after": doc,
+                    "changed_items": changes,
+                    "changed_header_fields": header_changes,
+                    "ship_date_changed": ship_date_changed,
+                    "created_at": now,
+                },
+                session=session,
+            )
 
         after = delivery_notes_collection(db).find_one(
             {"accurate_sj_id": doc["accurate_sj_id"]}, {"_id": 0}, session=session
