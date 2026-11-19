@@ -14,6 +14,7 @@ from app.api.operational import router as operational_router
 from app.api.po import router as po_router
 from app.api.production import router as production_router
 from app.api.scheduling import router as scheduling_router
+from app.api.settings import router as settings_router
 from app.api.table_preferences import router as table_preferences_router
 from app.api.tracking import router as tracking_router
 from app.api.workflow import router as workflow_router
@@ -44,12 +45,13 @@ def create_app() -> FastAPI:
             CORSMiddleware,
             allow_origins=origins,
             allow_credentials=True,
-            allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
-            allow_headers=["Content-Type", "X-CSRF-Token"],
+            allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+            allow_headers=["Content-Type", "X-CSRF-Token", "If-Match"],
         )
 
     application.include_router(health_router)
     application.include_router(auth_router)
+    application.include_router(settings_router)
     application.include_router(table_preferences_router)
     application.include_router(po_router)
     application.include_router(operational_router)
