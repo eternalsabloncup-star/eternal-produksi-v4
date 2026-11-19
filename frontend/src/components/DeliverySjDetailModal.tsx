@@ -314,9 +314,14 @@ export function DeliverySjDetailModal({
                       title={ev.filename || ev.evidence_id}
                       onClick={() => {
                         const reason = window.prompt(
-                          "Alasan soft-delete bukti (wajib, min. 3 karakter)",
+                          "Alasan soft-delete bukti (wajib, min. 3 karakter). File & audit tetap tersimpan.",
                         );
-                        if (!reason || reason.trim().length < 3) return;
+                        if (!reason || reason.trim().length < 3) {
+                          window.alert(
+                            "Soft-delete dibatalkan: alasan wajib minimal 3 karakter.",
+                          );
+                          return;
+                        }
                         onSoftDeleteEvidence(ev.evidence_id, reason.trim());
                       }}
                     >

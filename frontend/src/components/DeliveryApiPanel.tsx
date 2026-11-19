@@ -7,6 +7,7 @@ import {
   fetchLoadingValidation,
   raiseDiscrepancy,
   softDeleteDeliveryEvidence,
+  softDeleteEvidenceErrorMessage,
   type DeliveryDetail,
   type DeliveryScheduleRow,
   type LoadingValidation,
@@ -228,6 +229,7 @@ export function DeliveryApiPanel() {
     if (!selected) return;
     setBusy(true);
     setError(null);
+    setNotice(null);
     try {
       await softDeleteDeliveryEvidence(evidenceId, reason);
       await reopenAfterAction(
@@ -235,9 +237,7 @@ export function DeliveryApiPanel() {
         "Bukti di-soft-delete; file dan audit tetap tersimpan.",
       );
     } catch (err) {
-      setError(
-        err instanceof Error ? err.message : "Soft-delete bukti gagal.",
-      );
+      setError(softDeleteEvidenceErrorMessage(err));
     } finally {
       setBusy(false);
     }
