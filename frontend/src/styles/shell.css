@@ -2734,24 +2734,11 @@
   margin: 0 0 16px;
 }
 
-.ep-settings-form {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
-  margin: 0 0 12px;
-  align-items: center;
-}
-
-.ep-settings-form input,
-.ep-settings-form select {
-  min-height: 36px;
-  padding: 6px 10px;
-}
-
-/* —— Settings Center (scoped) —— */
+/* —— Settings Center (scoped design system) —— */
 .ep-settings {
   min-width: 0;
   max-width: 100%;
+  overflow-x: hidden;
 }
 
 .ep-settings-eyebrow {
@@ -2768,6 +2755,7 @@
   align-items: flex-start;
   gap: 16px;
   min-width: 0;
+  width: 100%;
 }
 
 .ep-settings-nav {
@@ -2886,14 +2874,16 @@
 .ep-settings-main {
   flex: 1;
   min-width: 0;
+  max-width: 100%;
+  overflow-x: hidden;
 }
 
 .ep-settings-header {
   display: flex;
   align-items: flex-start;
   gap: 10px;
-  margin: 0 0 12px;
-  padding-bottom: 10px;
+  margin: 0 0 14px;
+  padding-bottom: 12px;
   border-bottom: 1px solid var(--ep-line);
 }
 
@@ -2962,28 +2952,240 @@
 
 .ep-settings-body {
   min-width: 0;
+  display: grid;
+  gap: 14px;
+  max-width: 100%;
 }
 
-.ep-settings-overview p {
-  margin: 0 0 10px;
-  color: #3d5549;
-  line-height: 1.55;
+.ep-settings-card {
+  min-width: 0;
+  border: 1px solid var(--ep-line);
+  border-radius: 8px;
+  background: #fff;
+  padding: 14px 14px 12px;
+  box-shadow: 0 1px 0 rgba(20, 36, 28, 0.03);
 }
 
-.ep-settings-stats {
-  margin: 0 0 14px;
-  padding-left: 18px;
+.ep-settings-card-title {
+  margin: 0 0 12px;
+  font-size: 12px;
+  font-weight: 800;
   color: var(--ep-ink);
-  line-height: 1.6;
+  letter-spacing: 0.01em;
 }
 
-.ep-settings-shortcut-label {
-  margin: 0 0 8px;
+.ep-settings-card-note {
+  margin: -4px 0 12px;
+  font-size: 11px;
+  color: var(--ep-muted);
+  line-height: 1.45;
+}
+
+.ep-settings-form,
+.ep-settings-form-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+  gap: 10px 12px;
+  margin: 0 0 12px;
+  align-items: end;
+  width: 100%;
+  min-width: 0;
+}
+
+.ep-settings-field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+
+.ep-settings-field.is-actions {
+  justify-content: flex-end;
+}
+
+.ep-settings-field-label {
+  font-size: 10px;
+  font-weight: 700;
+  color: #5f7268;
+  letter-spacing: 0.02em;
+}
+
+.ep-settings-field input,
+.ep-settings-field select,
+.ep-settings-form-grid input,
+.ep-settings-form-grid select,
+.ep-settings-inline-select {
+  width: 100%;
+  min-height: 36px;
+  max-width: 100%;
+  padding: 7px 10px;
+  border: 1px solid var(--ep-line);
+  border-radius: var(--ep-radius);
+  background: #fff;
+  color: var(--ep-ink);
+  box-sizing: border-box;
+}
+
+.ep-settings-field input:focus,
+.ep-settings-field select:focus,
+.ep-settings-inline-select:focus {
+  outline: 2px solid rgba(26, 77, 62, 0.22);
+  outline-offset: 1px;
+  border-color: #7aa08d;
+}
+
+.ep-settings-check-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 36px;
+  font-size: 11px;
+  color: #2c4036;
+}
+
+.ep-settings-check-row input[type="checkbox"] {
+  width: 16px;
+  height: 16px;
+  margin: 0;
+  accent-color: var(--ep-primary);
+  flex: none;
+}
+
+.ep-settings-table-wrap {
+  width: 100%;
+  max-width: 100%;
+  overflow-x: auto;
+  overflow-y: auto;
+  max-height: min(58vh, 560px);
+  border: 1px solid var(--ep-line);
+  border-radius: 7px;
+  background: #fff;
+  -webkit-overflow-scrolling: touch;
+}
+
+.ep-settings-data-table {
+  width: 100%;
+  min-width: 520px;
+  border-collapse: separate;
+  border-spacing: 0;
+  table-layout: fixed;
+  font-size: 11px;
+  color: var(--ep-table-cell-fg);
+}
+
+.ep-settings-data-table.is-compact {
+  min-width: 360px;
+}
+
+.ep-settings-data-table.is-wide {
+  min-width: 860px;
+}
+
+.ep-settings-data-table th,
+.ep-settings-data-table td {
+  padding: 8px 10px;
+  border-bottom: 1px solid #d7e4dc;
+  vertical-align: middle;
+  text-align: left;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+
+.ep-settings-data-table thead th {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  background: #f3f8f5;
+  color: #123d30;
   font-size: 10px;
   font-weight: 800;
-  letter-spacing: 0.05em;
+  letter-spacing: 0.03em;
   text-transform: uppercase;
-  color: #6a7f74;
+  border-bottom: 1px solid #b7cfc2;
+}
+
+.ep-settings-data-table tbody tr:last-child td {
+  border-bottom: 0;
+}
+
+.ep-settings-data-table tbody tr:hover td {
+  background: #f7fbf8;
+}
+
+.ep-settings-data-table .is-check,
+.ep-settings-data-table th.is-check,
+.ep-settings-data-table td.is-check {
+  width: 72px;
+  text-align: center;
+  vertical-align: middle;
+}
+
+.ep-settings-data-table .is-status {
+  width: 88px;
+  text-align: center;
+}
+
+.ep-settings-data-table .is-actions {
+  width: 118px;
+  text-align: right;
+  white-space: nowrap;
+}
+
+.ep-settings-data-table .is-role {
+  width: 130px;
+}
+
+.ep-settings-data-table .is-type {
+  width: 180px;
+}
+
+.ep-settings-data-table input[type="checkbox"] {
+  width: 15px;
+  height: 15px;
+  margin: 0 auto;
+  display: block;
+  accent-color: var(--ep-primary);
+}
+
+.ep-settings-data-table .ep-settings-inline-select {
+  min-width: 0;
+  width: 100%;
+}
+
+.ep-settings-empty {
+  padding: 22px 12px;
+  text-align: center;
+  color: var(--ep-muted);
+  font-size: 11px;
+}
+
+.ep-settings-actions {
+  display: flex;
+  justify-content: flex-end;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-top: 12px;
+  padding-top: 10px;
+  border-top: 1px solid #e4eee8;
+}
+
+.ep-settings-form-grid > .ep-settings-actions,
+.ep-settings-form > .ep-settings-actions {
+  grid-column: 1 / -1;
+  margin-top: 4px;
+  padding-top: 0;
+  border-top: 0;
+}
+
+.ep-settings-actions.is-split {
+  justify-content: space-between;
+}
+
+.ep-settings-meta {
+  font-size: 10px;
+  color: var(--ep-muted);
+  font-weight: 650;
 }
 
 .ep-settings-shortcuts {
@@ -3013,6 +3215,28 @@
   border-color: #9bb5a6;
 }
 
+.ep-settings-pill {
+  display: inline-flex;
+  align-items: center;
+  min-height: 22px;
+  padding: 0 8px;
+  border-radius: 999px;
+  background: var(--ep-primary-soft);
+  color: var(--ep-primary);
+  font-size: 10px;
+  font-weight: 700;
+}
+
+.ep-settings-pill.is-warn {
+  background: #f7edd4;
+  color: #7a5a12;
+}
+
+.ep-settings-pill.is-off {
+  background: #f0f2f1;
+  color: #66756d;
+}
+
 @media (max-width: 860px) {
   .ep-settings-layout {
     flex-direction: column;
@@ -3036,6 +3260,15 @@
 
   .ep-settings-header {
     flex-wrap: wrap;
+  }
+
+  .ep-settings-form,
+  .ep-settings-form-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .ep-settings-data-table.is-wide {
+    min-width: 720px;
   }
 }
 

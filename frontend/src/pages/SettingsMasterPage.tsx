@@ -755,641 +755,923 @@ export function SettingsMasterPage() {
 
           <div className="ep-settings-body">
             {tab === "overview" ? (
-              <div className="ep-settings-overview">
-                <p>
-                  Kelola pengguna, role modul, izin tugas, master operasional, status Accurate,
-                  dan audit. Permission baru default deny. Perubahan grant sensitif wajib
-                  konfirmasi. Perubahan editable hanya tersimpan setelah tombol Simpan.
-                </p>
-                <ul className="ep-settings-stats">
-                  <li>Pengguna: {users.length}</li>
-                  <li>Role: {roles.length}</li>
-                  <li>Jenis tugas Master: {taskTypes.length}</li>
-                  <li>Cabang: {branches.length}</li>
-                  <li>Mesin: {machines.length}</li>
-                  <li>Shift: {shifts.length}</li>
-                </ul>
-                <p className="ep-settings-shortcut-label">Pintasan</p>
-                <div className="ep-settings-shortcuts">
-                  {SETTINGS_NAV_ITEMS.filter((item) => item.id !== "overview").map((item) => (
-                    <button
-                      key={item.id}
-                      type="button"
-                      className="ep-settings-shortcut"
-                      onClick={() => requestTab(item.id)}
-                    >
-                      <NavIcon name={item.icon} size={15} />
-                      <span>{item.label}</span>
-                    </button>
-                  ))}
-                </div>
-              </div>
+              <>
+                <section className="ep-settings-card">
+                  <h3 className="ep-settings-card-title">Ringkasan data</h3>
+                  <p className="ep-settings-card-note">
+                    Permission baru default deny. Perubahan grant sensitif wajib konfirmasi.
+                    Perubahan editable hanya tersimpan setelah tombol Simpan.
+                  </p>
+                  <div className="ep-settings-table-wrap">
+                    <table className="ep-settings-data-table is-compact">
+                      <thead>
+                        <tr>
+                          <th>Informasi</th>
+                          <th className="is-status">Jumlah</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        <tr>
+                          <td>Pengguna</td>
+                          <td className="is-status">{users.length}</td>
+                        </tr>
+                        <tr>
+                          <td>Role</td>
+                          <td className="is-status">{roles.length}</td>
+                        </tr>
+                        <tr>
+                          <td>Jenis tugas Master</td>
+                          <td className="is-status">{taskTypes.length}</td>
+                        </tr>
+                        <tr>
+                          <td>Cabang</td>
+                          <td className="is-status">{branches.length}</td>
+                        </tr>
+                        <tr>
+                          <td>Mesin</td>
+                          <td className="is-status">{machines.length}</td>
+                        </tr>
+                        <tr>
+                          <td>Shift</td>
+                          <td className="is-status">{shifts.length}</td>
+                        </tr>
+                      </tbody>
+                    </table>
+                  </div>
+                </section>
+                <section className="ep-settings-card">
+                  <h3 className="ep-settings-card-title">Pintasan submenu</h3>
+                  <div className="ep-settings-shortcuts">
+                    {SETTINGS_NAV_ITEMS.filter((item) => item.id !== "overview").map((item) => (
+                      <button
+                        key={item.id}
+                        type="button"
+                        className="ep-settings-shortcut"
+                        onClick={() => requestTab(item.id)}
+                      >
+                        <NavIcon name={item.icon} size={15} />
+                        <span>{item.label}</span>
+                      </button>
+                    ))}
+                  </div>
+                </section>
+              </>
             ) : null}
 
             {tab === "users" ? (
-              <section>
-                <p className="ep-sectionlabel">Pengguna</p>
-                <form
-                  className="ep-settings-form"
-                  onSubmit={(e) => {
-                    e.preventDefault();
-                    if (savingCreate) return;
-                    void (async () => {
-                      setSavingCreate(true);
-                      setError(null);
-                      try {
-                        await createSettingsUser({
-                          ...newUser,
-                          operational_role: newUser.operational_role || null,
-                        });
-                        setNewUser(EMPTY_USER);
-                        showFeedback("success", "Berhasil", "Pengaturan berhasil disimpan.");
-                        await loadSettings();
-                      } catch (err) {
-                        const msg =
-                          err instanceof Error ? err.message : "Gagal membuat pengguna.";
-                        setError(msg);
-                        showFeedback("error", "Gagal", msg);
-                      } finally {
-                        setSavingCreate(false);
-                      }
-                    })();
-                  }}
-                >
-                  <input
-                    placeholder="Email"
-                    value={newUser.email}
-                    onChange={(e) => setNewUser({ ...newUser, email: e.target.value })}
-                    required
-                  />
-                  <input
-                    placeholder="Nama"
-                    value={newUser.display_name}
-                    onChange={(e) => setNewUser({ ...newUser, display_name: e.target.value })}
-                    required
-                  />
-                  <input
-                    type="password"
-                    placeholder="Password (≥12)"
-                    value={newUser.password}
-                    onChange={(e) => setNewUser({ ...newUser, password: e.target.value })}
-                    required
-                    minLength={12}
-                  />
-                  <select
-                    value={newUser.role}
-                    onChange={(e) => setNewUser({ ...newUser, role: e.target.value })}
+              <>
+                <section className="ep-settings-card">
+                  <h3 className="ep-settings-card-title">Tambah pengguna</h3>
+                  <form
+                    className="ep-settings-form-grid"
+                    onSubmit={(e) => {
+                      e.preventDefault();
+                      if (savingCreate) return;
+                      void (async () => {
+                        setSavingCreate(true);
+                        setError(null);
+                        try {
+                          await createSettingsUser({
+                            ...newUser,
+                            operational_role: newUser.operational_role || null,
+                          });
+                          setNewUser(EMPTY_USER);
+                          showFeedback("success", "Berhasil", "Pengaturan berhasil disimpan.");
+                          await loadSettings();
+                        } catch (err) {
+                          const msg =
+                            err instanceof Error ? err.message : "Gagal membuat pengguna.";
+                          setError(msg);
+                          showFeedback("error", "Gagal", msg);
+                        } finally {
+                          setSavingCreate(false);
+                        }
+                      })();
+                    }}
                   >
-                    {roles.map((r) => (
-                      <option key={r.role_key} value={r.role_key}>
-                        {r.label}
-                      </option>
-                    ))}
-                  </select>
-                  <button type="submit" className={`ep-btn primary${savingCreate ? " is-busy" : ""}`} disabled={savingCreate}>
-                    {savingCreate ? "Menyimpan…" : "Tambah pengguna"}
-                  </button>
-                </form>
-                <div className="ep-tblscroll">
-                  <table className="ep-table">
-                    <thead>
-                      <tr>
-                        <th>Email</th>
-                        <th>Nama</th>
-                        <th>Role</th>
-                        <th>Ops</th>
-                        <th>Aktif</th>
-                        <th />
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {users.length === 0 ? (
+                    <label className="ep-settings-field">
+                      <span className="ep-settings-field-label">Email</span>
+                      <input
+                        value={newUser.email}
+                        onChange={(e) => setNewUser({ ...newUser, email: e.target.value })}
+                        required
+                      />
+                    </label>
+                    <label className="ep-settings-field">
+                      <span className="ep-settings-field-label">Nama</span>
+                      <input
+                        value={newUser.display_name}
+                        onChange={(e) =>
+                          setNewUser({ ...newUser, display_name: e.target.value })
+                        }
+                        required
+                      />
+                    </label>
+                    <label className="ep-settings-field">
+                      <span className="ep-settings-field-label">Password (≥12)</span>
+                      <input
+                        type="password"
+                        value={newUser.password}
+                        onChange={(e) => setNewUser({ ...newUser, password: e.target.value })}
+                        required
+                        minLength={12}
+                      />
+                    </label>
+                    <label className="ep-settings-field">
+                      <span className="ep-settings-field-label">Role</span>
+                      <select
+                        value={newUser.role}
+                        onChange={(e) => setNewUser({ ...newUser, role: e.target.value })}
+                      >
+                        {roles.map((r) => (
+                          <option key={r.role_key} value={r.role_key}>
+                            {r.label}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                    <div className="ep-settings-actions">
+                      <button
+                        type="submit"
+                        className={`ep-btn primary${savingCreate ? " is-busy" : ""}`}
+                        disabled={savingCreate}
+                      >
+                        {savingCreate ? "Menyimpan…" : "Tambah pengguna"}
+                      </button>
+                    </div>
+                  </form>
+                </section>
+                <section className="ep-settings-card">
+                  <h3 className="ep-settings-card-title">Daftar pengguna</h3>
+                  <div className="ep-settings-table-wrap">
+                    <table className="ep-settings-data-table">
+                      <thead>
                         <tr>
-                          <td colSpan={6}>
-                            <div className="ep-empty">Tidak ada data / akses ditolak.</div>
-                          </td>
+                          <th>Email</th>
+                          <th>Nama</th>
+                          <th className="is-role">Role</th>
+                          <th className="is-role">Ops</th>
+                          <th className="is-status">Aktif</th>
+                          <th className="is-actions">Aksi</th>
                         </tr>
-                      ) : (
-                        users.map((u) => (
-                          <tr key={u.id}>
-                            <td>{u.email}</td>
-                            <td>{u.display_name}</td>
-                            <td>{u.role}</td>
-                            <td>{u.operational_role || "—"}</td>
-                            <td>{u.is_active ? "Ya" : "Tidak"}</td>
-                            <td>
-                              <button
-                                type="button"
-                                className="ep-btn"
-                                disabled={!u.is_active}
-                                onClick={() => {
-                                  const reason =
-                                    window.prompt(
-                                      "Alasan nonaktif (wajib jika ada dependensi):",
-                                    ) || "";
-                                  void setUserActive(u.id, false, reason)
-                                    .then(async () => {
-                                      showFeedback(
-                                        "success",
-                                        "Berhasil",
-                                        "Pengaturan berhasil disimpan.",
-                                      );
-                                      await loadSettings();
-                                    })
-                                    .catch((err: unknown) => {
-                                      const msg =
-                                        err instanceof Error
-                                          ? err.message
-                                          : "Gagal nonaktifkan.";
-                                      setError(msg);
-                                      showFeedback("error", "Gagal", msg);
-                                    });
-                                }}
-                              >
-                                Nonaktifkan
-                              </button>
+                      </thead>
+                      <tbody>
+                        {users.length === 0 ? (
+                          <tr>
+                            <td colSpan={6}>
+                              <div className="ep-settings-empty">
+                                Tidak ada data / akses ditolak.
+                              </div>
                             </td>
                           </tr>
-                        ))
-                      )}
-                    </tbody>
-                  </table>
-                </div>
-              </section>
+                        ) : (
+                          users.map((u) => (
+                            <tr key={u.id}>
+                              <td title={u.email}>{u.email}</td>
+                              <td>{u.display_name}</td>
+                              <td className="is-role">{u.role}</td>
+                              <td className="is-role">{u.operational_role || "—"}</td>
+                              <td className="is-status">
+                                <span
+                                  className={`ep-settings-pill${u.is_active ? "" : " is-off"}`}
+                                >
+                                  {u.is_active ? "Ya" : "Tidak"}
+                                </span>
+                              </td>
+                              <td className="is-actions">
+                                <button
+                                  type="button"
+                                  className="ep-btn"
+                                  disabled={!u.is_active}
+                                  onClick={() => {
+                                    const reason =
+                                      window.prompt(
+                                        "Alasan nonaktif (wajib jika ada dependensi):",
+                                      ) || "";
+                                    void setUserActive(u.id, false, reason)
+                                      .then(async () => {
+                                        showFeedback(
+                                          "success",
+                                          "Berhasil",
+                                          "Pengaturan berhasil disimpan.",
+                                        );
+                                        await loadSettings();
+                                      })
+                                      .catch((err: unknown) => {
+                                        const msg =
+                                          err instanceof Error
+                                            ? err.message
+                                            : "Gagal nonaktifkan.";
+                                        setError(msg);
+                                        showFeedback("error", "Gagal", msg);
+                                      });
+                                  }}
+                                >
+                                  Nonaktifkan
+                                </button>
+                              </td>
+                            </tr>
+                          ))
+                        )}
+                      </tbody>
+                    </table>
+                  </div>
+                </section>
+              </>
             ) : null}
 
             {tab === "roles" ? (
-              <section>
-                <p className="ep-sectionlabel">Role modul + draft permission</p>
-                <form
-                  className="ep-settings-form"
-                  onSubmit={(e) => {
-                    e.preventDefault();
-                    if (savingCreate) return;
-                    setSavingCreate(true);
-                    void createSettingsRole(newRole.role_key, newRole.label)
-                      .then(async () => {
-                        setNewRole({ role_key: "", label: "" });
-                        showFeedback("success", "Berhasil", "Pengaturan berhasil disimpan.");
-                        await loadSettings();
-                      })
-                      .catch((err: unknown) => {
-                        const msg =
-                          err instanceof Error ? err.message : "Gagal buat role.";
-                        setError(msg);
-                        showFeedback("error", "Gagal", msg);
-                      })
-                      .finally(() => setSavingCreate(false));
-                  }}
-                >
-                  <input
-                    placeholder="role_key"
-                    value={newRole.role_key}
-                    onChange={(e) => setNewRole({ ...newRole, role_key: e.target.value })}
-                    required
-                  />
-                  <input
-                    placeholder="Label"
-                    value={newRole.label}
-                    onChange={(e) => setNewRole({ ...newRole, label: e.target.value })}
-                    required
-                  />
-                  <button type="submit" className={`ep-btn primary${savingCreate ? " is-busy" : ""}`} disabled={savingCreate}>
-                    {savingCreate ? "Menyimpan…" : "Tambah custom role"}
-                  </button>
-                </form>
-                <label>
-                  Role aktif{" "}
-                  <select
-                    value={selectedRole}
-                    onChange={(e) => {
-                      if (modulePermsDirty) {
-                        const discard = window.confirm(
-                          "Draft permission role ini belum disimpan.\n\nOK = Buang draft dan ganti role\nCancel = Tetap Mengedit",
-                        );
-                        if (!discard) return;
-                      }
-                      setSelectedRole(e.target.value);
+              <>
+                <section className="ep-settings-card">
+                  <h3 className="ep-settings-card-title">Role modul</h3>
+                  <form
+                    className="ep-settings-form-grid"
+                    onSubmit={(e) => {
+                      e.preventDefault();
+                      if (savingCreate) return;
+                      setSavingCreate(true);
+                      void createSettingsRole(newRole.role_key, newRole.label)
+                        .then(async () => {
+                          setNewRole({ role_key: "", label: "" });
+                          showFeedback("success", "Berhasil", "Pengaturan berhasil disimpan.");
+                          await loadSettings();
+                        })
+                        .catch((err: unknown) => {
+                          const msg =
+                            err instanceof Error ? err.message : "Gagal buat role.";
+                          setError(msg);
+                          showFeedback("error", "Gagal", msg);
+                        })
+                        .finally(() => setSavingCreate(false));
                     }}
                   >
-                    {roles.map((r) => (
-                      <option key={r.role_key} value={r.role_key}>
-                        {r.label} ({r.kind}) v{r.version}
-                      </option>
-                    ))}
-                  </select>
-                </label>
-                <div className="ep-tblscroll">
-                  <table className="ep-table">
-                    <thead>
-                      <tr>
-                        <th>Permission</th>
-                        <th>Draft</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {modulePerms.map((p) => (
-                        <tr key={p}>
-                          <td>
-                            {p}
-                            {sensitivePerms.includes(p) ? " · sensitif" : ""}
-                          </td>
-                          <td>
-                            <input
-                              type="checkbox"
-                              checked={draftPerms.includes(p)}
-                              disabled={selectedRole === "super_admin"}
-                              onChange={(e) => {
-                                setDraftPerms((prev) =>
-                                  e.target.checked
-                                    ? Array.from(new Set([...prev, p]))
-                                    : prev.filter((x) => x !== p),
-                                );
-                              }}
-                            />
-                          </td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
-                <label>
-                  Alasan (wajib jika grant sensitif){" "}
-                  <input value={permReason} onChange={(e) => setPermReason(e.target.value)} />
-                </label>
-                <label>
-                  <input
-                    type="checkbox"
-                    checked={confirmSensitive}
-                    onChange={(e) => setConfirmSensitive(e.target.checked)}
-                  />{" "}
-                  Konfirmasi perubahan grant sensitif
-                </label>
-                <button
-                  type="button"
-                  className={`ep-btn primary${savingModulePerms ? " is-busy" : ""}`}
-                  disabled={
-                    !selectedRoleDoc ||
-                    selectedRole === "super_admin" ||
-                    !modulePermsDirty ||
-                    savingModulePerms
-                  }
-                  onClick={() => void saveModulePermissions()}
-                >
-                  {savingModulePerms ? "Menyimpan…" : "Simpan permission"}
-                </button>
-
-                <p className="ep-sectionlabel">Izin aksi operasional (Master existing)</p>
-                {masterLoading ? (
-                  <p>Memuat…</p>
-                ) : (
-                  <>
-                    <div className="ep-tblscroll">
-                      <table className="ep-table">
-                        <thead>
-                          <tr>
-                            <th>Role</th>
-                            <th>Jenis</th>
-                            {actions.map((a) => (
-                              <th key={a}>{ACTION_LABEL[a] || a}</th>
-                            ))}
-                          </tr>
-                        </thead>
-                        <tbody>
-                          {rolesOps.flatMap((role) =>
-                            taskTypes.map((t) => {
-                              const key = grantKey(role, t.task_type);
-                              const granted = draftGrantMap.get(key) || [];
-                              if (granted.length === 0 && t.assigned_role !== role) return null;
-                              return (
-                                <tr key={key}>
-                                  <td>{ROLE_LABEL[role] || role}</td>
-                                  <td>{t.label}</td>
-                                  {actions.map((a) => (
-                                    <td key={a}>
-                                      <input
-                                        type="checkbox"
-                                        checked={granted.includes(a)}
-                                        disabled={savingOpsGrants}
-                                        onChange={(e) =>
-                                          toggleDraftAction(
-                                            role,
-                                            t.task_type,
-                                            a,
-                                            e.target.checked,
-                                          )
-                                        }
-                                      />
-                                    </td>
-                                  ))}
-                                </tr>
-                              );
-                            }),
-                          )}
-                        </tbody>
-                      </table>
+                    <label className="ep-settings-field">
+                      <span className="ep-settings-field-label">role_key</span>
+                      <input
+                        value={newRole.role_key}
+                        onChange={(e) => setNewRole({ ...newRole, role_key: e.target.value })}
+                        required
+                      />
+                    </label>
+                    <label className="ep-settings-field">
+                      <span className="ep-settings-field-label">Label</span>
+                      <input
+                        value={newRole.label}
+                        onChange={(e) => setNewRole({ ...newRole, label: e.target.value })}
+                        required
+                      />
+                    </label>
+                    <div className="ep-settings-field is-actions">
+                      <span className="ep-settings-field-label">&nbsp;</span>
+                      <button
+                        type="submit"
+                        className={`ep-btn primary${savingCreate ? " is-busy" : ""}`}
+                        disabled={savingCreate}
+                      >
+                        {savingCreate ? "Menyimpan…" : "Tambah custom role"}
+                      </button>
                     </div>
+                  </form>
+
+                  <label className="ep-settings-field" style={{ maxWidth: 360, marginBottom: 12 }}>
+                    <span className="ep-settings-field-label">Role aktif</span>
+                    <select
+                      value={selectedRole}
+                      onChange={(e) => {
+                        if (modulePermsDirty) {
+                          const discard = window.confirm(
+                            "Draft permission role ini belum disimpan.\n\nOK = Buang draft dan ganti role\nCancel = Tetap Mengedit",
+                          );
+                          if (!discard) return;
+                        }
+                        setSelectedRole(e.target.value);
+                      }}
+                    >
+                      {roles.map((r) => (
+                        <option key={r.role_key} value={r.role_key}>
+                          {r.label} ({r.kind}) v{r.version}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+
+                  <div className="ep-settings-table-wrap">
+                    <table className="ep-settings-data-table is-compact">
+                      <thead>
+                        <tr>
+                          <th>Permission</th>
+                          <th className="is-check">Draft</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {modulePerms.length === 0 ? (
+                          <tr>
+                            <td colSpan={2}>
+                              <div className="ep-settings-empty">Tidak ada permission katalog.</div>
+                            </td>
+                          </tr>
+                        ) : (
+                          modulePerms.map((p) => (
+                            <tr key={p}>
+                              <td>
+                                {p}
+                                {sensitivePerms.includes(p) ? (
+                                  <span className="ep-settings-pill is-warn" style={{ marginLeft: 8 }}>
+                                    sensitif
+                                  </span>
+                                ) : null}
+                              </td>
+                              <td className="is-check">
+                                <input
+                                  type="checkbox"
+                                  checked={draftPerms.includes(p)}
+                                  disabled={selectedRole === "super_admin"}
+                                  onChange={(e) => {
+                                    setDraftPerms((prev) =>
+                                      e.target.checked
+                                        ? Array.from(new Set([...prev, p]))
+                                        : prev.filter((x) => x !== p),
+                                    );
+                                  }}
+                                />
+                              </td>
+                            </tr>
+                          ))
+                        )}
+                      </tbody>
+                    </table>
+                  </div>
+
+                  <div className="ep-settings-form-grid" style={{ marginTop: 12 }}>
+                    <label className="ep-settings-field" style={{ gridColumn: "1 / -1" }}>
+                      <span className="ep-settings-field-label">
+                        Alasan (wajib jika grant sensitif)
+                      </span>
+                      <input
+                        value={permReason}
+                        onChange={(e) => setPermReason(e.target.value)}
+                      />
+                    </label>
+                    <label className="ep-settings-check-row">
+                      <input
+                        type="checkbox"
+                        checked={confirmSensitive}
+                        onChange={(e) => setConfirmSensitive(e.target.checked)}
+                      />
+                      Konfirmasi perubahan grant sensitif
+                    </label>
+                  </div>
+
+                  <div className="ep-settings-actions">
+                    {modulePermsDirty ? (
+                      <span className="ep-settings-meta">Ada draft belum disimpan</span>
+                    ) : (
+                      <span className="ep-settings-meta">Tidak ada perubahan</span>
+                    )}
                     <button
                       type="button"
-                      className={`ep-btn primary${savingOpsGrants ? " is-busy" : ""}`}
-                      disabled={!opsGrantsDirty || savingOpsGrants}
-                      onClick={() => void saveOperationalGrants()}
+                      className={`ep-btn primary${savingModulePerms ? " is-busy" : ""}`}
+                      disabled={
+                        !selectedRoleDoc ||
+                        selectedRole === "super_admin" ||
+                        !modulePermsDirty ||
+                        savingModulePerms
+                      }
+                      onClick={() => void saveModulePermissions()}
                     >
-                      {savingOpsGrants ? "Menyimpan…" : "Simpan izin operasional"}
+                      {savingModulePerms ? "Menyimpan…" : "Simpan permission"}
                     </button>
-                  </>
-                )}
-              </section>
+                  </div>
+                </section>
+
+                <section className="ep-settings-card">
+                  <h3 className="ep-settings-card-title">Izin aksi operasional</h3>
+                  <p className="ep-settings-card-note">
+                    Checklist hanya mengubah draft. Penyimpanan per baris role×jenis tugas (bukan
+                    atomik).
+                  </p>
+                  {masterLoading ? (
+                    <p className="ep-settings-empty">Memuat…</p>
+                  ) : (
+                    <>
+                      <div className="ep-settings-table-wrap">
+                        <table className="ep-settings-data-table is-wide">
+                          <thead>
+                            <tr>
+                              <th className="is-role">Role</th>
+                              <th className="is-type">Jenis tugas</th>
+                              {actions.map((a) => (
+                                <th key={a} className="is-check">
+                                  {ACTION_LABEL[a] || a}
+                                </th>
+                              ))}
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {rolesOps.flatMap((role) =>
+                              taskTypes.map((t) => {
+                                const key = grantKey(role, t.task_type);
+                                const granted = draftGrantMap.get(key) || [];
+                                if (granted.length === 0 && t.assigned_role !== role) {
+                                  return null;
+                                }
+                                return (
+                                  <tr key={key}>
+                                    <td className="is-role">{ROLE_LABEL[role] || role}</td>
+                                    <td className="is-type" title={t.label}>
+                                      {t.label}
+                                    </td>
+                                    {actions.map((a) => (
+                                      <td key={a} className="is-check">
+                                        <input
+                                          type="checkbox"
+                                          checked={granted.includes(a)}
+                                          disabled={savingOpsGrants}
+                                          onChange={(e) =>
+                                            toggleDraftAction(
+                                              role,
+                                              t.task_type,
+                                              a,
+                                              e.target.checked,
+                                            )
+                                          }
+                                        />
+                                      </td>
+                                    ))}
+                                  </tr>
+                                );
+                              }),
+                            )}
+                          </tbody>
+                        </table>
+                      </div>
+                      <div className="ep-settings-actions">
+                        {opsGrantsDirty ? (
+                          <span className="ep-settings-meta">Ada draft belum disimpan</span>
+                        ) : (
+                          <span className="ep-settings-meta">Tidak ada perubahan</span>
+                        )}
+                        <button
+                          type="button"
+                          className={`ep-btn primary${savingOpsGrants ? " is-busy" : ""}`}
+                          disabled={!opsGrantsDirty || savingOpsGrants}
+                          onClick={() => void saveOperationalGrants()}
+                        >
+                          {savingOpsGrants ? "Menyimpan…" : "Simpan izin operasional"}
+                        </button>
+                      </div>
+                    </>
+                  )}
+                </section>
+              </>
             ) : null}
 
             {tab === "task-types" ? (
-              <section>
-                <p className="ep-sectionlabel">Jenis tugas terdaftar + manual</p>
-                <form
-                  className="ep-settings-form"
-                  onSubmit={(e) => {
-                    e.preventDefault();
-                    if (savingCreate) return;
-                    setSavingCreate(true);
-                    void createManualTaskType({
-                      task_type: manualTask.task_type,
-                      label: manualTask.label,
-                      scope: "po",
-                      assigned_role: manualTask.assigned_role,
-                    })
-                      .then(async () => {
-                        setManualTask({
-                          task_type: "",
-                          label: "",
-                          assigned_role: "helper",
-                        });
-                        showFeedback("success", "Berhasil", "Pengaturan berhasil disimpan.");
-                        await loadMaster();
+              <>
+                <section className="ep-settings-card">
+                  <h3 className="ep-settings-card-title">Tambah jenis tugas manual</h3>
+                  <form
+                    className="ep-settings-form-grid"
+                    onSubmit={(e) => {
+                      e.preventDefault();
+                      if (savingCreate) return;
+                      setSavingCreate(true);
+                      void createManualTaskType({
+                        task_type: manualTask.task_type,
+                        label: manualTask.label,
+                        scope: "po",
+                        assigned_role: manualTask.assigned_role,
                       })
-                      .catch((err: unknown) => {
-                        const msg =
-                          err instanceof Error ? err.message : "Gagal buat task type.";
-                        setError(msg);
-                        showFeedback("error", "Gagal", msg);
-                      })
-                      .finally(() => setSavingCreate(false));
-                  }}
-                >
-                  <input
-                    placeholder="task_type"
-                    value={manualTask.task_type}
-                    onChange={(e) =>
-                      setManualTask({ ...manualTask, task_type: e.target.value })
-                    }
-                    required
-                  />
-                  <input
-                    placeholder="Label"
-                    value={manualTask.label}
-                    onChange={(e) => setManualTask({ ...manualTask, label: e.target.value })}
-                    required
-                  />
-                  <select
-                    value={manualTask.assigned_role}
-                    onChange={(e) =>
-                      setManualTask({ ...manualTask, assigned_role: e.target.value })
-                    }
+                        .then(async () => {
+                          setManualTask({
+                            task_type: "",
+                            label: "",
+                            assigned_role: "helper",
+                          });
+                          showFeedback("success", "Berhasil", "Pengaturan berhasil disimpan.");
+                          await loadMaster();
+                        })
+                        .catch((err: unknown) => {
+                          const msg =
+                            err instanceof Error ? err.message : "Gagal buat task type.";
+                          setError(msg);
+                          showFeedback("error", "Gagal", msg);
+                        })
+                        .finally(() => setSavingCreate(false));
+                    }}
                   >
-                    {rolesOps.map((r) => (
-                      <option key={r} value={r}>
-                        {ROLE_LABEL[r] || r}
-                      </option>
-                    ))}
-                  </select>
-                  <button type="submit" className={`ep-btn primary${savingCreate ? " is-busy" : ""}`} disabled={savingCreate}>
-                    {savingCreate ? "Menyimpan…" : "Tambah manual"}
-                  </button>
-                </form>
-                <div className="ep-tblscroll">
-                  <table className="ep-table">
-                    <thead>
-                      <tr>
-                        <th>Jenis</th>
-                        <th>Cakupan</th>
-                        <th>Role penanggung jawab</th>
-                        <th>Pemetaan</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {taskTypes.map((t) => (
-                        <tr key={t.task_type}>
-                          <td>
-                            {t.label}
-                            {t.coordination ? " · koordinasi" : ""}
-                          </td>
-                          <td>{t.scope}</td>
-                          <td>
-                            <select
-                              value={draftAssignments[t.task_type] || t.assigned_role}
-                              disabled={savingAssignments}
-                              onChange={(e) =>
-                                setDraftAssignments((prev) => ({
-                                  ...prev,
-                                  [t.task_type]: e.target.value as OperationalRole,
-                                }))
-                              }
-                            >
-                              {rolesOps.map((r) => (
-                                <option key={r} value={r}>
-                                  {ROLE_LABEL[r] || r}
-                                </option>
-                              ))}
-                            </select>
-                          </td>
-                          <td>{t.is_default_mapping ? "Default Owner" : "Dikonfigurasi"}</td>
+                    <label className="ep-settings-field">
+                      <span className="ep-settings-field-label">task_type</span>
+                      <input
+                        value={manualTask.task_type}
+                        onChange={(e) =>
+                          setManualTask({ ...manualTask, task_type: e.target.value })
+                        }
+                        required
+                      />
+                    </label>
+                    <label className="ep-settings-field">
+                      <span className="ep-settings-field-label">Label</span>
+                      <input
+                        value={manualTask.label}
+                        onChange={(e) =>
+                          setManualTask({ ...manualTask, label: e.target.value })
+                        }
+                        required
+                      />
+                    </label>
+                    <label className="ep-settings-field">
+                      <span className="ep-settings-field-label">Role penanggung jawab</span>
+                      <select
+                        value={manualTask.assigned_role}
+                        onChange={(e) =>
+                          setManualTask({ ...manualTask, assigned_role: e.target.value })
+                        }
+                      >
+                        {rolesOps.map((r) => (
+                          <option key={r} value={r}>
+                            {ROLE_LABEL[r] || r}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                    <div className="ep-settings-actions">
+                      <button
+                        type="submit"
+                        className={`ep-btn primary${savingCreate ? " is-busy" : ""}`}
+                        disabled={savingCreate}
+                      >
+                        {savingCreate ? "Menyimpan…" : "Tambah manual"}
+                      </button>
+                    </div>
+                  </form>
+                </section>
+                <section className="ep-settings-card">
+                  <h3 className="ep-settings-card-title">Jenis tugas terdaftar</h3>
+                  <div className="ep-settings-table-wrap">
+                    <table className="ep-settings-data-table">
+                      <thead>
+                        <tr>
+                          <th>Jenis</th>
+                          <th className="is-status">Cakupan</th>
+                          <th style={{ width: 180 }}>Role penanggung jawab</th>
+                          <th className="is-role">Pemetaan</th>
                         </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
-                <button
-                  type="button"
-                  className={`ep-btn primary${savingAssignments ? " is-busy" : ""}`}
-                  disabled={!assignmentsDirty || savingAssignments}
-                  onClick={() => void saveTaskAssignments()}
-                >
-                  {savingAssignments ? "Menyimpan…" : "Simpan assignment role"}
-                </button>
-              </section>
+                      </thead>
+                      <tbody>
+                        {taskTypes.length === 0 ? (
+                          <tr>
+                            <td colSpan={4}>
+                              <div className="ep-settings-empty">Belum ada jenis tugas.</div>
+                            </td>
+                          </tr>
+                        ) : (
+                          taskTypes.map((t) => (
+                            <tr key={t.task_type}>
+                              <td>
+                                {t.label}
+                                {t.coordination ? " · koordinasi" : ""}
+                              </td>
+                              <td className="is-status">{t.scope}</td>
+                              <td>
+                                <select
+                                  className="ep-settings-inline-select"
+                                  value={draftAssignments[t.task_type] || t.assigned_role}
+                                  disabled={savingAssignments}
+                                  onChange={(e) =>
+                                    setDraftAssignments((prev) => ({
+                                      ...prev,
+                                      [t.task_type]: e.target.value as OperationalRole,
+                                    }))
+                                  }
+                                >
+                                  {rolesOps.map((r) => (
+                                    <option key={r} value={r}>
+                                      {ROLE_LABEL[r] || r}
+                                    </option>
+                                  ))}
+                                </select>
+                              </td>
+                              <td className="is-role">
+                                {t.is_default_mapping ? "Default Owner" : "Dikonfigurasi"}
+                              </td>
+                            </tr>
+                          ))
+                        )}
+                      </tbody>
+                    </table>
+                  </div>
+                  <div className="ep-settings-actions">
+                    {assignmentsDirty ? (
+                      <span className="ep-settings-meta">Ada draft belum disimpan</span>
+                    ) : (
+                      <span className="ep-settings-meta">Tidak ada perubahan</span>
+                    )}
+                    <button
+                      type="button"
+                      className={`ep-btn primary${savingAssignments ? " is-busy" : ""}`}
+                      disabled={!assignmentsDirty || savingAssignments}
+                      onClick={() => void saveTaskAssignments()}
+                    >
+                      {savingAssignments ? "Menyimpan…" : "Simpan assignment role"}
+                    </button>
+                  </div>
+                </section>
+              </>
             ) : null}
 
             {tab === "branches" ? (
-              <section>
-                <p className="ep-sectionlabel">Cabang</p>
-                <form
-                  className="ep-settings-form"
-                  onSubmit={(e) => {
-                    e.preventDefault();
-                    if (savingOrg) return;
-                    setSavingOrg(true);
-                    void upsertBranch(newBranch.code, newBranch.name)
-                      .then(async () => {
-                        setNewBranch({ code: "", name: "" });
-                        showFeedback("success", "Berhasil", "Pengaturan berhasil disimpan.");
-                        await loadSettings();
-                      })
-                      .catch((err: unknown) => {
-                        const msg =
-                          err instanceof Error ? err.message : "Gagal cabang.";
-                        setError(msg);
-                        showFeedback("error", "Gagal", msg);
-                      })
-                      .finally(() => setSavingOrg(false));
-                  }}
-                >
-                  <input
-                    placeholder="Kode"
-                    value={newBranch.code}
-                    onChange={(e) => setNewBranch({ ...newBranch, code: e.target.value })}
-                    required
-                  />
-                  <input
-                    placeholder="Nama"
-                    value={newBranch.name}
-                    onChange={(e) => setNewBranch({ ...newBranch, name: e.target.value })}
-                    required
-                  />
-                  <button type="submit" className={`ep-btn primary${savingOrg ? " is-busy" : ""}`} disabled={savingOrg}>
-                    {savingOrg ? "Menyimpan…" : "Simpan cabang"}
-                  </button>
-                </form>
-                <ul>
-                  {branches.map((b) => (
-                    <li key={b.code}>
-                      {b.code} — {b.name}
-                    </li>
-                  ))}
-                </ul>
-              </section>
+              <>
+                <section className="ep-settings-card">
+                  <h3 className="ep-settings-card-title">Simpan cabang</h3>
+                  <form
+                    className="ep-settings-form-grid"
+                    onSubmit={(e) => {
+                      e.preventDefault();
+                      if (savingOrg) return;
+                      setSavingOrg(true);
+                      void upsertBranch(newBranch.code, newBranch.name)
+                        .then(async () => {
+                          setNewBranch({ code: "", name: "" });
+                          showFeedback("success", "Berhasil", "Pengaturan berhasil disimpan.");
+                          await loadSettings();
+                        })
+                        .catch((err: unknown) => {
+                          const msg =
+                            err instanceof Error ? err.message : "Gagal cabang.";
+                          setError(msg);
+                          showFeedback("error", "Gagal", msg);
+                        })
+                        .finally(() => setSavingOrg(false));
+                    }}
+                  >
+                    <label className="ep-settings-field">
+                      <span className="ep-settings-field-label">Kode</span>
+                      <input
+                        value={newBranch.code}
+                        onChange={(e) => setNewBranch({ ...newBranch, code: e.target.value })}
+                        required
+                      />
+                    </label>
+                    <label className="ep-settings-field">
+                      <span className="ep-settings-field-label">Nama</span>
+                      <input
+                        value={newBranch.name}
+                        onChange={(e) => setNewBranch({ ...newBranch, name: e.target.value })}
+                        required
+                      />
+                    </label>
+                    <div className="ep-settings-actions">
+                      <button
+                        type="submit"
+                        className={`ep-btn primary${savingOrg ? " is-busy" : ""}`}
+                        disabled={savingOrg}
+                      >
+                        {savingOrg ? "Menyimpan…" : "Simpan cabang"}
+                      </button>
+                    </div>
+                  </form>
+                </section>
+                <section className="ep-settings-card">
+                  <h3 className="ep-settings-card-title">Daftar cabang</h3>
+                  <div className="ep-settings-table-wrap">
+                    <table className="ep-settings-data-table is-compact">
+                      <thead>
+                        <tr>
+                          <th style={{ width: 140 }}>Kode</th>
+                          <th>Nama</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {branches.length === 0 ? (
+                          <tr>
+                            <td colSpan={2}>
+                              <div className="ep-settings-empty">Belum ada cabang / akses ditolak.</div>
+                            </td>
+                          </tr>
+                        ) : (
+                          branches.map((b) => (
+                            <tr key={b.code}>
+                              <td>{b.code}</td>
+                              <td>{b.name}</td>
+                            </tr>
+                          ))
+                        )}
+                      </tbody>
+                    </table>
+                  </div>
+                </section>
+              </>
             ) : null}
 
             {tab === "machines" ? (
-              <section>
-                <p className="ep-sectionlabel">Mesin</p>
-                <form
-                  className="ep-settings-form"
-                  onSubmit={(e) => {
-                    e.preventDefault();
-                    if (savingOrg) return;
-                    setSavingOrg(true);
-                    void upsertMachine(newMachine)
-                      .then(async () => {
-                        setNewMachine({ code: "", label: "", branch_code: "" });
-                        showFeedback("success", "Berhasil", "Pengaturan berhasil disimpan.");
-                        await loadSettings();
-                      })
-                      .catch((err: unknown) => {
-                        const msg =
-                          err instanceof Error ? err.message : "Gagal mesin.";
-                        setError(msg);
-                        showFeedback("error", "Gagal", msg);
-                      })
-                      .finally(() => setSavingOrg(false));
-                  }}
-                >
-                  <input
-                    placeholder="Kode"
-                    value={newMachine.code}
-                    onChange={(e) => setNewMachine({ ...newMachine, code: e.target.value })}
-                    required
-                  />
-                  <input
-                    placeholder="Label"
-                    value={newMachine.label}
-                    onChange={(e) => setNewMachine({ ...newMachine, label: e.target.value })}
-                    required
-                  />
-                  <input
-                    placeholder="Cabang (opsional)"
-                    value={newMachine.branch_code}
-                    onChange={(e) =>
-                      setNewMachine({ ...newMachine, branch_code: e.target.value })
-                    }
-                  />
-                  <button type="submit" className={`ep-btn primary${savingOrg ? " is-busy" : ""}`} disabled={savingOrg}>
-                    {savingOrg ? "Menyimpan…" : "Simpan mesin"}
-                  </button>
-                </form>
-                <ul>
-                  {machines.map((m) => (
-                    <li key={m.code}>
-                      {m.code} — {m.label} {m.branch_code ? `(${m.branch_code})` : ""}
-                    </li>
-                  ))}
-                </ul>
-              </section>
+              <>
+                <section className="ep-settings-card">
+                  <h3 className="ep-settings-card-title">Simpan mesin</h3>
+                  <form
+                    className="ep-settings-form-grid"
+                    onSubmit={(e) => {
+                      e.preventDefault();
+                      if (savingOrg) return;
+                      setSavingOrg(true);
+                      void upsertMachine(newMachine)
+                        .then(async () => {
+                          setNewMachine({ code: "", label: "", branch_code: "" });
+                          showFeedback("success", "Berhasil", "Pengaturan berhasil disimpan.");
+                          await loadSettings();
+                        })
+                        .catch((err: unknown) => {
+                          const msg =
+                            err instanceof Error ? err.message : "Gagal mesin.";
+                          setError(msg);
+                          showFeedback("error", "Gagal", msg);
+                        })
+                        .finally(() => setSavingOrg(false));
+                    }}
+                  >
+                    <label className="ep-settings-field">
+                      <span className="ep-settings-field-label">Kode</span>
+                      <input
+                        value={newMachine.code}
+                        onChange={(e) => setNewMachine({ ...newMachine, code: e.target.value })}
+                        required
+                      />
+                    </label>
+                    <label className="ep-settings-field">
+                      <span className="ep-settings-field-label">Label</span>
+                      <input
+                        value={newMachine.label}
+                        onChange={(e) =>
+                          setNewMachine({ ...newMachine, label: e.target.value })
+                        }
+                        required
+                      />
+                    </label>
+                    <label className="ep-settings-field">
+                      <span className="ep-settings-field-label">Cabang (opsional)</span>
+                      <input
+                        value={newMachine.branch_code}
+                        onChange={(e) =>
+                          setNewMachine({ ...newMachine, branch_code: e.target.value })
+                        }
+                      />
+                    </label>
+                    <div className="ep-settings-actions">
+                      <button
+                        type="submit"
+                        className={`ep-btn primary${savingOrg ? " is-busy" : ""}`}
+                        disabled={savingOrg}
+                      >
+                        {savingOrg ? "Menyimpan…" : "Simpan mesin"}
+                      </button>
+                    </div>
+                  </form>
+                </section>
+                <section className="ep-settings-card">
+                  <h3 className="ep-settings-card-title">Daftar mesin</h3>
+                  <div className="ep-settings-table-wrap">
+                    <table className="ep-settings-data-table is-compact">
+                      <thead>
+                        <tr>
+                          <th style={{ width: 120 }}>Kode</th>
+                          <th>Label</th>
+                          <th style={{ width: 140 }}>Cabang</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {machines.length === 0 ? (
+                          <tr>
+                            <td colSpan={3}>
+                              <div className="ep-settings-empty">Belum ada mesin / akses ditolak.</div>
+                            </td>
+                          </tr>
+                        ) : (
+                          machines.map((m) => (
+                            <tr key={m.code}>
+                              <td>{m.code}</td>
+                              <td>{m.label}</td>
+                              <td>{m.branch_code || "—"}</td>
+                            </tr>
+                          ))
+                        )}
+                      </tbody>
+                    </table>
+                  </div>
+                </section>
+              </>
             ) : null}
 
             {tab === "shifts" ? (
-              <section>
-                <p className="ep-sectionlabel">Shift</p>
-                <form
-                  className="ep-settings-form"
-                  onSubmit={(e) => {
-                    e.preventDefault();
-                    if (savingOrg) return;
-                    setSavingOrg(true);
-                    void upsertShift(newShift)
-                      .then(async () => {
-                        setNewShift({
-                          code: "",
-                          label: "",
-                          start_time: "08:00",
-                          end_time: "16:00",
-                        });
-                        showFeedback("success", "Berhasil", "Pengaturan berhasil disimpan.");
-                        await loadSettings();
-                      })
-                      .catch((err: unknown) => {
-                        const msg =
-                          err instanceof Error ? err.message : "Gagal shift.";
-                        setError(msg);
-                        showFeedback("error", "Gagal", msg);
-                      })
-                      .finally(() => setSavingOrg(false));
-                  }}
-                >
-                  <input
-                    placeholder="Kode"
-                    value={newShift.code}
-                    onChange={(e) => setNewShift({ ...newShift, code: e.target.value })}
-                    required
-                  />
-                  <input
-                    placeholder="Label"
-                    value={newShift.label}
-                    onChange={(e) => setNewShift({ ...newShift, label: e.target.value })}
-                    required
-                  />
-                  <input
-                    placeholder="Mulai HH:MM"
-                    value={newShift.start_time}
-                    onChange={(e) => setNewShift({ ...newShift, start_time: e.target.value })}
-                    required
-                  />
-                  <input
-                    placeholder="Selesai HH:MM"
-                    value={newShift.end_time}
-                    onChange={(e) => setNewShift({ ...newShift, end_time: e.target.value })}
-                    required
-                  />
-                  <button type="submit" className={`ep-btn primary${savingOrg ? " is-busy" : ""}`} disabled={savingOrg}>
-                    {savingOrg ? "Menyimpan…" : "Simpan shift"}
-                  </button>
-                </form>
-                <ul>
-                  {shifts.map((s) => (
-                    <li key={s.code}>
-                      {s.code} — {s.label} ({s.start_time}–{s.end_time})
-                    </li>
-                  ))}
-                </ul>
-              </section>
+              <>
+                <section className="ep-settings-card">
+                  <h3 className="ep-settings-card-title">Simpan shift</h3>
+                  <form
+                    className="ep-settings-form-grid"
+                    onSubmit={(e) => {
+                      e.preventDefault();
+                      if (savingOrg) return;
+                      setSavingOrg(true);
+                      void upsertShift(newShift)
+                        .then(async () => {
+                          setNewShift({
+                            code: "",
+                            label: "",
+                            start_time: "08:00",
+                            end_time: "16:00",
+                          });
+                          showFeedback("success", "Berhasil", "Pengaturan berhasil disimpan.");
+                          await loadSettings();
+                        })
+                        .catch((err: unknown) => {
+                          const msg =
+                            err instanceof Error ? err.message : "Gagal shift.";
+                          setError(msg);
+                          showFeedback("error", "Gagal", msg);
+                        })
+                        .finally(() => setSavingOrg(false));
+                    }}
+                  >
+                    <label className="ep-settings-field">
+                      <span className="ep-settings-field-label">Kode</span>
+                      <input
+                        value={newShift.code}
+                        onChange={(e) => setNewShift({ ...newShift, code: e.target.value })}
+                        required
+                      />
+                    </label>
+                    <label className="ep-settings-field">
+                      <span className="ep-settings-field-label">Label</span>
+                      <input
+                        value={newShift.label}
+                        onChange={(e) => setNewShift({ ...newShift, label: e.target.value })}
+                        required
+                      />
+                    </label>
+                    <label className="ep-settings-field">
+                      <span className="ep-settings-field-label">Mulai (HH:MM)</span>
+                      <input
+                        value={newShift.start_time}
+                        onChange={(e) =>
+                          setNewShift({ ...newShift, start_time: e.target.value })
+                        }
+                        required
+                      />
+                    </label>
+                    <label className="ep-settings-field">
+                      <span className="ep-settings-field-label">Selesai (HH:MM)</span>
+                      <input
+                        value={newShift.end_time}
+                        onChange={(e) =>
+                          setNewShift({ ...newShift, end_time: e.target.value })
+                        }
+                        required
+                      />
+                    </label>
+                    <div className="ep-settings-actions">
+                      <button
+                        type="submit"
+                        className={`ep-btn primary${savingOrg ? " is-busy" : ""}`}
+                        disabled={savingOrg}
+                      >
+                        {savingOrg ? "Menyimpan…" : "Simpan shift"}
+                      </button>
+                    </div>
+                  </form>
+                </section>
+                <section className="ep-settings-card">
+                  <h3 className="ep-settings-card-title">Daftar shift</h3>
+                  <div className="ep-settings-table-wrap">
+                    <table className="ep-settings-data-table is-compact">
+                      <thead>
+                        <tr>
+                          <th style={{ width: 120 }}>Kode</th>
+                          <th>Label</th>
+                          <th className="is-status">Mulai</th>
+                          <th className="is-status">Selesai</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {shifts.length === 0 ? (
+                          <tr>
+                            <td colSpan={4}>
+                              <div className="ep-settings-empty">Belum ada shift / akses ditolak.</div>
+                            </td>
+                          </tr>
+                        ) : (
+                          shifts.map((s) => (
+                            <tr key={s.code}>
+                              <td>{s.code}</td>
+                              <td>{s.label}</td>
+                              <td className="is-status">{s.start_time}</td>
+                              <td className="is-status">{s.end_time}</td>
+                            </tr>
+                          ))
+                        )}
+                      </tbody>
+                    </table>
+                  </div>
+                </section>
+              </>
             ) : null}
 
             {tab === "products" ? (
@@ -1401,25 +1683,40 @@ export function SettingsMasterPage() {
             ) : null}
 
             {tab === "workflow" ? (
-              <section>
-                <p className="ep-sectionlabel">Kebijakan workflow (read-only)</p>
-                <div className="ep-tblscroll">
-                  <table className="ep-table">
+              <section className="ep-settings-card">
+                <h3 className="ep-settings-card-title">Kebijakan workflow</h3>
+                <p className="ep-settings-card-note">Read-only — tidak ada editor status bebas.</p>
+                <div className="ep-settings-table-wrap">
+                  <table className="ep-settings-data-table">
                     <thead>
                       <tr>
                         <th>Kebijakan</th>
-                        <th>Status</th>
+                        <th className="is-status">Status</th>
                         <th>Catatan</th>
                       </tr>
                     </thead>
                     <tbody>
-                      {policies.map((p) => (
-                        <tr key={p.id}>
-                          <td>{p.label}</td>
-                          <td>{p.status}</td>
-                          <td>{p.note}</td>
+                      {policies.length === 0 ? (
+                        <tr>
+                          <td colSpan={3}>
+                            <div className="ep-settings-empty">Tidak ada kebijakan.</div>
+                          </td>
                         </tr>
-                      ))}
+                      ) : (
+                        policies.map((p) => (
+                          <tr key={p.id}>
+                            <td>{p.label}</td>
+                            <td className="is-status">
+                              <span
+                                className={`ep-settings-pill${p.status === "unavailable" ? " is-off" : ""}`}
+                              >
+                                {p.status}
+                              </span>
+                            </td>
+                            <td>{p.note}</td>
+                          </tr>
+                        ))
+                      )}
                     </tbody>
                   </table>
                 </div>
@@ -1427,60 +1724,116 @@ export function SettingsMasterPage() {
             ) : null}
 
             {tab === "accurate" ? (
-              <section>
-                <p className="ep-sectionlabel">Status integrasi Accurate (non-secret)</p>
-                {accurate ? (
-                  <ul>
-                    <li>
-                      Base URL: {accurate.configured.base_url ? "terkonfigurasi" : "belum"}
-                    </li>
-                    <li>
-                      API token: {accurate.configured.api_token ? "terkonfigurasi" : "belum"}
-                    </li>
-                    <li>
-                      Signature: {accurate.configured.signature ? "terkonfigurasi" : "belum"}
-                    </li>
-                    <li>DB ID: {accurate.configured.db_id ? "terkonfigurasi" : "belum"}</li>
-                    <li>
-                      SJ live sync:{" "}
-                      <strong>{accurate.sj_live_sync_enabled ? "ON" : "OFF"}</strong>
-                    </li>
-                    <li>{accurate.note}</li>
-                  </ul>
-                ) : (
-                  <p className="ep-empty">Tidak dapat memuat status / akses ditolak.</p>
-                )}
-                <button type="button" className="ep-btn" disabled title="SJ live sync tetap OFF">
-                  Sync production (disabled)
-                </button>
+              <section className="ep-settings-card">
+                <h3 className="ep-settings-card-title">Status Accurate Online</h3>
+                <p className="ep-settings-card-note">
+                  Status non-secret saja. Secret tidak ditampilkan.
+                </p>
+                <div className="ep-settings-table-wrap">
+                  <table className="ep-settings-data-table is-compact">
+                    <thead>
+                      <tr>
+                        <th>Parameter</th>
+                        <th className="is-status">Status</th>
+                        <th>Keterangan</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {!accurate ? (
+                        <tr>
+                          <td colSpan={3}>
+                            <div className="ep-settings-empty">
+                              Tidak dapat memuat status / akses ditolak.
+                            </div>
+                          </td>
+                        </tr>
+                      ) : (
+                        <>
+                          <tr>
+                            <td>Base URL</td>
+                            <td className="is-status">
+                              {accurate.configured.base_url ? "Terkonfigurasi" : "Belum"}
+                            </td>
+                            <td>—</td>
+                          </tr>
+                          <tr>
+                            <td>API token</td>
+                            <td className="is-status">
+                              {accurate.configured.api_token ? "Terkonfigurasi" : "Belum"}
+                            </td>
+                            <td>Nilai secret disembunyikan</td>
+                          </tr>
+                          <tr>
+                            <td>Signature</td>
+                            <td className="is-status">
+                              {accurate.configured.signature ? "Terkonfigurasi" : "Belum"}
+                            </td>
+                            <td>Nilai secret disembunyikan</td>
+                          </tr>
+                          <tr>
+                            <td>DB ID</td>
+                            <td className="is-status">
+                              {accurate.configured.db_id ? "Terkonfigurasi" : "Belum"}
+                            </td>
+                            <td>—</td>
+                          </tr>
+                          <tr>
+                            <td>SJ live sync</td>
+                            <td className="is-status">
+                              <span
+                                className={`ep-settings-pill${accurate.sj_live_sync_enabled ? "" : " is-off"}`}
+                              >
+                                {accurate.sj_live_sync_enabled ? "ON" : "OFF"}
+                              </span>
+                            </td>
+                            <td>{accurate.note}</td>
+                          </tr>
+                        </>
+                      )}
+                    </tbody>
+                  </table>
+                </div>
+                <div className="ep-settings-actions">
+                  <button
+                    type="button"
+                    className="ep-btn"
+                    disabled
+                    title="SJ live sync tetap OFF"
+                  >
+                    Sync production (disabled)
+                  </button>
+                </div>
               </section>
             ) : null}
 
             {tab === "audit" ? (
-              <section>
-                <p className="ep-sectionlabel">Audit Log (append-only)</p>
-                <div className="ep-tblscroll">
-                  <table className="ep-table">
+              <section className="ep-settings-card">
+                <h3 className="ep-settings-card-title">Audit Log</h3>
+                <p className="ep-settings-card-note">Append-only · modul settings.</p>
+                <div className="ep-settings-table-wrap">
+                  <table className="ep-settings-data-table">
                     <thead>
                       <tr>
-                        <th>Waktu</th>
+                        <th style={{ width: 160 }}>Waktu</th>
                         <th>Aksi</th>
-                        <th>Actor</th>
-                        <th>Target</th>
+                        <th style={{ width: 180 }}>Actor</th>
+                        <th style={{ width: 180 }}>Target</th>
                       </tr>
                     </thead>
                     <tbody>
                       {audits.length === 0 ? (
                         <tr>
                           <td colSpan={4}>
-                            <div className="ep-empty">Belum ada entri / akses ditolak.</div>
+                            <div className="ep-settings-empty">
+                              Belum ada entri / akses ditolak.
+                            </div>
                           </td>
                         </tr>
                       ) : (
                         audits.map((a, idx) => (
                           <tr key={`${a.action}-${idx}`}>
                             <td>{a.created_at ? String(a.created_at) : "—"}</td>
-                            <td>{a.action}</td>
+                            <td title={a.action}>{a.action}</td>
                             <td>{a.actor_email || "—"}</td>
                             <td>{a.target_email || "—"}</td>
                           </tr>
@@ -1562,38 +1915,68 @@ function ProductsSettingsPanel({
   }
 
   return (
-    <section>
-      <h3>Master Produk — screen_size</h3>
-      <p className="ep-muted">
-        Satu sumber data <code>master_products</code>. String kosong = {unsetLabel}.
-      </p>
-      <form className="ep-settings-form" onSubmit={onSave}>
-        <input
-          placeholder="item_code"
-          value={itemCode}
-          onChange={(e) => setItemCode(e.target.value)}
-          required
-        />
-        <input
-          placeholder="ukuran screen"
-          value={screenSize}
-          onChange={(e) => setScreenSize(e.target.value)}
-        />
-        <button
-          type="submit"
-          className={`ep-btn primary${busy ? " is-busy" : ""}`}
-          disabled={busy || (!itemCode.trim() && !screenSize.trim())}
-        >
-          {busy ? "Menyimpan…" : "Simpan"}
-        </button>
-      </form>
-      <ul>
-        {items.map((it) => (
-          <li key={it.item_code}>
-            {it.item_code}: {it.screen_size?.trim() ? it.screen_size : unsetLabel}
-          </li>
-        ))}
-      </ul>
-    </section>
+    <>
+      <section className="ep-settings-card">
+        <h3 className="ep-settings-card-title">Simpan screen_size</h3>
+        <p className="ep-settings-card-note">
+          Satu sumber data <code>master_products</code>. String kosong = {unsetLabel}.
+        </p>
+        <form className="ep-settings-form-grid" onSubmit={onSave}>
+          <label className="ep-settings-field">
+            <span className="ep-settings-field-label">item_code</span>
+            <input
+              value={itemCode}
+              onChange={(e) => setItemCode(e.target.value)}
+              required
+            />
+          </label>
+          <label className="ep-settings-field">
+            <span className="ep-settings-field-label">Ukuran screen</span>
+            <input
+              value={screenSize}
+              onChange={(e) => setScreenSize(e.target.value)}
+            />
+          </label>
+          <div className="ep-settings-actions">
+            <button
+              type="submit"
+              className={`ep-btn primary${busy ? " is-busy" : ""}`}
+              disabled={busy || !itemCode.trim()}
+            >
+              {busy ? "Menyimpan…" : "Simpan"}
+            </button>
+          </div>
+        </form>
+      </section>
+      <section className="ep-settings-card">
+        <h3 className="ep-settings-card-title">Daftar produk</h3>
+        <div className="ep-settings-table-wrap">
+          <table className="ep-settings-data-table is-compact">
+            <thead>
+              <tr>
+                <th>item_code</th>
+                <th style={{ width: 180 }}>screen_size</th>
+              </tr>
+            </thead>
+            <tbody>
+              {items.length === 0 ? (
+                <tr>
+                  <td colSpan={2}>
+                    <div className="ep-settings-empty">Belum ada data / akses ditolak.</div>
+                  </td>
+                </tr>
+              ) : (
+                items.map((it) => (
+                  <tr key={it.item_code}>
+                    <td>{it.item_code}</td>
+                    <td>{it.screen_size?.trim() ? it.screen_size : unsetLabel}</td>
+                  </tr>
+                ))
+              )}
+            </tbody>
+          </table>
+        </div>
+      </section>
+    </>
   );
 }
