@@ -8,11 +8,12 @@
 #     script menimpa ke test SETELAH source)
 #   - JANGAN sentuh 27017 / 27018
 #
-# Satu perintah VPS:
-#   sudo -u eternaladmin bash /home/eternaladmin/eternal-production-v4/scripts/vps_sj_live_sync_oneshot.sh
+# Owner entrypoint (limited root → eternaladmin): scripts/vps_sj_oneshot_exec.sh
 #
-# DILARANG: cetak secret, tulis Accurate, sync ke eternal_v4, merge, restart service.
-# ONESHOT_PASS hanya jika ≥1 SJ berhasil diuji. BLOCKED jika seluruh SJ skipped (PO missing).
+# DILARANG: cetak secret, tulis Accurate, sync ke eternal_v4, merge, restart service,
+#           mengubah checkout main production.
+# ONESHOT_PASS: ≥1 SJ tersinkron + second-pass idempotency PASS.
+# ONESHOT_BLOCKED: seluruh SJ skipped / tidak ada SJ teruji.
 
 set -euo pipefail
 
@@ -61,6 +62,7 @@ cleanup() {
   local ec=$?
   [[ -n "${STAGES_FILE:-}" && -f "${STAGES_FILE}" ]] && rm -f "${STAGES_FILE}" 2>/dev/null || true
   [[ -n "${RUN_LOG:-}" && -f "${RUN_LOG}" ]] && rm -f "${RUN_LOG}" 2>/dev/null || true
+  [[ -n "${PW_TMP:-}" && -f "${PW_TMP}" ]] && rm -f "${PW_TMP}" 2>/dev/null || true
   # Jangan rm -rf worktree. Lepas hanya via git worktree remove jika kita yang membuat.
   if [[ "${WT_CREATED_BY_ONESHOT:-0}" == "1" ]]; then
     if git -C "$REPO_ORIGIN" worktree list --porcelain 2>/dev/null | grep -qx "worktree ${WT_ROOT}"; then
@@ -86,16 +88,26 @@ RUN_LOG=""
 [[ -d "$REPO_ORIGIN/.git" ]] || die "Repo tidak ditemukan: $REPO_ORIGIN"
 [[ -x "$PY_BIN" ]] || die "Python venv tidak ditemukan: $PY_BIN"
 [[ -f "$BACKEND_ENV" ]] || die "Backend env Accurate tidak ada: $BACKEND_ENV"
+[[ -r "$BACKEND_ENV" ]] || die "Backend env Accurate tidak readable (butuh stage kredensial terbatas)"
 [[ -f "$MONGO_PW_FILE" ]] || die "Password Mongo test tidak ada: $MONGO_PW_FILE"
-[[ -r "$MONGO_PW_FILE" ]] || die "Password Mongo test tidak readable"
+[[ -r "$MONGO_PW_FILE" ]] || die "Password Mongo test tidak readable (butuh stage kredensial terbatas)"
 
-# --- Worktree terpisah (TANPA rm -rf) ---
+# Tolak jika dijalankan sebagai root dengan kode PR (wrapper harus drop ke eternaladmin)
+if [[ "$(id -u)" -eq 0 ]]; then
+  die "Jangan jalankan oneshot sebagai root — gunakan scripts/vps_sj_oneshot_exec.sh"
+fi
+
+PROD_HEAD_BEFORE="$(git -C "$REPO_ORIGIN" rev-parse HEAD)"
+PROD_BRANCH_BEFORE="$(git -C "$REPO_ORIGIN" branch --show-current || true)"
+
+# --- Worktree terpisah (TANPA rm -rf; TANPA checkout main) ---
 WT_CREATED_BY_ONESHOT=0
 mkdir -p "$(dirname "$WT_ROOT")"
 if [[ -e "$WT_ROOT" ]]; then
   if git -C "$WT_ROOT" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
     log "worktree_reuse=$WT_ROOT"
-    git -C "$WT_ROOT" fetch origin "$BRANCH" --quiet
+    # Fetch via origin repo refs; update hanya worktree detach
+    git -C "$REPO_ORIGIN" fetch origin "$BRANCH" --quiet
     git -C "$WT_ROOT" checkout -f "origin/$BRANCH" --quiet
   else
     die "WT_ROOT ada tetapi bukan git worktree (menolak hapus paksa): $WT_ROOT"
@@ -104,6 +116,12 @@ else
   git -C "$REPO_ORIGIN" fetch origin "$BRANCH" --quiet
   git -C "$REPO_ORIGIN" worktree add --detach "$WT_ROOT" "origin/$BRANCH"
   WT_CREATED_BY_ONESHOT=1
+fi
+
+PROD_HEAD_AFTER="$(git -C "$REPO_ORIGIN" rev-parse HEAD)"
+PROD_BRANCH_AFTER="$(git -C "$REPO_ORIGIN" branch --show-current || true)"
+if [[ "$PROD_HEAD_AFTER" != "$PROD_HEAD_BEFORE" || "$PROD_BRANCH_AFTER" != "$PROD_BRANCH_BEFORE" ]]; then
+  die "Checkout production berubah — abort"
 fi
 
 cd "$WT_ROOT"
@@ -123,13 +141,20 @@ fi
 [[ -f scripts/verify_sj_sync_isolation.py ]] || die "verify_sj_sync_isolation.py missing"
 [[ -f scripts/accurate_sj_sync_nonprod.py ]] || die "accurate_sj_sync_nonprod.py missing"
 
-# --- Baca password tanpa echo; bangun URI terkunci SEBELUM source backend.env ---
-MONGO_PW="$(tr -d '\r\n' < "$MONGO_PW_FILE")"
-[[ -n "$MONGO_PW" ]] || die "Password Mongo test kosong"
+# --- Baca password tanpa echo / tanpa argv; bangun URI terkunci SEBELUM source backend.env ---
+PW_TMP="$(mktemp -t eternal-v4-sj-pw.XXXXXX)"
+tr -d '\r\n' < "$MONGO_PW_FILE" > "$PW_TMP"
+chmod 600 "$PW_TMP"
+[[ -s "$PW_TMP" ]] || { rm -f "$PW_TMP"; die "Password Mongo test kosong"; }
 
-LOCKED_MONGO_URL="$("$PY_BIN" - <<'PY' "$MONGO_PW" "$TEST_USER" "$TEST_HOST" "$TEST_PORT" "$TEST_DB" "$TEST_AUTH_SOURCE" "$TEST_RS"
+LOCKED_MONGO_URL="$("$PY_BIN" - <<'PY' "$PW_TMP" "$TEST_USER" "$TEST_HOST" "$TEST_PORT" "$TEST_DB" "$TEST_AUTH_SOURCE" "$TEST_RS"
 import sys, urllib.parse
-pw, user, host, port, db, auth, rs = sys.argv[1:8]
+from pathlib import Path
+pw_path, user, host, port, db, auth, rs = sys.argv[1:8]
+pw = Path(pw_path).read_text(encoding="utf-8").strip()
+Path(pw_path).write_text("", encoding="utf-8")  # scrub file ASAP
+if not pw:
+    raise SystemExit("empty_mongo_password")
 enc = urllib.parse.quote(pw, safe="")
 print(
     f"mongodb://{user}:{enc}@{host}:{port}/{db}"
@@ -137,7 +162,7 @@ print(
 )
 PY
 )"
-unset MONGO_PW
+rm -f "$PW_TMP"
 
 case "$LOCKED_MONGO_URL" in
   *:27017*|*:27018*) die "LOCKED URI mengandung port terlarang 27017/27018" ;;
@@ -459,11 +484,25 @@ processed = created + updated + unchanged
 sj_count = len(notes)
 structure_ok = dup == 0 and orphan == 0 and missing_line == 0
 
+pass1 = sync_rows[0] if len(sync_rows) >= 1 else {}
+pass2 = sync_rows[1] if len(sync_rows) >= 2 else {}
+pass1_processed = (
+    int(pass1.get("created") or 0)
+    + int(pass1.get("updated") or 0)
+    + int(pass1.get("unchanged") or 0)
+)
+idempotent_second_pass = (
+    len(sync_rows) >= 2
+    and int(pass2.get("created") or 0) == 0
+    and int(pass2.get("failed") or 0) == 0
+    and bool(pass2.get("ok", True))
+)
+
 if sj_count == 0 and processed == 0 and (skipped > 0 or listed == 0):
     code = "ONESHOT_BLOCKED"
     ok = False
     reason = "all_sj_skipped_or_no_sj_tested"
-elif sj_count == 0 or processed == 0:
+elif sj_count == 0 or processed == 0 or pass1_processed == 0:
     code = "ONESHOT_BLOCKED"
     ok = False
     reason = "no_sj_successfully_tested"
@@ -471,10 +510,14 @@ elif not structure_ok:
     code = "oneshot_validate_failed"
     ok = False
     reason = "structure_or_relation_invalid"
+elif not idempotent_second_pass:
+    code = "oneshot_idempotency_failed"
+    ok = False
+    reason = "second_pass_not_idempotent"
 else:
     code = "ONESHOT_PASS"
     ok = True
-    reason = "sj_validated"
+    reason = "sj_synced_and_idempotent"
 
 print(json.dumps({
     "ok": ok,
@@ -496,10 +539,8 @@ print(json.dumps({
     "sync_skipped": skipped,
     "sync_failed": failed,
     "sync_listed": listed,
-    "idempotent_second_pass": (
-        bool(sync_rows) and all(int(r.get("created") or 0) == 0 for r in sync_rows[1:2])
-        if len(sync_rows) >= 2 else None
-    ),
+    "pass1_processed": pass1_processed,
+    "idempotent_second_pass": idempotent_second_pass,
     "writes_accurate": False,
     "production_ports_touched": False,
 }))
