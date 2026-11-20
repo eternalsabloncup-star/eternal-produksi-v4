@@ -201,6 +201,70 @@ def set_branch_id_if_empty(
     )
 
 
+def set_branch_id_if_empty_and_unaccepted(
+    db: Database, accurate_id: str | int, branch_id: str
+) -> dict[str, Any] | None:
+    """CAS atomik: isi ``branch_id`` hanya jika kosong DAN belum accepted.
+
+    Filter acceptance ikut di ``find_one_and_update`` agar tidak TOCTOU
+    terhadap ``accept_po`` yang menulis status pada dokumen yang sama.
+    """
+    require_po_indexes(db)
+    from app.services.branch_identity import normalize_branch_identity
+    from app.services.po_acceptance import ACCEPTANCE_ACCEPTED
+
+    nid = normalize_branch_identity(branch_id)
+    if not nid:
+        return None
+    return po_collection(db).find_one_and_update(
+        {
+            "accurate_id": str(accurate_id),
+            "$and": [
+                {
+                    "$or": [
+                        {"branch_id": {"$exists": False}},
+                        {"branch_id": None},
+                        {"branch_id": ""},
+                    ]
+                },
+                {
+                    "$or": [
+                        {"operational.acceptance.status": {"$exists": False}},
+                        {"operational.acceptance.status": {"$ne": ACCEPTANCE_ACCEPTED}},
+                    ]
+                },
+            ],
+        },
+        {
+            "$set": {
+                "branch_id": nid,
+                "updated_at": datetime.now(timezone.utc),
+            }
+        },
+        return_document=ReturnDocument.AFTER,
+    )
+
+
+def clear_branch_id_if_matches(
+    db: Database, accurate_id: str | int, expected_branch_id: str
+) -> dict[str, Any] | None:
+    """Rollback CAS fill bila nilai masih sama (race dependensi lintas koleksi)."""
+    require_po_indexes(db)
+    from app.services.branch_identity import normalize_branch_identity
+
+    nid = normalize_branch_identity(expected_branch_id)
+    if not nid:
+        return None
+    return po_collection(db).find_one_and_update(
+        {"accurate_id": str(accurate_id), "branch_id": nid},
+        {
+            "$unset": {"branch_id": ""},
+            "$set": {"updated_at": datetime.now(timezone.utc)},
+        },
+        return_document=ReturnDocument.AFTER,
+    )
+
+
 def set_po_branch_id(
     db: Database,
     accurate_id: str | int,

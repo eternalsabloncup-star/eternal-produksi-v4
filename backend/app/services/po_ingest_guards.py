@@ -129,29 +129,70 @@ def fill_empty_branch_id_cas(
     owner_token: str | None = None,
     existing: dict[str, Any] | None = None,
 ) -> dict[str, Any] | None:
-    """CAS isi ``branch_id`` hanya jika kosong dan tanpa accepted/dependensi.
+    """CAS isi ``branch_id`` hanya jika kosong, belum accepted, tanpa dependensi.
 
-    Accepted atau transaksi turunan → fail-closed + review; tidak CAS.
-    Memerlukan lease bila ``owner_token`` diberikan.
+    - Acceptance: filter Mongo atomik (kosong + not accepted) — anti TOCTOU.
+    - Dependensi lintas koleksi: pre-check + post-check fail-closed; bila race
+      membentuk turunan setelah write, rollback nilai CAS yang baru diisi.
+      Tidak mengklaim keamanan transaksi multi-dokumen spekulatif.
     """
-    from app.repositories.po_repository import set_branch_id_if_empty
+    from app.repositories.po_repository import (
+        clear_branch_id_if_matches,
+        get_by_accurate_id,
+        set_branch_id_if_empty_and_unaccepted,
+    )
     from app.services.accurate_auto_sync.locks import require_owns_job_lock
+    from app.services.po_acceptance import is_po_accepted
 
     if owner_token is not None:
         require_owns_job_lock(db, job="po", owner_token=owner_token)
 
+    aid = str(accurate_id)
     blocked = cas_empty_branch_blocked_reason(
-        db, accurate_id=str(accurate_id), existing=existing
+        db, accurate_id=aid, existing=existing
     )
     if blocked:
         mark_branch_fill_blocked_review(
             db,
-            accurate_id=str(accurate_id),
+            accurate_id=aid,
             source_branch_id=str(branch_id),
             reason=blocked,
         )
         return None
-    return set_branch_id_if_empty(db, accurate_id, branch_id)
+
+    filled = set_branch_id_if_empty_and_unaccepted(db, aid, branch_id)
+    if filled is None:
+        # CAS kalah: sudah ber-cabang, atau accepted menang race, atau hilang.
+        live = get_by_accurate_id(db, aid)
+        if live is not None and is_po_accepted(live) and not live.get("branch_id"):
+            mark_branch_fill_blocked_review(
+                db,
+                accurate_id=aid,
+                source_branch_id=str(branch_id),
+                reason="po_accepted",
+            )
+        elif live is not None and po_has_operational_dependencies(db, aid) and not live.get(
+            "branch_id"
+        ):
+            mark_branch_fill_blocked_review(
+                db,
+                accurate_id=aid,
+                source_branch_id=str(branch_id),
+                reason="operational_dependency_present",
+            )
+        return None
+
+    # Post-check lintas koleksi: turunan muncul setelah/bersamaan CAS → rollback.
+    if po_has_operational_dependencies(db, aid):
+        clear_branch_id_if_matches(db, aid, str(filled.get("branch_id") or branch_id))
+        mark_branch_fill_blocked_review(
+            db,
+            accurate_id=aid,
+            source_branch_id=str(branch_id),
+            reason="operational_dependency_race",
+        )
+        return None
+    return filled
 
 
 def resolve_branch_for_ingest(
