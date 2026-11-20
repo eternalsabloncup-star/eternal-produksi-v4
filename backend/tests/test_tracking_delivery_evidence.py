@@ -21,7 +21,29 @@ from app.services.tracking_workflow_adapter import (
 
 
 def _sync_po(db: Database) -> dict:
-    return sync_sales_order_payload(db, SAMPLE_SALES_ORDER_STRUCTURE)
+    """Seed PO 95106 lewat jalur sync resmi (butuh branchId + Master cabang).
+
+    Tanpa ``branchId``, ingest gagal ``missing_branch_id`` (zero write) — ini
+    penyebab 25 FAIL historis, bukan bypass date floor / acceptance.
+    """
+    import copy
+
+    from app.repositories import org_master_repository as org
+
+    org.ensure_org_master_indexes(db)
+    org.upsert_branch(db, code="50", name="Cabang Test 50", is_active=True)
+    payload = copy.deepcopy(SAMPLE_SALES_ORDER_STRUCTURE)
+    payload["branchId"] = 50
+    out = sync_sales_order_payload(db, payload, mongo_guard="test")
+    if int(out.get("writes") or 0) < 1 or out.get("outcome") in {
+        "failed",
+        "excluded",
+    }:
+        raise AssertionError(
+            f"fixture _sync_po gagal seed PO: outcome={out.get('outcome')!r} "
+            f"reason={out.get('reason')!r} writes={out.get('writes')!r}"
+        )
+    return out
 
 
 def _ensure_colls(db: Database) -> None:
