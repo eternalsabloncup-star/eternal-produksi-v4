@@ -19,9 +19,12 @@ from app.config import clear_settings_cache, get_settings
 from app.repositories import master_repository as master
 from app.services.loading_sj_bootstrap import (
     LOADING_SJ_TASK_TYPE,
+    RECONCILE_RESULT_HOLD,
     LoadingSjBootstrapError,
     audit_loading_sj,
     bootstrap_loading_sj_master,
+    classify_production_head_loading_sj_grant,
+    reconcile_production_head_loading_sj_grant,
     verify_loading_sj_contract,
 )
 
@@ -552,7 +555,35 @@ def activate_loading_sj_release(
                 )
             audit_log.append({"stage": "bootstrap", "result": bootstrap_result})
 
-    # Post-bootstrap master + permission.
+    # Permission reconciliation terbatas (CASE C) — hanya approved release path.
+    reconcile_result: dict[str, Any] | None = None
+    if dry_run:
+        classification = classify_production_head_loading_sj_grant(db)
+        audit_log.append(
+            {
+                "stage": "reconcile",
+                "dry_run": True,
+                "classification": classification,
+                "note": "Tidak menulis — dry-run.",
+            }
+        )
+    else:
+        reconcile_result = reconcile_production_head_loading_sj_grant(
+            db,
+            expected_db_name=expected_db_name,
+            allow_production=allow_production,
+            approved_release=True,
+        )
+        audit_log.append({"stage": "reconcile", "result": reconcile_result})
+        if reconcile_result.get("result") == RECONCILE_RESULT_HOLD:
+            return _hold(
+                "reconcile",
+                str(reconcile_result.get("reason") or "Reconciliation HOLD"),
+                code=reconcile_result.get("code"),
+                reconcile=reconcile_result,
+            )
+
+    # Post-bootstrap + reconcile: verifikasi kontrak penuh.
     try:
         if not dry_run or skip_bootstrap:
             verify_loading_sj_contract(db)
@@ -579,6 +610,7 @@ def activate_loading_sj_release(
             "flag_written": False,
             "detail": "Dry-run PASS — flag tidak ditulis.",
             "bootstrap": bootstrap_result,
+            "reconcile": reconcile_result,
             "audit": audit_log,
         }
 
@@ -630,6 +662,7 @@ def activate_loading_sj_release(
         "flag_written": True,
         "flag_result": flag_result,
         "bootstrap": bootstrap_result,
+        "reconcile": reconcile_result,
         "restart": restart_result,
         "audit": audit_log,
         "task_type": LOADING_SJ_TASK_TYPE,

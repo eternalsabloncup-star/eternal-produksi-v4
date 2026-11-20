@@ -27,8 +27,15 @@ EXPECTED_TASK_ACTIONS = ("view", "confirm", "edit", "cancel")
 HELPER_ACTIONS = ("view", "confirm", "edit")
 # KP (Owner final): view/confirm/edit/cancel — confirm WAJIB, bukan wildcard lintas task.
 PRODUCTION_HEAD_ACTIONS = ("view", "confirm", "edit", "cancel")
+# Kontrak lama (pra-M5 reconciliation) — hanya CASE C yang diizinkan di-reconcile.
+LEGACY_PRODUCTION_HEAD_ACTIONS = ("view", "edit", "cancel")
 # Driver / Admin / Director: tidak ada grant otomatis loading-sj.
 FORBIDDEN_AUTO_GRANT_ROLES = frozenset({"driver", "admin", "director", "super_admin"})
+
+RECONCILE_RESULT_MISSING = "MISSING"
+RECONCILE_RESULT_NO_OP = "NO_OP"
+RECONCILE_RESULT_RECONCILED = "RECONCILED"
+RECONCILE_RESULT_HOLD = "HOLD"
 
 
 class LoadingSjBootstrapError(RuntimeError):
@@ -150,6 +157,252 @@ def _material_grant_mismatch(
     return None
 
 
+def _actions_set_equal(
+    got: list[str] | tuple[str, ...] | None, expected: tuple[str, ...]
+) -> bool:
+    return _sorted_actions(got) == _sorted_actions(list(expected))
+
+
+def classify_production_head_loading_sj_grant(db: Database) -> dict[str, Any]:
+    """Audit read-only grant production-head/loading-sj → case A–D."""
+    coll = master.role_actions_collection(db)
+    docs = list(
+        coll.find(
+            {"role": "production-head", "task_type": LOADING_SJ_TASK_TYPE},
+            {"_id": 1, "role": 1, "task_type": 1, "actions": 1, "is_default_mapping": 1},
+        )
+    )
+    if len(docs) > 1:
+        return {
+            "case": "D",
+            "result": RECONCILE_RESULT_HOLD,
+            "reason": "Dokumen grant production-head/loading-sj duplikat/ambigu.",
+            "code": "LOADING_SJ_KP_GRANT_AMBIGUOUS",
+            "count": len(docs),
+            "before": None,
+        }
+    if not docs:
+        return {
+            "case": "A",
+            "result": RECONCILE_RESULT_MISSING,
+            "reason": "Grant production-head/loading-sj belum ada.",
+            "code": "LOADING_SJ_KP_GRANT_MISSING",
+            "count": 0,
+            "before": None,
+        }
+    doc = docs[0]
+    actions = _sorted_actions(doc.get("actions"))
+    before = {
+        "role": doc.get("role"),
+        "task_type": doc.get("task_type"),
+        "actions": actions,
+        "is_default_mapping": doc.get("is_default_mapping"),
+    }
+    if _actions_set_equal(actions, PRODUCTION_HEAD_ACTIONS):
+        return {
+            "case": "B",
+            "result": RECONCILE_RESULT_NO_OP,
+            "reason": "Grant sudah sesuai kontrak Owner.",
+            "code": "LOADING_SJ_KP_GRANT_OK",
+            "count": 1,
+            "before": before,
+        }
+    if _actions_set_equal(actions, LEGACY_PRODUCTION_HEAD_ACTIONS):
+        return {
+            "case": "C",
+            "result": "LEGACY",
+            "reason": "Grant versi lama (view/edit/cancel) — boleh tambah confirm.",
+            "code": "LOADING_SJ_KP_GRANT_LEGACY",
+            "count": 1,
+            "before": before,
+        }
+    return {
+        "case": "D",
+        "result": RECONCILE_RESULT_HOLD,
+        "reason": (
+            f"Grant custom/berbeda: actions={actions!r} "
+            f"(bukan legacy {list(LEGACY_PRODUCTION_HEAD_ACTIONS)!r} "
+            f"dan bukan target {list(PRODUCTION_HEAD_ACTIONS)!r})."
+        ),
+        "code": "LOADING_SJ_KP_GRANT_CUSTOM",
+        "count": 1,
+        "before": before,
+    }
+
+
+def reconcile_production_head_loading_sj_grant(
+    db: Database,
+    *,
+    expected_db_name: str,
+    allow_production: bool = False,
+    approved_release: bool = False,
+) -> dict[str, Any]:
+    """Reconciliation terbatas CASE C — hanya di approved release path.
+
+    Menambah ``confirm`` ke grant KP legacy (view/edit/cancel) via CAS atomic.
+    Tidak mengubah Helper/Driver/Admin. Tidak full seed. Tidak createIndex.
+    """
+    assert_loading_sj_db_target(
+        db,
+        expected_db_name=expected_db_name,
+        allow_production=allow_production,
+    )
+    try:
+        master.require_master_indexes(db)
+    except Exception as exc:  # noqa: BLE001 — index preflight fail-closed
+        return {
+            "ok": False,
+            "result": RECONCILE_RESULT_HOLD,
+            "case": "E",
+            "code": "LOADING_SJ_RECONCILE_PREFLIGHT",
+            "reason": f"Preflight index/Master gagal: {exc}",
+            "changed": False,
+        }
+
+    if not approved_release:
+        return {
+            "ok": False,
+            "result": RECONCILE_RESULT_HOLD,
+            "case": "E",
+            "code": "LOADING_SJ_RECONCILE_NOT_APPROVED",
+            "reason": (
+                "Reconciliation hanya boleh pada approved release path "
+                "(approved_release=True)."
+            ),
+            "changed": False,
+            "classification": classify_production_head_loading_sj_grant(db),
+        }
+
+    classification = classify_production_head_loading_sj_grant(db)
+    case = classification["case"]
+    before = classification.get("before")
+
+    if case == "A":
+        return {
+            "ok": True,
+            "result": RECONCILE_RESULT_MISSING,
+            "case": "A",
+            "code": classification["code"],
+            "reason": classification["reason"],
+            "changed": False,
+            "before": before,
+            "after": None,
+            "note": "Bootstrap yang membuat grant; reconcile tidak insert.",
+        }
+    if case == "B":
+        return {
+            "ok": True,
+            "result": RECONCILE_RESULT_NO_OP,
+            "case": "B",
+            "code": classification["code"],
+            "reason": classification["reason"],
+            "changed": False,
+            "before": before,
+            "after": before,
+        }
+    if case == "D":
+        return {
+            "ok": False,
+            "result": RECONCILE_RESULT_HOLD,
+            "case": "D",
+            "code": classification["code"],
+            "reason": classification["reason"],
+            "changed": False,
+            "before": before,
+            "after": before,
+        }
+
+    # CASE C — legacy → tambah confirm saja (CAS).
+    from pymongo import ReturnDocument
+
+    now = datetime.now(timezone.utc)
+    target_actions = list(PRODUCTION_HEAD_ACTIONS)
+    coll = master.role_actions_collection(db)
+    # Exact-set match: $all + $size (order-insensitive) pada kontrak lama.
+    legacy_filter: dict[str, Any] = {
+        "role": "production-head",
+        "task_type": LOADING_SJ_TASK_TYPE,
+        "actions": {
+            "$all": list(LEGACY_PRODUCTION_HEAD_ACTIONS),
+            "$size": len(LEGACY_PRODUCTION_HEAD_ACTIONS),
+        },
+    }
+    updated = coll.find_one_and_update(
+        legacy_filter,
+        {
+            "$set": {
+                "actions": target_actions,
+                "updated_at": now,
+                "reconciled_at": now,
+                "reconciled_from": "legacy_kp_loading_sj_no_confirm",
+            }
+        },
+        projection={"_id": 0},
+        return_document=ReturnDocument.AFTER,
+    )
+    if updated is None:
+        # Possible race / concurrent modification — reclassify.
+        again = classify_production_head_loading_sj_grant(db)
+        if again["case"] == "B":
+            # Concurrent actor already reconciled — idempotent NO_OP.
+            return {
+                "ok": True,
+                "result": RECONCILE_RESULT_NO_OP,
+                "case": "B",
+                "code": "LOADING_SJ_KP_RECONCILE_RACE_OK",
+                "reason": "Setelah CAS miss, grant sudah sesuai kontrak (race aman).",
+                "changed": False,
+                "before": before,
+                "after": again.get("before"),
+            }
+        return {
+            "ok": False,
+            "result": RECONCILE_RESULT_HOLD,
+            "case": "D" if again["case"] == "D" else "E",
+            "code": "LOADING_SJ_KP_RECONCILE_CAS_MISS",
+            "reason": (
+                "CAS gagal — dokumen berubah di tengah proses atau bukan legacy. "
+                f"class={again.get('code')}: {again.get('reason')}"
+            ),
+            "changed": False,
+            "before": before,
+            "after": again.get("before"),
+            "classification_after": again,
+        }
+
+    after_doc = {
+        "role": updated.get("role"),
+        "task_type": updated.get("task_type"),
+        "actions": _sorted_actions(updated.get("actions")),
+        "is_default_mapping": updated.get("is_default_mapping"),
+        "reconciled_from": updated.get("reconciled_from"),
+    }
+    # Verifikasi kontrak grant KP (bukan full master bila helper belum ada).
+    if not _actions_set_equal(after_doc["actions"], PRODUCTION_HEAD_ACTIONS):
+        return {
+            "ok": False,
+            "result": RECONCILE_RESULT_HOLD,
+            "case": "E",
+            "code": "LOADING_SJ_KP_RECONCILE_VERIFY_FAIL",
+            "reason": f"Setelah update, actions={after_doc['actions']!r} ≠ target.",
+            "changed": True,
+            "before": before,
+            "after": after_doc,
+            "rollback_claimed": False,
+        }
+
+    return {
+        "ok": True,
+        "result": RECONCILE_RESULT_RECONCILED,
+        "case": "C",
+        "code": "LOADING_SJ_KP_RECONCILED",
+        "reason": "Menambahkan confirm ke grant KP legacy (CAS).",
+        "changed": True,
+        "before": before,
+        "after": after_doc,
+    }
+
+
 def verify_loading_sj_contract(db: Database) -> dict[str, Any]:
     """Validasi kontrak Owner; raise jika Master/grants tidak valid."""
     audit = audit_loading_sj(db)
@@ -239,6 +492,7 @@ def bootstrap_loading_sj_master(
     inserted_grants = 0
     skipped: list[str] = []
     stopped: list[str] = []
+    needs_reconcile: list[str] = []
 
     existing_type = before["task_type"]
     if existing_type is None:
@@ -279,6 +533,13 @@ def bootstrap_loading_sj_master(
             {"role": role, "task_type": LOADING_SJ_TASK_TYPE}, {"_id": 0}
         )
         if existing is not None:
+            # KP legacy: jangan overwrite di bootstrap — defer ke reconciliation release.
+            if role == "production-head" and _actions_set_equal(
+                existing.get("actions"), LEGACY_PRODUCTION_HEAD_ACTIONS
+            ):
+                skipped.append("grant_production-head_legacy_needs_reconcile")
+                needs_reconcile.append("production-head")
+                return
             mismatch = _material_grant_mismatch(existing, expected=actions)
             if mismatch:
                 is_custom = existing.get("is_default_mapping") is False
@@ -324,8 +585,10 @@ def bootstrap_loading_sj_master(
         )
 
     after = audit_loading_sj(db)
-    # Verifikasi kontrak akhir.
-    verify_loading_sj_contract(db)
+    contract_verified = False
+    if not needs_reconcile:
+        verify_loading_sj_contract(db)
+        contract_verified = True
 
     # Non-target: hitung task type lain tidak berubah jumlah (sanity).
     other_types = types_coll.count_documents(
@@ -334,11 +597,15 @@ def bootstrap_loading_sj_master(
 
     return {
         "ok": True,
-        "noop": inserted_type == 0 and inserted_grants == 0,
+        "noop": inserted_type == 0
+        and inserted_grants == 0
+        and not needs_reconcile,
         "inserted_task_types": inserted_type,
         "inserted_role_actions": inserted_grants,
         "skipped": skipped,
         "stopped": stopped,
+        "needs_reconcile": needs_reconcile,
+        "contract_verified": contract_verified,
         "before": before,
         "after": after,
         "non_target_task_type_count": other_types,

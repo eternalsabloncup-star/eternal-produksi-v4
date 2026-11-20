@@ -49,12 +49,19 @@ Script: `scripts/activate_loading_sj_release.py`
 6. Konfirmasi backup Master/grants/config/DB (`--backup-ok`).
 7. Konfirmasi tidak ada deploy/repair lain (`--no-other-deploy`).
 8. Bootstrap idempotent `loading-sj` (+ grants Helper/KP).
-9. Verifikasi Master + least privilege.
-10. Upsert `V4_LOADING_SJ_TASK_ENABLED=1` ke `backend.env`.
-11. Restart backend terkendali (ops runbook VPS; callback opsional).
-12. Verifikasi Settings efektif ON.
-13. Verifikasi health backend/Mongo.
-14. Simpan audit JSON keluaran script.
+9. **Permission reconciliation terbatas** (hanya `production-head`/`loading-sj`):
+   - Grant benar → NO_OP
+   - Grant legacy `view,edit,cancel` → tambah `confirm` (CAS atomic) → RECONCILED
+   - Grant custom/ambigu → HOLD (tidak overwrite)
+10. Verifikasi Master + least privilege (kontrak penuh).
+11. Upsert `V4_LOADING_SJ_TASK_ENABLED=1` ke `backend.env`.
+12. Restart backend terkendali (ops runbook VPS; callback opsional).
+13. Verifikasi Settings efektif ON.
+14. Verifikasi health backend/Mongo.
+15. Simpan audit JSON keluaran script (before/after reconciliation).
+
+Reconciliation **hanya** di approved release path (`activate_loading_sj_release`).
+Tidak di startup, request API, atau import modul.
 
 ## Bootstrap saja (tanpa flag)
 
@@ -70,7 +77,8 @@ PYTHONPATH=backend python3 scripts/bootstrap_loading_sj.py \
 ## HOLD conditions
 
 - PR #26 belum merged / guard hilang di target SHA
-- Master/grant invalid atau terlalu luas
+- Master/grant invalid atau terlalu luas (termasuk grant KP custom ≠ legacy)
+- Reconciliation CAS miss / concurrent modification
 - Index Master hilang
 - Backup / deploy isolation / health gagal
 - SHA tidak cocok

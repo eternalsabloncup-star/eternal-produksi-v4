@@ -149,8 +149,8 @@ def test_bootstrap_stops_on_custom_grant_mismatch(bare_db: Database) -> None:
     assert ei.value.code == "LOADING_SJ_GRANT_MATERIAL_MISMATCH"
 
 
-def test_bootstrap_hold_when_kp_missing_confirm(bare_db: Database) -> None:
-    """Grant KP existing tanpa confirm → FAIL-CLOSED, tidak overwrite diam-diam."""
+def test_bootstrap_defers_kp_legacy_to_reconcile(bare_db: Database) -> None:
+    """Grant KP legacy tanpa confirm → bootstrap tidak overwrite; needs_reconcile."""
     boot.bootstrap_loading_sj_master(bare_db, expected_db_name=bare_db.name)
     master.set_role_actions(
         bare_db,
@@ -158,11 +158,12 @@ def test_bootstrap_hold_when_kp_missing_confirm(bare_db: Database) -> None:
         task_type="loading-sj",
         actions=["view", "edit", "cancel"],
     )
-    with pytest.raises(boot.LoadingSjBootstrapError) as ei:
-        boot.bootstrap_loading_sj_master(
-            bare_db, expected_db_name=bare_db.name
-        )
-    assert ei.value.code == "LOADING_SJ_GRANT_MATERIAL_MISMATCH"
+    result = boot.bootstrap_loading_sj_master(
+        bare_db, expected_db_name=bare_db.name
+    )
+    assert result["ok"] is True
+    assert "production-head" in result["needs_reconcile"]
+    assert result["contract_verified"] is False
     grant = bare_db["master_role_actions"].find_one(
         {"role": "production-head", "task_type": "loading-sj"}
     )
