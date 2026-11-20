@@ -23,7 +23,10 @@ COLL_DELIVERY_NOTES = "accurate_delivery_notes"
 COLL_LOADING_EVENTS = "loading_events"
 COLL_DELIVERY_EVENTS = "delivery_events"
 COLL_EVIDENCE_FILES = "evidence_files"
-COLL_PAYMENTS = "payment_receipts"
+# Accurate auto-sync menulis ke accurate_payment_receipts (bukan payment_receipts).
+COLL_PAYMENTS = "accurate_payment_receipts"
+COLL_INVOICES = "accurate_sales_invoices"
+COLL_DESIGN_LINKS = "design_approval_links"
 
 # Status kontrak PR#6 (delivery_repository / evidence_repository).
 DELIVERY_SUCCESS = "berhasil"
@@ -84,11 +87,16 @@ def load_workflow_snapshot(db: Database, accurate_po_id: str) -> dict[str, Any]:
     tasks = _safe_find(db, COLL_TASKS, {"ref.accurate_po_id": po_id})
     design_subs = _safe_find(db, COLL_DESIGN_SUBMISSIONS, {"accurate_po_id": po_id})
     design_appr = _safe_find(db, COLL_DESIGN_APPROVALS, {"accurate_po_id": po_id})
+    # Link approval = penanda versi boleh dilihat customer (bukan status approved).
+    design_links = _safe_find(db, COLL_DESIGN_LINKS, {"accurate_po_id": po_id})
     schedules = _safe_find(db, COLL_SCHEDULES, {"accurate_po_id": po_id})
     delivery_notes = _safe_find(db, COLL_DELIVERY_NOTES, {"accurate_po_id": po_id})
     loading_events = _safe_find(db, COLL_LOADING_EVENTS, {"accurate_po_id": po_id})
     delivery_events = _safe_find(db, COLL_DELIVERY_EVENTS, {"accurate_po_id": po_id})
+    # Hanya receipt yang sudah terpetakan ke PO ini (bukan UNMAPPED).
     payments = _safe_find(db, COLL_PAYMENTS, {"accurate_po_id": po_id})
+    # Relasi faktur: accurate_po_ids (array) memuat PO ini.
+    invoices = _safe_find(db, COLL_INVOICES, {"accurate_po_ids": po_id})
 
     by_type: dict[str, list[dict[str, Any]]] = {}
     for t in tasks:
@@ -146,12 +154,15 @@ def load_workflow_snapshot(db: Database, accurate_po_id: str) -> dict[str, Any]:
             "delivery_events": collection_available(db, COLL_DELIVERY_EVENTS),
             "delivery_evidence": collection_available(db, COLL_EVIDENCE_FILES),
             "payments": collection_available(db, COLL_PAYMENTS),
+            "invoices": collection_available(db, COLL_INVOICES),
+            "design_links": collection_available(db, COLL_DESIGN_LINKS),
         },
         "gates": gates_doc,
         "tasks_by_type": by_type,
         "tasks": tasks,
         "design_submissions": design_subs,
         "design_approvals": design_appr,
+        "design_approval_links": design_links,
         "schedules": schedules,
         "delivery_notes": delivery_notes,
         "loading_events": loading_events,
@@ -164,6 +175,7 @@ def load_workflow_snapshot(db: Database, accurate_po_id: str) -> dict[str, Any]:
         "evidence_by_id": evidence_by_id,
         "active_evidence_ids": active_evidence_ids,
         "payments": payments,
+        "invoices": invoices,
     }
 
 

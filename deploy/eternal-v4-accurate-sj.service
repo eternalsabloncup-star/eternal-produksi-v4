@@ -1,0 +1,20 @@
+[Unit]
+Description=Eternal V4 Accurate auto-sync one-shot (SJ / Delivery Order)
+After=network.target eternal-v4-mongod.service eternal-v4-backend.service
+Wants=eternal-v4-mongod.service
+# Jangan enable sebelum Owner approve exact SHA + dual-flag production.
+
+[Service]
+Type=oneshot
+User=eternaladmin
+Group=eternaladmin
+WorkingDirectory=/home/eternaladmin/eternal-production-v4
+EnvironmentFile=/etc/eternal-v4/backend/backend.env
+Environment=PYTHONPATH=/home/eternaladmin/eternal-production-v4/backend
+# Fail-closed: worker no-op bila V4_SJ_SYNC_ENABLED=0 atau production flag off.
+ExecStart=/home/eternaladmin/eternal-production-v4/scripts/vps_accurate_sj_job_flock.sh sj
+Nice=10
+TimeoutStartSec=180
+
+[Install]
+WantedBy=multi-user.target
