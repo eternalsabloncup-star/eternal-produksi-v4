@@ -11,10 +11,11 @@ Mengisi `branch_id` kanonis (`50` / `150`) hanya untuk kandidat sealed yang suda
 3. Live repo `/home/eternaladmin/eternal-production-v4` ada; `git rev-parse HEAD` == `--expect-live-sha` (40-hex). **Tanpa direktori live ⇒ refuse.**
 4. `APP_ENV=production`, DB `eternal_v4`, Mongo **27018** saja (27017 ditolak).
 5. Kill-switch `V4_PO_AUTO_SYNC_ENABLED=0`.
-6. **Maintenance lock** JSON (`workers_cleared=true`, `po_auto_sync=false`, token ≥16, usia ≤4 jam). Tidak ada worker `accurate_auto_sync_worker.py --job po`.
-7. **Backup meta** baru (DB `eternal_v4`, port 27018, `archive_sha256`, usia ≤24 jam; file archive dicocokkan jika path ada).
-8. Manifest **sealed** dari verify (`sealed=true`, `manifest_sha256`, daftar kandidat). Checksum harus cocok `--expect-manifest-sha256` + `--expect-candidate-count`.
-9. Snapshot opsional: `--expect-total-po` / `--expect-missing-po` harus cocok bila diisi.
+6. **Operator lock JSON** (`workers_cleared=true`, `po_auto_sync=false`, token ≥16, usia ≤4 jam) — attestasi saja.
+7. **Isolasi Mongo wajib**: apply mengambil lease `po_branch_repair_maintenance` + menahan job lock PO/SJ. Writer `accept_po` / `derive_tasks` / `create_allocations` / sync PO+SJ **refuse** selama lease aktif. Bukan transaksi lintas koleksi.
+8. **Backup meta** baru: `archive_path` **wajib ada sebagai file**, `archive_sha256` cocok, DB `eternal_v4`, port 27018, usia ≤24 jam.
+9. Manifest **sealed** (`sealed=true`, `manifest_sha256`, count).
+10. Snapshot **wajib**: `--expect-total-po` dan `--expect-missing-po` harus cocok; setiap kandidat masih tanpa `branch_id`.
 
 ## Verifikasi Accurate (read-only)
 
@@ -40,7 +41,7 @@ PYTHONPATH=backend:scripts python3 scripts/po_branch_repair_apply.py \
   --expect-manifest-sha256 <MANIFEST_SHA256> \
   --expect-candidate-count 347 \
   --backup-meta /path/backup_meta.json \
-  --maintenance-lock /path/maintenance_lock.json \
+  --maintenance-lock /path/operator_lock.json \
   --expect-total-po 547 \
   --expect-missing-po 347 \
   --audit-out /tmp/repair_audit_dry.json
@@ -52,7 +53,7 @@ PYTHONPATH=backend:scripts python3 scripts/po_branch_repair_apply.py \
   --expect-manifest-sha256 <MANIFEST_SHA256> \
   --expect-candidate-count 347 \
   --backup-meta /path/backup_meta.json \
-  --maintenance-lock /path/maintenance_lock.json \
+  --maintenance-lock /path/operator_lock.json \
   --expect-total-po 547 \
   --expect-missing-po 347 \
   --audit-out /tmp/repair_audit.json \
@@ -62,10 +63,11 @@ PYTHONPATH=backend:scripts python3 scripts/po_branch_repair_apply.py \
 
 ## Perilaku keselamatan saat write
 
-- Pre-check per PO: kosong branch, belum accepted, tanpa task/alokasi/SJ/jadwal, identitas/tanggal tidak drift, Master aktif.
-- Write memakai CAS Mongo `set_branch_id_if_empty_and_unaccepted` (anti TOCTOU acceptance pada dokumen yang sama).
-- Dependensi lintas koleksi **bukan** transaksi atomik → maintenance isolation wajib; bila pre-check/CAS gagal karena race ⇒ **STOP**, sisa kandidat `skipped_after_stop`, `ok=false`.
-- `ok=true` hanya jika semua kandidat `filled` atau `already_has_branch`, tanpa blocked/failed/skipped.
+- Ambil Mongo maintenance gate dulu; gagal acquire (sync aktif) ⇒ **STOP tanpa write**.
+- Snapshot + manifest consistency sebelum write pertama.
+- Pre-check per PO + CAS `set_branch_id_if_empty_and_unaccepted`.
+- Race/dep mid-apply ⇒ **STOP**, sisa `skipped_after_stop`, `ok=false`.
+- `ok=true` hanya jika semua kandidat `filled`, tanpa blocked/failed/skipped.
 
 ## Post-write verification
 

@@ -125,7 +125,7 @@ def require_safe_db_target(
 
 
 def load_backup_meta(path: Path, *, max_age_hours: float = 24.0) -> dict[str, Any]:
-    """Backup meta must name eternal_v4 / 27018 and be fresh with sha256."""
+    """Backup meta: archive file wajib ada; SHA256 wajib cocok; DB/port/scope/time."""
     if not path.is_file():
         raise ValueError(f"backup_meta_missing:{path}")
     meta = json.loads(path.read_text())
@@ -138,8 +138,18 @@ def load_backup_meta(path: Path, *, max_age_hours: float = 24.0) -> dict[str, An
     if db != REQUIRED_DB:
         raise ValueError(f"backup_db_mismatch:{db}")
     port = meta.get("port") or meta.get("mongo_port")
-    if int(port) != REQUIRED_PORT:
+    try:
+        port_i = int(port)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"backup_port_invalid:{port}") from exc
+    if port_i != REQUIRED_PORT:
         raise ValueError(f"backup_port_mismatch:{port}")
+    scope = str(meta.get("scope") or meta.get("PURPOSE") or meta.get("purpose") or "").lower()
+    # Scope must explicitly name V4 DB dump (refuse ambiguous/legacy).
+    if scope and ("legacy" in scope or "27017" in scope):
+        raise ValueError(f"backup_scope_forbidden:{scope}")
+    if meta.get("db_scope") and str(meta.get("db_scope")) != REQUIRED_DB:
+        raise ValueError(f"backup_db_scope_mismatch:{meta.get('db_scope')}")
     created = meta.get("created_at") or meta.get("CREATED_AT")
     if not created:
         raise ValueError("backup_created_at_missing")
@@ -150,13 +160,83 @@ def load_backup_meta(path: Path, *, max_age_hours: float = 24.0) -> dict[str, An
     if age_h < 0 or age_h > max_age_hours:
         raise ValueError(f"backup_stale_or_future:age_h={age_h:.2f}")
     archive = meta.get("archive_path") or meta.get("path")
-    if archive:
-        ap = Path(str(archive))
-        if ap.is_file():
-            live_sha = file_sha256(ap)
-            if live_sha != sha:
-                raise ValueError("backup_sha256_mismatch_vs_file")
-    return {**meta, "archive_sha256": sha, "age_hours": age_h}
+    if not archive:
+        raise ValueError("backup_archive_path_missing")
+    ap = Path(str(archive))
+    if not ap.is_file():
+        raise ValueError(f"backup_archive_missing:{ap}")
+    live_sha = file_sha256(ap)
+    if live_sha != sha:
+        raise ValueError("backup_sha256_mismatch_vs_file")
+    return {
+        **meta,
+        "archive_sha256": sha,
+        "archive_path": str(ap),
+        "age_hours": age_h,
+        "port": port_i,
+        "db": db,
+    }
+
+
+def require_snapshot_args(
+    *, expect_total_po: int | None, expect_missing_po: int | None
+) -> tuple[int, int]:
+    """Production apply wajib memasok kedua argumen snapshot (integer >= 0)."""
+    if expect_total_po is None or expect_missing_po is None:
+        raise ValueError("snapshot_args_required")
+    if int(expect_total_po) < 0 or int(expect_missing_po) < 0:
+        raise ValueError("snapshot_args_invalid")
+    if int(expect_missing_po) > int(expect_total_po):
+        raise ValueError("snapshot_missing_gt_total")
+    return int(expect_total_po), int(expect_missing_po)
+
+
+def assert_snapshot_and_manifest_consistency(
+    db: Any,
+    *,
+    items: list[dict[str, Any]],
+    expect_total_po: int,
+    expect_missing_po: int,
+) -> dict[str, Any]:
+    """Fail-closed: total/missing cocok; semua kandidat masih tanpa branch_id."""
+    col = db["accurate_sales_orders"]
+    total = col.count_documents({})
+    missing_filter = {
+        "$or": [
+            {"branch_id": {"$exists": False}},
+            {"branch_id": None},
+            {"branch_id": ""},
+        ]
+    }
+    missing = col.count_documents(missing_filter)
+    if total != expect_total_po:
+        raise ValueError(f"snapshot_total_drift:{total}!={expect_total_po}")
+    if missing != expect_missing_po:
+        raise ValueError(f"snapshot_missing_drift:{missing}!={expect_missing_po}")
+    candidate_ids = [str(it["accurate_id"]) for it in items]
+    if len(set(candidate_ids)) != len(candidate_ids):
+        raise ValueError("manifest_duplicate_ids")
+    # Kandidat tidak boleh bertambah di luar sealed list (sudah di-load).
+    # Kandidat tidak boleh hilang: setiap id masih missing branch.
+    still_missing = 0
+    for aid in candidate_ids:
+        doc = col.find_one({"accurate_id": aid}, {"branch_id": 1})
+        if doc is None:
+            raise ValueError(f"manifest_candidate_missing_in_db:{aid}")
+        bid = doc.get("branch_id")
+        if bid in (None, ""):
+            still_missing += 1
+        else:
+            raise ValueError(f"manifest_candidate_already_branched:{aid}:{bid}")
+    if still_missing != len(candidate_ids):
+        raise ValueError("manifest_candidate_set_drift")
+    if len(candidate_ids) > missing:
+        raise ValueError("manifest_larger_than_missing")
+    return {
+        "total": total,
+        "missing": missing,
+        "candidates": len(candidate_ids),
+    }
 
 
 def load_maintenance_lock(path: Path, *, max_age_hours: float = 4.0) -> dict[str, Any]:

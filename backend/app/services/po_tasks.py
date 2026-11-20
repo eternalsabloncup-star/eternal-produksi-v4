@@ -76,7 +76,9 @@ def derive_tasks_for_po(
 ) -> dict[str, Any]:
     """Buat/refresh tugas untuk satu PO. Idempoten: tidak menggandakan tugas."""
     from app.services.po_acceptance import is_po_accepted, require_po_accepted
+    from app.services.po_repair_maintenance import refuse_if_po_repair_maintenance
 
+    refuse_if_po_repair_maintenance(db)
     accurate_po_id = str(po_doc.get("accurate_id") or "")
     if not accurate_po_id:
         raise ValueError("PO wajib memiliki accurate_id.")

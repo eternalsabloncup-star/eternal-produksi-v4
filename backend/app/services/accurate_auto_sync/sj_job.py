@@ -52,6 +52,9 @@ def sync_one_sj(
     mongo_guard: str | None = None,
 ) -> dict[str, Any]:
     require_owns_job_lock(db, job="sj", owner_token=owner_token)
+    from app.services.po_repair_maintenance import refuse_if_po_repair_maintenance
+
+    refuse_if_po_repair_maintenance(db)
     detail = client.fetch_delivery_order_detail(accurate_id)
     require_owns_job_lock(db, job="sj", owner_token=owner_token)
     from app.services.accurate_auto_sync.date_floor import detail_scope_outcome

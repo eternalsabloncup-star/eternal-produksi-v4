@@ -256,6 +256,9 @@ def sync_one_listed_sales_order(
 ) -> dict[str, Any]:
     """Fetch detail → normalize → conditional upsert dengan guard acceptance + lease."""
     require_owns_job_lock(db, job="po", owner_token=owner_token)
+    from app.services.po_repair_maintenance import refuse_if_po_repair_maintenance
+
+    refuse_if_po_repair_maintenance(db)
     payload = client.fetch_sales_order_detail(accurate_id)
     require_owns_job_lock(db, job="po", owner_token=owner_token)
     from app.services.accurate_auto_sync.date_floor import detail_scope_outcome

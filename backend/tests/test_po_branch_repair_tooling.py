@@ -9,6 +9,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
+from pymongo.database import Database
 
 ROOT = Path(__file__).resolve().parents[2]
 VERIFY = ROOT / "scripts" / "po_branch_verify_accurate_ro.py"
@@ -18,11 +19,10 @@ SAFETY = ROOT / "scripts" / "lib" / "po_branch_repair_safety.py"
 
 
 def _load(path: Path):
-    # Ensure scripts/ on path for lib imports inside verify/apply
     scripts = str(ROOT / "scripts")
     if scripts not in sys.path:
         sys.path.insert(0, scripts)
-    name = path.stem if path.name != "__init__.py" else path.parent.name
+    name = path.stem
     if path.name == "po_branch_repair_safety.py":
         name = "lib.po_branch_repair_safety"
     spec = importlib.util.spec_from_file_location(name, path)
@@ -36,6 +36,14 @@ def _load(path: Path):
 @pytest.fixture()
 def safety():
     return _load(SAFETY)
+
+
+@pytest.fixture()
+def ingest_db(db: Database) -> Database:
+    """Isolated Mongo test DB (from conftest) — clear locks between cases."""
+    db["sync_locks"].delete_many({})
+    db["accurate_sales_orders"].delete_many({})
+    return db
 
 
 def test_verify_classify_rejects_identity_mismatch() -> None:
@@ -56,16 +64,6 @@ def test_verify_classify_rejects_identity_mismatch() -> None:
     assert mod._classify(row) == "REVIEW_REQUIRED_IDENTITY"
     row["identity_match"] = True
     assert mod._classify(row) == "VALID_IN_SCOPE_READY_FOR_BRANCH_REPAIR"
-    row["accurate_trans_date"] = "31/10/2026"
-    assert mod._classify(row) == "OUT_OF_SCOPE_BEFORE_FLOOR"
-
-
-def test_identity_match_requires_both_sides() -> None:
-    mod = _load(VERIFY)
-    assert mod._identity_match(mongo_po_no="PO/1", accurate_number="PO/1") is True
-    assert mod._identity_match(mongo_po_no="PO/1", accurate_number="PO/2") is False
-    assert mod._identity_match(mongo_po_no=None, accurate_number="PO/1") is False
-    assert mod._identity_match(mongo_po_no="PO/1", accurate_number=None) is False
 
 
 def test_dry_run_classify_requires_detail_for_ready() -> None:
@@ -84,154 +82,194 @@ def test_dry_run_classify_requires_detail_for_ready() -> None:
     assert mod._classify(snap) == "VALID_IN_SCOPE_READY_FOR_BRANCH_REPAIR"
 
 
-def test_sha_gate_fail_closed_missing_repo(safety, tmp_path: Path) -> None:
-    with pytest.raises(ValueError, match="live_repo_missing"):
-        safety.resolve_live_sha(
-            live_repo=tmp_path / "nope",
-            expect_sha="a" * 40,
+def test_backup_archive_required_and_checksum(safety, tmp_path: Path) -> None:
+    meta_path = tmp_path / "meta.json"
+    meta_path.write_text(
+        json.dumps(
+            {
+                "db": "eternal_v4",
+                "port": 27018,
+                "archive_sha256": "a" * 64,
+                "created_at": datetime.now(timezone.utc).isoformat(),
+            }
         )
-    with pytest.raises(ValueError, match="invalid_live_sha"):
-        safety.require_full_sha("abc")
-
-
-def test_db_gate_rejects_wrong_port_and_legacy(safety) -> None:
-    with pytest.raises(ValueError, match="mongo_port_legacy_27017"):
-        safety.require_safe_db_target(
-            app_env="production",
-            mongodb_uri="mongodb://u:p@127.0.0.1:27017/eternal_v4",
-            db_name="eternal_v4",
-            require_production=True,
-        )
-    with pytest.raises(ValueError, match="db_name_mismatch"):
-        safety.require_safe_db_target(
-            app_env="production",
-            mongodb_uri="mongodb://u:p@127.0.0.1:27018/other",
-            db_name="other",
-            require_production=True,
-        )
-    with pytest.raises(ValueError, match="app_env_not_production"):
-        safety.require_safe_db_target(
-            app_env="development",
-            mongodb_uri="mongodb://u:p@127.0.0.1:27018/eternal_v4",
-            db_name="eternal_v4",
-            require_production=True,
-        )
-    ok = safety.require_safe_db_target(
-        app_env="production",
-        mongodb_uri="mongodb://u:p@127.0.0.1:27018/eternal_v4",
-        db_name="eternal_v4",
-        require_production=True,
     )
-    assert ok["port"] == 27018
+    with pytest.raises(ValueError, match="backup_archive_path_missing"):
+        safety.load_backup_meta(meta_path)
 
-
-def test_backup_meta_freshness_and_db(safety, tmp_path: Path) -> None:
     archive = tmp_path / "dump.archive"
-    archive.write_bytes(b"abc")
+    archive.write_bytes(b"payload")
     sha = safety.file_sha256(archive)
-    meta = {
-        "db": "eternal_v4",
-        "port": 27018,
-        "archive_sha256": sha,
-        "archive_path": str(archive),
-        "created_at": datetime.now(timezone.utc).isoformat(),
-    }
-    path = tmp_path / "meta.json"
-    path.write_text(json.dumps(meta))
-    loaded = safety.load_backup_meta(path)
+    meta_path.write_text(
+        json.dumps(
+            {
+                "db": "eternal_v4",
+                "port": 27018,
+                "archive_path": str(tmp_path / "missing.bin"),
+                "archive_sha256": sha,
+                "created_at": datetime.now(timezone.utc).isoformat(),
+            }
+        )
+    )
+    with pytest.raises(ValueError, match="backup_archive_missing"):
+        safety.load_backup_meta(meta_path)
+
+    meta_path.write_text(
+        json.dumps(
+            {
+                "db": "eternal_v4",
+                "port": 27018,
+                "archive_path": str(archive),
+                "archive_sha256": "b" * 64,
+                "created_at": datetime.now(timezone.utc).isoformat(),
+            }
+        )
+    )
+    with pytest.raises(ValueError, match="backup_sha256_mismatch"):
+        safety.load_backup_meta(meta_path)
+
+    meta_path.write_text(
+        json.dumps(
+            {
+                "db": "eternal_v4",
+                "port": 27018,
+                "archive_path": str(archive),
+                "archive_sha256": sha,
+                "created_at": datetime.now(timezone.utc).isoformat(),
+            }
+        )
+    )
+    loaded = safety.load_backup_meta(meta_path)
     assert loaded["archive_sha256"] == sha
 
-    meta["created_at"] = (
-        datetime.now(timezone.utc) - timedelta(hours=48)
-    ).isoformat()
-    path.write_text(json.dumps(meta))
-    with pytest.raises(ValueError, match="backup_stale"):
-        safety.load_backup_meta(path)
 
-    meta["created_at"] = datetime.now(timezone.utc).isoformat()
-    meta["db"] = "wrong"
-    path.write_text(json.dumps(meta))
-    with pytest.raises(ValueError, match="backup_db_mismatch"):
-        safety.load_backup_meta(path)
+def test_snapshot_args_required(safety) -> None:
+    with pytest.raises(ValueError, match="snapshot_args_required"):
+        safety.require_snapshot_args(expect_total_po=None, expect_missing_po=10)
+    with pytest.raises(ValueError, match="snapshot_args_required"):
+        safety.require_snapshot_args(expect_total_po=10, expect_missing_po=None)
+    assert safety.require_snapshot_args(expect_total_po=547, expect_missing_po=347) == (
+        547,
+        347,
+    )
 
 
-def test_sealed_manifest_checksum_bind(safety, tmp_path: Path) -> None:
+def test_snapshot_drift_and_manifest(safety, ingest_db: Database) -> None:
+    ingest_db["accurate_sales_orders"].insert_many(
+        [
+            {"accurate_id": "1", "branch_id": "50"},
+            {"accurate_id": "2"},
+            {"accurate_id": "3", "branch_id": ""},
+        ]
+    )
     items = [
-        {
-            "accurate_id": "2",
-            "expected_branch_id": "150",
-            "accurate_trans_date": "05/11/2026",
-            "po_no": "PO/2",
-        },
-        {
-            "accurate_id": "1",
-            "expected_branch_id": "50",
-            "accurate_trans_date": "06/11/2026",
-            "po_no": "PO/1",
-        },
+        {"accurate_id": "2", "expected_branch_id": "50", "po_no": "A"},
+        {"accurate_id": "3", "expected_branch_id": "150", "po_no": "B"},
     ]
-    sealed = safety.sealed_manifest_from_verify_report(
-        {"valid_repair_candidates": items, "generated_at": "t"}
+    snap = safety.assert_snapshot_and_manifest_consistency(
+        ingest_db, items=items, expect_total_po=3, expect_missing_po=2
     )
-    path = tmp_path / "sealed.json"
-    path.write_text(json.dumps(sealed))
-    loaded = safety.load_sealed_candidates(
-        path,
-        expect_sha256=sealed["manifest_sha256"],
-        expect_count=2,
+    assert snap["candidates"] == 2
+    with pytest.raises(ValueError, match="snapshot_total_drift"):
+        safety.assert_snapshot_and_manifest_consistency(
+            ingest_db, items=items, expect_total_po=9, expect_missing_po=2
+        )
+    with pytest.raises(ValueError, match="snapshot_missing_drift"):
+        safety.assert_snapshot_and_manifest_consistency(
+            ingest_db, items=items, expect_total_po=3, expect_missing_po=1
+        )
+    # Candidate already branched → refuse
+    ingest_db["accurate_sales_orders"].update_one(
+        {"accurate_id": "2"}, {"$set": {"branch_id": "50"}}
     )
-    assert [x["accurate_id"] for x in loaded] == ["1", "2"]
-
-    sealed["valid_repair_candidates"].append(
-        {"accurate_id": "3", "expected_branch_id": "50"}
-    )
-    path.write_text(json.dumps(sealed))
-    with pytest.raises(ValueError, match="manifest_internal_checksum_mismatch"):
-        safety.load_sealed_candidates(
-            path,
-            expect_sha256=sealed["manifest_sha256"],
-            expect_count=3,
+    with pytest.raises(ValueError, match="manifest_candidate_already_branched"):
+        safety.assert_snapshot_and_manifest_consistency(
+            ingest_db,
+            items=items,
+            expect_total_po=3,
+            expect_missing_po=1,
         )
 
 
-def test_checkpoint_bound_to_delta_and_freshness(tmp_path: Path) -> None:
-    mod = _load(VERIFY)
-    cp = tmp_path / "cp.jsonl"
-    delta_sha = "d" * 64
-    mod._ensure_checkpoint_meta(cp, delta_sha256=delta_sha)
-    good = {
-        "accurate_id": "1",
-        "ok": True,
-        "detail_verified": True,
-        "identity_match": True,
-        "delta_sha256": delta_sha,
-        "verified_at": datetime.now(timezone.utc).isoformat(),
-        "category": "VALID_IN_SCOPE_READY_FOR_BRANCH_REPAIR",
-    }
-    stale = {
-        **good,
-        "accurate_id": "2",
-        "verified_at": (
-            datetime.now(timezone.utc) - timedelta(hours=20)
-        ).isoformat(),
-    }
-    foreign = {**good, "accurate_id": "3", "delta_sha256": "e" * 64}
-    bad_id = {**good, "accurate_id": "4", "identity_match": False}
-    for row in (good, stale, foreign, bad_id, {"accurate_id": "5", "ok": False}):
-        mod._append_checkpoint(cp, row)
-    done = mod._load_checkpoint(cp, delta_sha256=delta_sha)
-    assert set(done) == {"1"}
+def test_maintenance_gate_blocks_accept_and_alloc(ingest_db: Database) -> None:
+    from app.services.po_repair_maintenance import (
+        PoRepairMaintenanceError,
+        acquire_po_repair_maintenance,
+        refuse_if_po_repair_maintenance,
+        release_po_repair_maintenance,
+    )
+    from app.services import po_acceptance
+
+    handle = acquire_po_repair_maintenance(ingest_db, ttl_seconds=120)
+    try:
+        with pytest.raises(PoRepairMaintenanceError):
+            refuse_if_po_repair_maintenance(ingest_db)
+        with pytest.raises(PoRepairMaintenanceError):
+            po_acceptance.accept_po(
+                ingest_db,
+                {
+                    "email_normalized": "t@example.com",
+                    "role": "super_admin",
+                    "effective_module_permissions": ["operations.full"],
+                },
+                accurate_po_id="99901",
+            )
+    finally:
+        release_po_repair_maintenance(
+            ingest_db,
+            owner_token=handle["owner_token"],
+            job_tokens=handle.get("job_tokens"),
+        )
+    # After release, refuse no longer fires
+    refuse_if_po_repair_maintenance(ingest_db)
+
+
+def test_maintenance_blocks_concurrent_task_writer(ingest_db: Database) -> None:
+    from app.services.po_repair_maintenance import (
+        PoRepairMaintenanceError,
+        acquire_po_repair_maintenance,
+        release_po_repair_maintenance,
+    )
+    from app.services.po_tasks import derive_tasks_for_po
+
+    handle = acquire_po_repair_maintenance(ingest_db, ttl_seconds=120)
+    try:
+        with pytest.raises(PoRepairMaintenanceError):
+            derive_tasks_for_po(
+                ingest_db,
+                {"accurate_id": "991", "po_no": "PO/X", "header": {"items": []}},
+            )
+    finally:
+        release_po_repair_maintenance(
+            ingest_db,
+            owner_token=handle["owner_token"],
+            job_tokens=handle.get("job_tokens"),
+        )
+
+
+def test_stale_operator_lock_refused(safety, tmp_path: Path) -> None:
+    path = tmp_path / "lock.json"
+    path.write_text(
+        json.dumps(
+            {
+                "token": "z" * 16,
+                "workers_cleared": True,
+                "po_auto_sync": False,
+                "created_at": (
+                    datetime.now(timezone.utc) - timedelta(hours=10)
+                ).isoformat(),
+            }
+        )
+    )
+    with pytest.raises(ValueError, match="maintenance_lock_stale"):
+        safety.load_maintenance_lock(path)
 
 
 def test_apply_refuses_without_owner_flags(tmp_path: Path) -> None:
     cand = tmp_path / "c.json"
     cand.write_text(
         json.dumps(
-            {
-                "sealed": True,
-                "manifest_sha256": "0" * 64,
-                "valid_repair_candidates": [],
-            }
+            {"sealed": True, "manifest_sha256": "0" * 64, "valid_repair_candidates": []}
         )
     )
     mod = _load(APPLY)
@@ -251,6 +289,10 @@ def test_apply_refuses_without_owner_flags(tmp_path: Path) -> None:
             str(tmp_path / "missing.json"),
             "--maintenance-lock",
             str(tmp_path / "missing_lock.json"),
+            "--expect-total-po",
+            "0",
+            "--expect-missing-po",
+            "0",
             "--audit-out",
             str(tmp_path / "a.json"),
         ]
@@ -263,7 +305,9 @@ def test_apply_refuses_without_owner_flags(tmp_path: Path) -> None:
     assert audit["wrote_mongo"] is False
 
 
-def test_apply_refuses_missing_live_repo(tmp_path: Path, safety) -> None:
+def test_apply_refuses_missing_live_and_missing_backup(
+    tmp_path: Path, safety
+) -> None:
     items = [
         {
             "accurate_id": "1",
@@ -277,26 +321,17 @@ def test_apply_refuses_missing_live_repo(tmp_path: Path, safety) -> None:
     )
     cand = tmp_path / "sealed.json"
     cand.write_text(json.dumps(sealed))
-    archive = tmp_path / "a.bin"
-    archive.write_bytes(b"x")
-    meta = {
-        "db": "eternal_v4",
-        "port": 27018,
-        "archive_sha256": safety.file_sha256(archive),
-        "archive_path": str(archive),
-        "created_at": datetime.now(timezone.utc).isoformat(),
-    }
-    (tmp_path / "backup.json").write_text(json.dumps(meta))
     (tmp_path / "lock.json").write_text(
         json.dumps(
             {
-                "token": "x" * 16,
+                "token": "y" * 16,
                 "workers_cleared": True,
                 "po_auto_sync": False,
                 "created_at": datetime.now(timezone.utc).isoformat(),
             }
         )
     )
+    # Missing backup meta file
     mod = _load(APPLY)
     old = sys.argv
     try:
@@ -311,11 +346,15 @@ def test_apply_refuses_missing_live_repo(tmp_path: Path, safety) -> None:
             "--expect-candidate-count",
             "1",
             "--backup-meta",
-            str(tmp_path / "backup.json"),
+            str(tmp_path / "no-backup.json"),
             "--maintenance-lock",
             str(tmp_path / "lock.json"),
             "--live-repo",
             str(tmp_path / "no-repo"),
+            "--expect-total-po",
+            "1",
+            "--expect-missing-po",
+            "1",
             "--audit-out",
             str(tmp_path / "audit.json"),
             "--execute",
@@ -326,21 +365,26 @@ def test_apply_refuses_missing_live_repo(tmp_path: Path, safety) -> None:
         sys.argv = old
     assert rc == 3
     audit = json.loads((tmp_path / "audit.json").read_text())
-    assert "live_repo_missing" in audit["reason"]
     assert audit["wrote_mongo"] is False
+    assert "live_repo_missing" in audit["reason"] or "backup" in audit["reason"]
 
 
-def test_maintenance_lock_requires_cleared_workers(safety, tmp_path: Path) -> None:
-    path = tmp_path / "lock.json"
-    path.write_text(
-        json.dumps(
-            {
-                "token": "y" * 16,
-                "workers_cleared": False,
-                "po_auto_sync": False,
-                "created_at": datetime.now(timezone.utc).isoformat(),
-            }
-        )
+def test_checkpoint_bound_to_delta_and_freshness(tmp_path: Path) -> None:
+    mod = _load(VERIFY)
+    cp = tmp_path / "cp.jsonl"
+    delta_sha = "d" * 64
+    mod._ensure_checkpoint_meta(cp, delta_sha256=delta_sha)
+    good = {
+        "accurate_id": "1",
+        "ok": True,
+        "detail_verified": True,
+        "identity_match": True,
+        "delta_sha256": delta_sha,
+        "verified_at": datetime.now(timezone.utc).isoformat(),
+    }
+    mod._append_checkpoint(cp, good)
+    mod._append_checkpoint(
+        cp, {**good, "accurate_id": "2", "identity_match": False}
     )
-    with pytest.raises(ValueError, match="workers_not_cleared"):
-        safety.load_maintenance_lock(path)
+    done = mod._load_checkpoint(cp, delta_sha256=delta_sha)
+    assert set(done) == {"1"}

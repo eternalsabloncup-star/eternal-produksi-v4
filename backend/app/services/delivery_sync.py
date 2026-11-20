@@ -197,6 +197,9 @@ def sync_delivery_order_payload(
     require_registered_po: bool = True,
 ) -> dict[str, Any]:
     """Normalisasi + ingest satu SJ. Skip bila PO belum terdaftar di V4."""
+    from app.services.po_repair_maintenance import refuse_if_po_repair_maintenance
+
+    refuse_if_po_repair_maintenance(db)
     _guard_db(db, mongo_guard=mongo_guard)
     note = deliveries.normalize_delivery_note(payload)
     po_id = str(note["accurate_po_id"])

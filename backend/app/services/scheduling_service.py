@@ -179,7 +179,9 @@ def create_allocations(
 ) -> dict[str, Any]:
     """Konfirmasi jadwal: bagi Qty item line ke satu/beberapa operator."""
     from app.services.po_acceptance import PoAcceptanceError, require_po_accepted
+    from app.services.po_repair_maintenance import refuse_if_po_repair_maintenance
 
+    refuse_if_po_repair_maintenance(db)
     try:
         require_po_accepted(po_doc)
     except PoAcceptanceError as exc:
@@ -425,6 +427,9 @@ def revise_allocation_qty(
     transaksi replica set agar tidak commit state invalid terhadap print konkuren
     atau revisi alokasi lain pada item yang sama.
     """
+    from app.services.po_repair_maintenance import refuse_if_po_repair_maintenance
+
+    refuse_if_po_repair_maintenance(db)
     require_action(db, user, task_type="penjadwalan", action="edit")
     if qty < 0:
         raise ScheduleQuantityError("Qty alokasi tidak boleh negatif.")
@@ -597,6 +602,9 @@ def scan_reschedule(
     as_of: str | None = None,
 ) -> dict[str, Any]:
     """Pergantian hari dengan Qty cetak kurang → satu tugas Penjadwalan Ulang."""
+    from app.services.po_repair_maintenance import refuse_if_po_repair_maintenance
+
+    refuse_if_po_repair_maintenance(db)
     require_action(db, user, task_type="penjadwalan-ulang", action="input")
     today = as_of or date.today().isoformat()
     accurate_po_id = str(po_doc.get("accurate_id") or "")
