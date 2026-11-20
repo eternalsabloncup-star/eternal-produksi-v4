@@ -79,6 +79,16 @@ aktor, waktu, dan alasan. Riwayat bersifat append-only.
 
 ---
 
+## ATURAN TERKUNCI — RELASI FAKTUR & PENERIMAAN ACCURATE
+
+- **Invoice → PO:** `detailItem[].salesOrderId` (Accurate immutable id). Header
+  `salesOrder` sering boolean — **dilarang** dipakai sebagai id PO.
+- **Receipt → Invoice:** `detailInvoice[].invoiceId` + `paymentAmount`.
+- **Receipt → PO:** hanya melalui snapshot invoice V4; tanpa mapping → REVIEW.
+- Multi-SO per faktur, multi-faktur per receipt, atau amount negatif → REVIEW
+  (aturan bisnis Owner belum ditetapkan). Threshold pembayaran existing
+  **tidak diubah**.
+
 ## ATURAN TERKUNCI — ZONA PENGIRIMAN SALES ORDER ACCURATE
 
 - **Keputusan:** `charField3` / `searchCharField3` pada Sales Order Accurate
