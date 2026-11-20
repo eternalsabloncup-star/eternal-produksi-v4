@@ -42,32 +42,47 @@ def actor_email(user: dict[str, Any]) -> str:
 
 
 def user_branch_ids(user: dict[str, Any]) -> set[str]:
+    from app.services.branch_identity import normalize_branch_identity
+
     raw = user.get("branch_ids") or []
     out: set[str] = set()
     for item in raw:
-        code = str(item or "").strip().upper()
+        code = normalize_branch_identity(item)
         if code:
             out.add(code)
     return out
 
 
 def object_branch_code(obj: dict[str, Any] | None) -> str | None:
-    """Cabang otoritatif; branch_name saja tidak cukup."""
+    """Identitas cabang otoritatif untuk object scope.
+
+    Prioritas (kontrak Accurate branchId kanonis):
+    1. ``branch_id`` / Accurate meta
+    2. Legacy ``branch_code`` (transisi)
+    3. Objek ``branch.{id|code|no}``
+    ``branch_name`` saja tidak cukup.
+    """
     if not isinstance(obj, dict):
         return None
-    for key in ("branch_code", "branch_id"):
-        val = obj.get(key)
-        if val is not None and str(val).strip():
-            return str(val).strip().upper()
+    from app.services.branch_identity import (
+        extract_accurate_branch_id,
+        normalize_branch_identity,
+    )
+
+    accurate = extract_accurate_branch_id(obj)
+    if accurate:
+        return accurate
+    legacy = normalize_branch_identity(obj.get("branch_code"))
+    if legacy:
+        return legacy
     branch = obj.get("branch")
     if isinstance(branch, dict):
-        code = branch.get("code") or branch.get("id") or branch.get("no")
-        if code is not None and str(code).strip():
-            return str(code).strip().upper()
+        for key in ("id", "no", "code"):
+            nid = normalize_branch_identity(branch.get(key))
+            if nid:
+                return nid
     elif branch is not None and str(branch).strip() and not str(branch).strip().startswith("{"):
-        text = str(branch).strip()
-        if len(text) <= 16 and " " not in text:
-            return text.upper()
+        return normalize_branch_identity(branch)
     return None
 
 

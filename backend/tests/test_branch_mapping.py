@@ -171,37 +171,37 @@ def test_mapping_api_audit_and_permission(
     assert denied.status_code == 403
 
 
-def test_new_po_follows_mapping_historical_preserved(
+def test_new_po_uses_accurate_branch_id_not_mapping_code(
     app_client: TestClient, db: Database
 ) -> None:
+    """Kontrak kanonis: branchId Accurate → branch_id; mapping tidak mengarang branch_code."""
     del app_client
     org.ensure_org_master_indexes(db)
     from app.repositories.po_repository import ensure_po_indexes
 
     ensure_po_indexes(db)
-    org.upsert_branch(db, code="YGY", name="Yogyakarta", is_active=True)
-    org.set_branch_accurate_mapping(db, "YGY", accurate_branch_id="150")
+    org.upsert_branch(db, code="150", name="Cabang Accurate 150", is_active=True)
+    org.set_branch_accurate_mapping(db, "150", accurate_branch_id="150")
 
-    # Insert baru → branch_code dari mapping
     sync_sales_order_payload(db, _so_payload("9001", branch_id=150), mongo_guard="test")
     doc = get_by_accurate_id(db, "9001")
     assert doc is not None
-    assert doc.get("branch_code") == "YGY"
+    assert doc.get("branch_id") == "150"
+    assert not doc.get("branch_code")
 
-    # Re-ingest setelah mapping diganti → cabang historis tidak digeser
-    org.upsert_branch(db, code="SMG", name="Semarang", is_active=True)
-    org.set_branch_accurate_mapping(db, "YGY", accurate_branch_id=None)
-    org.set_branch_accurate_mapping(db, "SMG", accurate_branch_id="150")
+    # Re-ingest tidak menimpa identitas yang sudah ada
+    db["accurate_sales_orders"].update_one(
+        {"accurate_id": "9001"}, {"$set": {"branch_id": "50"}}
+    )
     sync_sales_order_payload(db, _so_payload("9001", branch_id=150), mongo_guard="test")
     doc2 = get_by_accurate_id(db, "9001")
     assert doc2 is not None
-    assert doc2.get("branch_code") == "YGY"
+    assert doc2.get("branch_id") == "50"
 
-    # PO tanpa mapping tetap tanpa invent branch_code
     sync_sales_order_payload(db, _so_payload("9002", branch_id=50), mongo_guard="test")
     doc3 = get_by_accurate_id(db, "9002")
     assert doc3 is not None
-    assert not doc3.get("branch_code")
+    assert doc3.get("branch_id") == "50"
     meta = (doc3.get("header") or {}).get("raw_sync_meta") or {}
     assert meta.get("accurate_branch_id") == "50"
 

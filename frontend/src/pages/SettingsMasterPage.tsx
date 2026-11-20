@@ -1622,9 +1622,10 @@ export function SettingsMasterPage() {
                 <section className="ep-settings-card">
                   <h3 className="ep-settings-card-title">Simpan cabang</h3>
                   <p className="ep-settings-help">
-                    Master Cabang Eternal adalah sumber kebenaran internal. Accurate
-                    branchId dipetakan di sini — bukan di Pengaturan Pengguna. ID
-                    numerik Accurate tidak otomatis menjadi kode cabang.
+                    Identitas cabang kanonis = Accurate branchId (contoh numerik dari
+                    Sales Order). Catat ID yang sama di Master agar checkbox Pengguna
+                    dan otorisasi PO selaras. Nama tampilan hanya dari referensi yang
+                    diverifikasi — jangan mengarang nama dari ID.
                   </p>
                   <form
                     className="ep-settings-form-grid"

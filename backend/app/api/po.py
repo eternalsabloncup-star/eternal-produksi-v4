@@ -78,20 +78,30 @@ def _sanitize_header_for_api(header: dict[str, Any]) -> dict[str, Any]:
     return out
 
 
-def _serialize_po_doc(row: dict[str, Any]) -> dict[str, Any]:
+def _serialize_po_doc(row: dict[str, Any], db=None) -> dict[str, Any]:
     """Dokumen Mongo → JSON Inbox (header+items lengkap, tanpa _id)."""
+    from app.repositories import org_master_repository as org
+    from app.services.branch_identity import branch_display_name
+    from app.services.object_auth import object_branch_code
+
     doc = dict(row)
     doc.pop("_id", None)
     header_raw = doc.get("header") if isinstance(doc.get("header"), dict) else {}
     header = _sanitize_header_for_api(header_raw)
     items = header.get("items") if isinstance(header.get("items"), list) else []
     customer = _label_for_api(header.get("customer"))
+    branch_id = object_branch_code(doc)
+    master = org.get_branch(db, branch_id) if db is not None and branch_id else None
+    branch_info = branch_display_name(master, branch_id=branch_id)
     return {
         "accurate_id": doc.get("accurate_id"),
         "source_po_id": doc.get("source_po_id"),
         "po_no": doc.get("po_no"),
         "origin": doc.get("origin"),
         "customer": customer,
+        "branch_id": branch_info.get("branch_id"),
+        "branch_name": branch_info.get("branch_name"),
+        "branch_name_verified": bool(branch_info.get("branch_name_verified")),
         "item_count": len(items),
         "updated_at": doc.get("updated_at"),
         "created_at": doc.get("created_at"),
@@ -128,21 +138,46 @@ def list_po(
     sort_dir: Literal["asc", "desc"] = Query("desc", alias="sortDir"),
 ) -> dict[str, Any]:
     """List PO Accurate dari Mongo V4 — tidak memanggil Accurate Online."""
-    del auth
+    from app.services.object_auth import bypasses_branch, object_branch_code, user_branch_ids
+
     db = get_db()
     direction = -1 if sort_dir == "desc" else 1
     skip = (page - 1) * page_size
-    rows, total = list_sales_orders(
-        db,
-        origin="accurate",
-        limit=page_size,
-        skip=skip,
-        q=q,
-        urgent=urgent,
-        sort_by=sort_by,
-        sort_dir=direction,
-    )
-    items = [_serialize_po_doc(row) for row in rows]
+    elevated = bypasses_branch(auth.user)
+    if elevated:
+        rows, total = list_sales_orders(
+            db,
+            origin="accurate",
+            limit=page_size,
+            skip=skip,
+            q=q,
+            urgent=urgent,
+            sort_by=sort_by,
+            sort_dir=direction,
+        )
+        page_rows = rows
+    else:
+        allowed = user_branch_ids(auth.user)
+        # Akun terbatas: scan terbatasi + filter fail-closed (tanpa cabang = hilang).
+        rows, _ = list_sales_orders(
+            db,
+            origin="accurate",
+            limit=500,
+            skip=0,
+            q=q,
+            urgent=urgent,
+            sort_by=sort_by,
+            sort_dir=direction,
+        )
+        scoped: list[dict[str, Any]] = []
+        if allowed:
+            for row in rows:
+                ob = object_branch_code(row)
+                if ob is not None and ob in allowed:
+                    scoped.append(row)
+        total = len(scoped)
+        page_rows = scoped[skip : skip + page_size]
+    items = [_serialize_po_doc(row, db) for row in page_rows]
     return {
         "items": items,
         "total": total,
@@ -150,7 +185,6 @@ def list_po(
         "pageSize": page_size,
         "source": "mongodb",
         "origin": "accurate",
-        # Filter cabang/status/mesin belum didukung di sumber Accurate.
         "supportedFilters": ["q", "urgent"],
     }
 
@@ -197,7 +231,48 @@ def accept_po(
         "duplicate": result["duplicate"],
         "acceptance": result["acceptance"],
         "workflow": result["workflow"],
-        "po": _serialize_po_doc(result["po"]),
+        "po": _serialize_po_doc(result["po"], db),
+    }
+
+
+class PoBranchBody(BaseModel):
+    branch_id: str
+    reason: str
+
+
+@router.patch("/{accurate_po_id}/branch")
+def patch_po_branch(
+    accurate_po_id: str,
+    body: PoBranchBody,
+    auth: AuthContext = Depends(require_csrf),
+) -> dict[str, Any]:
+    """Ubah identitas cabang PO (Accurate branchId). Tidak menulis Accurate."""
+    from app.services import po_branch_service as pbs
+    from app.services.task_engine import TaskPermissionError
+
+    db = get_db()
+    try:
+        result = pbs.update_po_branch(
+            db,
+            auth.user,
+            accurate_po_id=accurate_po_id,
+            branch_id=body.branch_id,
+            reason=body.reason,
+        )
+    except LookupError as exc:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, str(exc)) from exc
+    except TaskPermissionError as exc:
+        raise HTTPException(status.HTTP_403_FORBIDDEN, str(exc)) from exc
+    except pbs.PoBranchConflictError as exc:
+        raise HTTPException(status.HTTP_409_CONFLICT, str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, str(exc)) from exc
+    return {
+        "accurate_po_id": accurate_po_id,
+        "before": result["before"],
+        "after": result["after"],
+        "unchanged": result["unchanged"],
+        "po": _serialize_po_doc(result["po"], db),
     }
 
 
@@ -211,7 +286,8 @@ def get_po(
     ``:path`` agar nomor PO ber-slash (mis. PO/18/11/2026/000010) tetap
     tertangkap — bukan request Accurate live.
     """
-    del auth
+    from app.services.object_auth import ObjectAuthError, assert_branch_access
+
     db = get_db()
     key = po_key.strip().strip("/")
     if not key:
@@ -221,7 +297,11 @@ def get_po(
         doc = get_by_po_no(db, key)
     if not doc:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "PO tidak ditemukan")
-    return _serialize_po_doc(doc)
+    try:
+        assert_branch_access(auth.user, scope_object=doc)
+    except ObjectAuthError as exc:
+        raise HTTPException(status.HTTP_403_FORBIDDEN, str(exc)) from exc
+    return _serialize_po_doc(doc, db)
 
 
 @router.post("/sync-payload")

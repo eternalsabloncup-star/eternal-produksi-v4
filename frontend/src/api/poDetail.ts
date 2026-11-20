@@ -18,6 +18,11 @@ export type PoDetailSummary = {
   poNo: string;
   /** null = field customer tidak ada di respons. */
   customer: string | null;
+  /** Accurate branchId kanonis; null bila absen. */
+  branchId: string | null;
+  /** Nama dari Master terverifikasi; null bila belum diverifikasi. */
+  branchName: string | null;
+  branchNameVerified: boolean;
   /**
    * true/false dari header.urgent; null bila field absen
    * (tampilkan "Belum tersedia").
@@ -104,10 +109,18 @@ export function summarizePoDetailDoc(
     });
   }
 
+  const branchIdRaw = doc.branch_id ?? header.branch_id;
+  const branchId = label(branchIdRaw) || null;
+  const branchName = label(doc.branch_name) || null;
+  const branchNameVerified = Boolean(doc.branch_name_verified);
+
   return {
     accurateId,
     poNo,
     customer,
+    branchId,
+    branchName,
+    branchNameVerified,
     urgent,
     itemCount: itemsRaw.length,
     printLines,

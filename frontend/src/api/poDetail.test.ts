@@ -11,6 +11,9 @@ describe("summarizePoDetailDoc", () => {
       accurate_id: "10001",
       po_no: "SO-1",
       customer: "PT Contoh Kemasan",
+      branch_id: "150",
+      branch_name: null,
+      branch_name_verified: false,
       header: {
         customer: "PT Contoh Kemasan",
         urgent: true,
@@ -33,6 +36,8 @@ describe("summarizePoDetailDoc", () => {
       },
     });
     expect(summary.customer).toBe("PT Contoh Kemasan");
+    expect(summary.branchId).toBe("150");
+    expect(summary.branchNameVerified).toBe(false);
     expect(summary.urgent).toBe(true);
     expect(urgencyLabel(summary.urgent)).toBe("Urgent");
     expect(summary.itemCount).toBe(2);

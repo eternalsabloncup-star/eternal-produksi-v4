@@ -144,7 +144,7 @@ def upsert_sales_order(
 def set_branch_code_if_empty(
     db: Database, accurate_id: str | int, branch_code: str
 ) -> dict[str, Any] | None:
-    """Isi ``branch_code`` hanya jika belum ada (CAS). Tidak menimpa historis."""
+    """Legacy helper — isi ``branch_code`` hanya jika kosong (CAS)."""
     require_po_indexes(db)
     code = str(branch_code or "").strip().upper()
     if not code:
@@ -159,6 +159,65 @@ def set_branch_code_if_empty(
             ],
         },
         {"$set": {"branch_code": code, "updated_at": datetime.now(timezone.utc)}},
+        return_document=ReturnDocument.AFTER,
+    )
+
+
+def set_branch_id_if_empty(
+    db: Database, accurate_id: str | int, branch_id: str
+) -> dict[str, Any] | None:
+    """Isi ``branch_id`` kanonis (Accurate) hanya jika belum ada. Tidak menimpa historis/manual."""
+    require_po_indexes(db)
+    from app.services.branch_identity import normalize_branch_identity
+
+    nid = normalize_branch_identity(branch_id)
+    if not nid:
+        return None
+    return po_collection(db).find_one_and_update(
+        {
+            "accurate_id": str(accurate_id),
+            "$or": [
+                {"branch_id": {"$exists": False}},
+                {"branch_id": None},
+                {"branch_id": ""},
+            ],
+        },
+        {
+            "$set": {
+                "branch_id": nid,
+                "updated_at": datetime.now(timezone.utc),
+            }
+        },
+        return_document=ReturnDocument.AFTER,
+    )
+
+
+def set_po_branch_id(
+    db: Database,
+    accurate_id: str | int,
+    *,
+    branch_id: str,
+    expected_previous: str | None,
+) -> dict[str, Any] | None:
+    """Compare-and-set identitas cabang PO (edit berizin)."""
+    require_po_indexes(db)
+    from app.services.branch_identity import normalize_branch_identity
+
+    nid = normalize_branch_identity(branch_id)
+    if not nid:
+        raise ValueError("branch_id wajib.")
+    filt: dict[str, Any] = {"accurate_id": str(accurate_id)}
+    if expected_previous:
+        filt["branch_id"] = normalize_branch_identity(expected_previous)
+    else:
+        filt["$or"] = [
+            {"branch_id": {"$exists": False}},
+            {"branch_id": None},
+            {"branch_id": ""},
+        ]
+    return po_collection(db).find_one_and_update(
+        filt,
+        {"$set": {"branch_id": nid, "updated_at": datetime.now(timezone.utc)}},
         return_document=ReturnDocument.AFTER,
     )
 

@@ -991,6 +991,19 @@ export function TeamTaskApiPanel({ role, roleLabel }: Props) {
                         ? "…"
                         : urgencyLabel(poDetail?.urgent ?? null)}
                     </span>
+                    <span className="ep-muted" data-testid="task-head-branch">
+                      {poDetailLoading
+                        ? "…"
+                        : poDetail?.branchId
+                          ? `Cabang ${poDetail.branchId}${
+                              poDetail.branchName
+                                ? ` · ${poDetail.branchName}`
+                                : poDetail.branchNameVerified
+                                  ? ""
+                                  : " · belum diverifikasi"
+                            }`
+                          : "Cabang belum tersedia"}
+                    </span>
                     <span
                       className={statusBadgeClass(selected.status)}
                       data-testid="task-head-task-status"
