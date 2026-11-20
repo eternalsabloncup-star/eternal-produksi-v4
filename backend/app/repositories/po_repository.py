@@ -295,8 +295,12 @@ def set_po_branch_id(
     )
 
 
-def get_by_accurate_id(db: Database, accurate_id: str | int) -> dict[str, Any] | None:
-    return po_collection(db).find_one({"accurate_id": str(accurate_id)})
+def get_by_accurate_id(
+    db: Database, accurate_id: str | int, *, session: Any | None = None
+) -> dict[str, Any] | None:
+    return po_collection(db).find_one(
+        {"accurate_id": str(accurate_id)}, session=session
+    )
 
 
 def get_by_po_no(db: Database, po_no: str) -> dict[str, Any] | None:

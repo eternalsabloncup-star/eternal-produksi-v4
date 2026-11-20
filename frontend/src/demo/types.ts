@@ -85,6 +85,12 @@ export type PoRow = {
   acceptanceStatus?: "pending" | "accepted" | string;
   acceptedBy?: string | null;
   acceptedAt?: string | null;
+  /** Gate payment dari backend (bukan status lunas keuangan). */
+  paymentGate?: {
+    state?: "open" | "closed" | "review" | string;
+    bypass?: boolean;
+    reason?: string | null;
+  } | null;
 };
 
 export type PoFilters = {

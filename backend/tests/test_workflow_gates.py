@@ -14,7 +14,6 @@ from app.repositories import payment_repository as payments
 from app.repositories import task_repository as tasks
 from app.repositories.po_repository import get_by_accurate_id
 from app.services import design_service, payment_service, po_tasks
-from app.services.po_sync import sync_sales_order_payload
 from app.services.task_engine import TaskPermissionError
 
 PO_ID = "95106"
@@ -34,8 +33,16 @@ OPERATOR = {
 
 
 def _sync_po(db: Database, payload=None) -> dict:
-    sync_sales_order_payload(db, payload or SAMPLE_SALES_ORDER_STRUCTURE)
+    # Upsert langsung: sample payload tanpa branchId gagal di ingest guard.
+    from app.integrations.accurate.normalize import normalize_sales_order
+    from app.repositories.po_repository import upsert_sales_order
     from tests.po_accept_helpers import mark_po_accepted
+
+    upsert_sales_order(db, normalize_sales_order(payload or SAMPLE_SALES_ORDER_STRUCTURE))
+    db["accurate_sales_orders"].update_one(
+        {"accurate_id": PO_ID},
+        {"$set": {"branch_id": "HQ", "branch_code": "HQ"}},
+    )
     mark_po_accepted(db)
     return get_by_accurate_id(db, PO_ID)
 

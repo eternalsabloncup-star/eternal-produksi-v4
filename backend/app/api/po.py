@@ -78,7 +78,24 @@ def _sanitize_header_for_api(header: dict[str, Any]) -> dict[str, Any]:
     return out
 
 
-def _serialize_po_doc(row: dict[str, Any], db=None) -> dict[str, Any]:
+def _payment_gate_slice(gate_doc: dict[str, Any] | None) -> dict[str, Any]:
+    payment = (gate_doc or {}).get("payment") if isinstance(gate_doc, dict) else None
+    if not isinstance(payment, dict):
+        payment = {}
+    detail = payment.get("detail") if isinstance(payment.get("detail"), dict) else {}
+    return {
+        "state": payment.get("state") or "closed",
+        "bypass": bool(detail.get("bypass")),
+        "reason": payment.get("reason"),
+    }
+
+
+def _serialize_po_doc(
+    row: dict[str, Any],
+    db=None,
+    *,
+    payment_gate: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     """Dokumen Mongo → JSON Inbox (header+items lengkap, tanpa _id)."""
     from app.repositories import org_master_repository as org
     from app.services.branch_identity import branch_display_name
@@ -93,6 +110,13 @@ def _serialize_po_doc(row: dict[str, Any], db=None) -> dict[str, Any]:
     branch_id = object_branch_code(doc)
     master = org.get_branch(db, branch_id) if db is not None and branch_id else None
     branch_info = branch_display_name(master, branch_id=branch_id)
+    gate_slice = payment_gate
+    if gate_slice is None and db is not None and doc.get("accurate_id"):
+        from app.repositories import gate_repository as gates
+
+        gate_slice = _payment_gate_slice(
+            gates.get_gates(db, str(doc.get("accurate_id")))
+        )
     return {
         "accurate_id": doc.get("accurate_id"),
         "source_po_id": doc.get("source_po_id"),
@@ -111,6 +135,9 @@ def _serialize_po_doc(row: dict[str, Any], db=None) -> dict[str, Any]:
         if isinstance(doc.get("operational"), dict)
         else {},
         "acceptance": _acceptance_for_api(doc),
+        "payment_gate": gate_slice
+        if gate_slice is not None
+        else {"state": "closed", "bypass": False, "reason": None},
         "last_line_diff": doc.get("last_line_diff"),
     }
 
@@ -157,7 +184,22 @@ def list_po(
         branch_ids=scope_ids,
         branch_scope=not elevated,
     )
-    items = [_serialize_po_doc(row, db) for row in rows]
+    from app.repositories import gate_repository as gates
+
+    gate_map = gates.get_gates_many(
+        db,
+        [str(r.get("accurate_id") or "") for r in rows if r.get("accurate_id")],
+    )
+    items = [
+        _serialize_po_doc(
+            row,
+            db,
+            payment_gate=_payment_gate_slice(
+                gate_map.get(str(row.get("accurate_id") or ""))
+            ),
+        )
+        for row in rows
+    ]
     return {
         "items": items,
         "total": total,
