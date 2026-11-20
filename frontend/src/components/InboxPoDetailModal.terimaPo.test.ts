@@ -2,12 +2,14 @@ import { describe, expect, it, vi } from "vitest";
 import { PoAcceptError } from "../api/poAcceptance";
 import {
   TERIMA_PO_SUCCESS_FEEDBACK,
+  TERIMA_PO_SUCCESS_SYNC_NEEDED_FEEDBACK,
   TERIMA_PO_UNCERTAIN_FEEDBACK,
   isTerimaPoAcceptDisabled,
   shouldResetTerimaPoOverlay,
   terimaPoErrorFeedback,
   terimaPoFeedbackMessage,
   terimaPoOverlayAutoCloseMs,
+  terimaPoSuccessFeedback,
 } from "./InboxPoDetailModal";
 
 describe("terimaPoFeedbackMessage", () => {
@@ -170,6 +172,26 @@ describe("network uncertain / timeout reconcile contract", () => {
     expect(fetchStatus).toHaveBeenCalledTimes(1);
     expect(feedback).toEqual(TERIMA_PO_SUCCESS_FEEDBACK);
     expect(onAccepted).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("accept success vs design-gate sync needed", () => {
+  it("keeps success tone when Gate Design still needs sync", () => {
+    const fb = terimaPoSuccessFeedback({ status: "needed", display: "Perlu Sinkronisasi" });
+    expect(fb).toEqual(TERIMA_PO_SUCCESS_SYNC_NEEDED_FEEDBACK);
+    expect(fb.tone).toBe("success");
+    expect(fb.title).toBe(TERIMA_PO_SUCCESS_FEEDBACK.title);
+    expect(fb.message).toContain("Perlu Sinkronisasi");
+  });
+
+  it("uses plain success when sync ok or n_a", () => {
+    expect(terimaPoSuccessFeedback({ status: "ok" })).toEqual(
+      TERIMA_PO_SUCCESS_FEEDBACK,
+    );
+    expect(terimaPoSuccessFeedback({ status: "n_a" })).toEqual(
+      TERIMA_PO_SUCCESS_FEEDBACK,
+    );
+    expect(terimaPoSuccessFeedback(null)).toEqual(TERIMA_PO_SUCCESS_FEEDBACK);
   });
 });
 

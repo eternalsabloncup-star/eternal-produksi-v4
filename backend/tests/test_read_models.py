@@ -149,6 +149,47 @@ def test_buffer_stock_excludes_non_buffer_po(db: Database) -> None:
     assert read_models.buffer_stock_rows(db)["items"] == []
 
 
+def test_buffer_stock_excludes_empty_buffer_label(db: Database) -> None:
+    _seed(db, "")
+    assert read_models.buffer_stock_rows(db)["items"] == []
+    # Label hilang dari payload Accurate → tidak masuk monitoring Buffer.
+    payload = copy.deepcopy(SAMPLE_SALES_ORDER_STRUCTURE)
+    payload.pop("charField5", None)
+    payload.pop("searchCharField5", None)
+    upsert_sales_order(db, normalize_sales_order(payload))
+    from tests.po_accept_helpers import mark_po_accepted
+
+    mark_po_accepted(db)
+    assert read_models.buffer_stock_rows(db)["items"] == []
+
+
+def test_buffer_stock_keeps_cetak_and_non_cetak_rows_without_fiction(
+    db: Database,
+) -> None:
+    """PO Buffer: baris Cetak + Non-Cetak; status/outlet tidak dikarang."""
+    po_doc = _seed(db, "Buffer")
+    _open_gates(db)
+    _run_production(db, po_doc, 200)
+    result = read_models.buffer_stock_rows(db)
+    assert len(result["items"]) == 2
+    by_line = {r["accurate_line_id"]: r for r in result["items"]}
+    cetak = by_line[LINE_PRINT]
+    non_cetak = by_line[LINE_NON_PRINT]
+    assert cetak["process_kind"] == "Cetak"
+    assert cetak["qty_printed"] == 200
+    assert cetak["qty_ready_warehouse"] == 200
+    assert non_cetak["process_kind"] == "Non-Cetak"
+    assert non_cetak["qty_printed"] == 0
+    assert non_cetak["qty_ready_warehouse"] == 0
+    for row in (cetak, non_cetak):
+        assert row["buffer_status"] == read_models.NOT_CONFIGURED
+        assert row["outlet_warehouse"] == read_models.NOT_CONFIGURED
+        assert row["buffer_status"] != 0
+        assert row["outlet_warehouse"] != 0
+    assert "buffer_status" in result["not_configured"]
+    assert "outlet_warehouse" in result["not_configured"]
+
+
 def test_buffer_stock_branch_scope_isolates_rows(db: Database) -> None:
     """Monitoring Buffer wajib terisolasi cabang — tanpa ubah stok fisik."""
     from app.repositories.po_repository import set_po_branch_id

@@ -7,6 +7,16 @@ export type PoAcceptance = {
   inbox_status?: string;
 };
 
+export type DesignGateSyncInfo = {
+  applicable?: boolean;
+  synced?: boolean;
+  status?: "ok" | "needed" | "n_a" | string;
+  display?: string | null;
+  error?: string | null;
+  duplicate?: boolean;
+  accurate_po_id?: string;
+};
+
 export type AcceptPoResponse = {
   accurate_po_id: string;
   duplicate: boolean;
@@ -14,7 +24,9 @@ export type AcceptPoResponse = {
   workflow: {
     created_task_keys?: string[];
     skipped?: string[];
+    design_gate_sync?: DesignGateSyncInfo;
   };
+  design_gate_sync?: DesignGateSyncInfo;
   po: Record<string, unknown>;
 };
 
@@ -109,6 +121,34 @@ export async function acceptPo(
     if (timer) window.clearTimeout(timer);
     opts?.signal?.removeEventListener("abort", onParentAbort);
   }
+}
+
+/** Retry Gate Design Non-Cetak — tidak accept ulang / tidak buka payment. */
+export async function syncDesignGate(
+  accuratePoId: string,
+): Promise<{
+  design_gate_sync: DesignGateSyncInfo;
+  acceptance: PoAcceptance;
+}> {
+  const csrf = getCsrfToken();
+  const res = await fetch(
+    `/api/po/${encodeURIComponent(accuratePoId)}/design-gate/sync`,
+    {
+      method: "POST",
+      credentials: "include",
+      headers: {
+        "Content-Type": "application/json",
+        ...(csrf ? { "X-CSRF-Token": csrf } : {}),
+      },
+    },
+  );
+  if (!res.ok) {
+    throw new PoAcceptError(await readError(res), res.status);
+  }
+  return (await res.json()) as {
+    design_gate_sync: DesignGateSyncInfo;
+    acceptance: PoAcceptance;
+  };
 }
 
 /** Baca status acceptance otoritatif (GET PO) — tanpa mutasi. */

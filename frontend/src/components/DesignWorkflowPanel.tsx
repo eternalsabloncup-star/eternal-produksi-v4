@@ -25,9 +25,12 @@ type Props = {
   onRegisterReload?: (reload: () => Promise<void>) => void;
 };
 
-function gateLabel(state: string | undefined): string {
+function gateLabel(state: string | undefined, reason?: string | null): string {
   if (state === "open") return "Terbuka";
   if (state === "review") return "Perlu Review";
+  if (state === "closed" && (reason || "").trim() === "Perlu Sinkronisasi") {
+    return "Perlu Sinkronisasi";
+  }
   if (state === "closed") return "Tertutup";
   return state || "—";
 }
@@ -186,6 +189,7 @@ export function DesignWorkflowPanel({
 
   const latest = state?.latest;
   const designGate = state?.gates?.design?.state;
+  const designGateReason = state?.gates?.design?.reason;
   const canConfirm = Boolean(latest && !latest.confirmed_at);
   const canLink = Boolean(latest?.confirmed_at) && !state?.approval;
 
@@ -213,7 +217,7 @@ export function DesignWorkflowPanel({
             <div className="ep-design-status-strip" data-testid="design-status-strip">
               <div className="ep-design-status-item">
                 <span className="ep-design-status-lbl">Gate Design</span>
-                <strong>{gateLabel(designGate)}</strong>
+                <strong>{gateLabel(designGate, designGateReason)}</strong>
               </div>
               <div className="ep-design-status-item">
                 <span className="ep-design-status-lbl">Versi terbaru</span>
@@ -239,7 +243,7 @@ export function DesignWorkflowPanel({
           ) : (
             <dl className="ep-kv">
               <dt>Gate Design</dt>
-              <dd>{gateLabel(designGate)}</dd>
+              <dd>{gateLabel(designGate, designGateReason)}</dd>
               <dt>Versi terbaru</dt>
               <dd>
                 {latest

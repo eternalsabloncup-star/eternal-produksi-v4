@@ -81,6 +81,62 @@ def test_all_non_print_po_skips_design_and_opens_gate(db: Database) -> None:
     assert gates.get_gates(db, PO_ID)["design"]["state"] == gates.GATE_OPEN
 
 
+def test_non_print_accept_survives_design_gate_sync_failure_then_retry(
+    db: Database,
+) -> None:
+    """Accept tetap sah bila sync Gate Design gagal; retry memulihkan gate saja."""
+    from unittest.mock import patch
+
+    from app.services import po_acceptance
+    from app.services.audit_log import list_audit_events
+
+    po_doc = _sync_po(db, _all_non_print_payload())
+    user = {
+        "email_normalized": "kp@eternal.local",
+        "role": "user",
+        "operational_role": "production-head",
+        "effective_module_permissions": ["access.all_branches"],
+    }
+
+    with patch(
+        "app.services.po_tasks.sync_design_gate_for_non_print_po",
+        side_effect=RuntimeError("index preflight gagal"),
+    ):
+        result = po_acceptance.accept_po(db, user, accurate_po_id=PO_ID)
+
+    assert result["acceptance"]["status"] == "accepted"
+    assert po_acceptance.is_po_accepted(get_by_accurate_id(db, PO_ID))
+    sync_info = result["design_gate_sync"]
+    assert sync_info["status"] == "needed"
+    assert sync_info["display"] == po_tasks.DESIGN_GATE_SYNC_NEEDED_REASON
+    assert sync_info["synced"] is False
+    design = gates.get_gates(db, PO_ID)["design"]
+    assert design["state"] == gates.GATE_CLOSED
+    assert design["reason"] == po_tasks.DESIGN_GATE_SYNC_NEEDED_REASON
+    payment = gates.get_gates(db, PO_ID)["payment"]
+    assert payment["state"] == gates.GATE_CLOSED
+    assert tasks.list_tasks(db, task_type="design") == []
+
+    audits = list_audit_events(db, action="design.gate.sync_failed", limit=20)["items"]
+    assert any(a.get("detail", {}).get("accurate_po_id") == PO_ID for a in audits)
+
+    # Recovery: retry membuka Gate Design saja (idempotent).
+    recovered = po_acceptance.retry_design_gate_sync(
+        db, user, accurate_po_id=PO_ID
+    )
+    assert recovered["design_gate_sync"]["synced"] is True
+    assert recovered["design_gate_sync"]["status"] == "ok"
+    assert gates.get_gates(db, PO_ID)["design"]["state"] == gates.GATE_OPEN
+    assert gates.get_gates(db, PO_ID)["payment"]["state"] == gates.GATE_CLOSED
+    assert tasks.list_tasks(db, task_type="design") == []
+
+    # Retry kedua idempotent — tidak menggandakan tugas.
+    again = po_acceptance.retry_design_gate_sync(db, user, accurate_po_id=PO_ID)
+    assert again["design_gate_sync"]["synced"] is True
+    assert again["design_gate_sync"].get("duplicate") is True
+    assert tasks.list_tasks(db, task_type="design") == []
+
+
 def test_scheduling_blocked_until_both_gates_open(db: Database) -> None:
     po_doc = _sync_po(db)
     po_tasks.derive_tasks_for_po(db, po_doc)

@@ -63,9 +63,10 @@ function shipDatesCell(dates: string[] | undefined): string {
   return shown.length ? shown.join(", ") : "—";
 }
 
-function gateBadge(state: string): string {
+function gateBadge(state: string, reason?: string | null): string {
   if (state === "open") return "Terbuka";
   if (state === "review") return "Perlu Review";
+  if ((reason || "").trim() === "Perlu Sinkronisasi") return "Perlu Sinkronisasi";
   return "Tertutup";
 }
 
@@ -501,8 +502,10 @@ export function ScheduleApiPanel() {
         hideable: true,
         filterType: "text",
         defaultWidth: 110,
-        getFilterValue: (row) => gateBadge(row.gates.design.state),
-        render: (row) => gateBadge(row.gates.design.state),
+        getFilterValue: (row) =>
+          gateBadge(row.gates.design.state, row.gates.design.reason),
+        render: (row) =>
+          gateBadge(row.gates.design.state, row.gates.design.reason),
       },
       {
         id: "gatePayment",
