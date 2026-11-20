@@ -442,3 +442,153 @@ def test_print_with_other_operator_metadata_and_gates(db: Database) -> None:
         idempotency_key="print-cross-op",
     )
     assert ok["duplicate"] is False
+
+
+def test_read_cross_branch_delivery_detail_denied(db: Database) -> None:
+    """GET SJ cabang lain = DENIED untuk akun terbatas."""
+    from app.services.object_auth import require_sj_branch_access
+
+    _seed(db)
+    sj_id = "SJ-READ-X"
+    _upsert_sj(db, sj_id)
+    deliveries.delivery_notes_collection(db).update_one(
+        {"accurate_sj_id": sj_id}, {"$set": {"branch_code": "JOG"}}
+    )
+    limited = {
+        **DRV_A,
+        "branch_ids": ["HQ"],
+        "effective_module_permissions": [],
+    }
+    with pytest.raises(ObjectAuthError):
+        require_sj_branch_access(db, limited, sj_id)
+
+
+def test_read_schedule_filters_foreign_branch(db: Database) -> None:
+    _seed(db)
+    _upsert_sj(db, "SJ-READ-HQ")
+    _upsert_sj(db, "SJ-READ-JOG")
+    deliveries.delivery_notes_collection(db).update_one(
+        {"accurate_sj_id": "SJ-READ-JOG"}, {"$set": {"branch_code": "JOG"}}
+    )
+    limited = {
+        **DRV_A,
+        "branch_ids": ["HQ"],
+        "effective_module_permissions": [],
+    }
+    schedule = delivery.delivery_schedule(db, limited)
+    ids = {row["accurate_sj_id"] for row in schedule["items"]}
+    assert "SJ-READ-HQ" in ids
+    assert "SJ-READ-JOG" not in ids
+
+
+def test_read_ops_full_sees_foreign_sj(db: Database) -> None:
+    _seed(db)
+    sj_id = "SJ-READ-OPS"
+    _upsert_sj(db, sj_id)
+    deliveries.delivery_notes_collection(db).update_one(
+        {"accurate_sj_id": sj_id}, {"$set": {"branch_code": "JOG"}}
+    )
+    from app.services.object_auth import require_sj_branch_access
+
+    note = require_sj_branch_access(db, OPS_FULL, sj_id)
+    assert note["accurate_sj_id"] == sj_id
+
+
+def test_read_po_cross_branch_denied(db: Database) -> None:
+    from app.services.object_auth import require_po_branch_access
+
+    _seed(db)
+    db["accurate_sales_orders"].update_one(
+        {"accurate_id": PO_ID}, {"$set": {"branch_code": "SMG"}}
+    )
+    limited = {
+        **OP_A,
+        "branch_ids": ["HQ"],
+        "effective_module_permissions": [],
+    }
+    with pytest.raises(ObjectAuthError):
+        require_po_branch_access(db, limited, PO_ID)
+
+
+def test_read_same_branch_po_pass(db: Database) -> None:
+    from app.services.object_auth import require_po_branch_access
+
+    _seed(db)
+    po = require_po_branch_access(db, OP_A, PO_ID)
+    assert po["accurate_id"] == PO_ID
+
+
+def test_all_branches_can_read_but_not_mutate_without_action(db: Database) -> None:
+    """access.all_branches boleh baca lintas cabang; bukan otomatis confirm."""
+    from app.services.object_auth import require_sj_branch_access
+
+    _seed(db)
+    sj_id = "SJ-READ-AB"
+    _upsert_sj(db, sj_id)
+    deliveries.delivery_notes_collection(db).update_one(
+        {"accurate_sj_id": sj_id}, {"$set": {"branch_code": "JOG"}}
+    )
+    reader = {
+        "email_normalized": "reader@eternal.local",
+        "role": "user",
+        "operational_role": "designer",
+        "effective_module_permissions": ["access.all_branches"],
+    }
+    assert require_sj_branch_access(db, reader, sj_id)["accurate_sj_id"] == sj_id
+    assert can_act(db, reader, task_type="pengiriman", action="confirm") is False
+
+
+def test_read_cross_branch_evidence_denied(db: Database) -> None:
+    """Evidence content lintas cabang = DENIED (branch gate di evidence_access)."""
+    from app.services.evidence_access import assert_design_evidence_access
+
+    _seed(db)
+    db["accurate_sales_orders"].update_one(
+        {"accurate_id": PO_ID}, {"$set": {"branch_code": "SMG"}}
+    )
+    po = get_by_accurate_id(db, PO_ID)
+    assert po is not None
+    limited = {
+        **OP_A,
+        "branch_ids": ["HQ"],
+        "effective_module_permissions": [],
+        "operational_role": "designer",
+    }
+    with pytest.raises(ObjectAuthError):
+        assert_design_evidence_access(db, limited, po_doc=po)
+
+
+def test_read_cross_branch_allocation_denied(db: Database) -> None:
+    from app.services.object_auth import require_allocation_branch_access
+
+    _seed(db)
+    alloc_id = _alloc(db, OP_A["email_normalized"], qty=5.0)
+    db["accurate_sales_orders"].update_one(
+        {"accurate_id": PO_ID}, {"$set": {"branch_code": "JOG"}}
+    )
+    limited = {
+        **OP_A,
+        "branch_ids": ["HQ"],
+        "effective_module_permissions": [],
+    }
+    with pytest.raises(ObjectAuthError):
+        require_allocation_branch_access(db, limited, alloc_id)
+
+
+def test_read_unverified_branch_fail_closed(db: Database) -> None:
+    """Objek tanpa branch_code terverifikasi = DENIED untuk akun biasa."""
+    from app.services.object_auth import require_sj_branch_access
+
+    _seed(db)
+    sj_id = "SJ-NO-BRANCH"
+    _upsert_sj(db, sj_id)
+    deliveries.delivery_notes_collection(db).update_one(
+        {"accurate_sj_id": sj_id}, {"$unset": {"branch_code": ""}}
+    )
+    limited = {
+        **DRV_A,
+        "branch_ids": ["HQ"],
+        "effective_module_permissions": [],
+    }
+    with pytest.raises(ObjectAuthError):
+        require_sj_branch_access(db, limited, sj_id)

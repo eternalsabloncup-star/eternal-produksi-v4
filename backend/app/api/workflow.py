@@ -22,6 +22,7 @@ from app.services.evidence_access import (
     EvidenceAccessDenied,
     assert_design_evidence_access,
 )
+from app.services.object_auth import ObjectAuthError, require_po_branch_access
 from app.services.task_engine import TaskPermissionError
 
 router = APIRouter(prefix="/api", tags=["workflow"])
@@ -99,6 +100,12 @@ def get_po_gates(
     auth: AuthContext = Depends(require_session),
 ) -> dict[str, Any]:
     db = get_db()
+    try:
+        require_po_branch_access(db, auth.user, accurate_po_id)
+    except LookupError as exc:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, str(exc)) from exc
+    except ObjectAuthError as exc:
+        raise HTTPException(status.HTTP_403_FORBIDDEN, str(exc)) from exc
     return {
         "gates": gates.get_gates(db, accurate_po_id),
         "history": gates.gate_history(db, accurate_po_id),
@@ -112,6 +119,12 @@ def get_design_state(
     auth: AuthContext = Depends(require_session),
 ) -> dict[str, Any]:
     db = get_db()
+    try:
+        require_po_branch_access(db, auth.user, accurate_po_id)
+    except LookupError as exc:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, str(exc)) from exc
+    except ObjectAuthError as exc:
+        raise HTTPException(status.HTTP_403_FORBIDDEN, str(exc)) from exc
     latest = design.latest_submission(db, accurate_po_id)
     approval = None
     if latest:
@@ -297,6 +310,12 @@ def get_payment_state(
     auth: AuthContext = Depends(require_session),
 ) -> dict[str, Any]:
     db = get_db()
+    try:
+        require_po_branch_access(db, auth.user, accurate_po_id)
+    except LookupError as exc:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, str(exc)) from exc
+    except ObjectAuthError as exc:
+        raise HTTPException(status.HTTP_403_FORBIDDEN, str(exc)) from exc
     return {
         "accurate_po_id": accurate_po_id,
         "receipts": payments.list_receipts(db, accurate_po_id),
@@ -349,7 +368,32 @@ def get_evidence_list(
     include_deleted: bool = False,
     auth: AuthContext = Depends(require_session),
 ) -> dict[str, Any]:
+    from app.services.object_auth import (
+        bypasses_branch,
+        require_allocation_branch_access,
+        require_sj_branch_access,
+    )
+
     db = get_db()
+    try:
+        scope_l = str(scope or "").lower()
+        if scope_l in {"design", "payment"} or scope_l.startswith("design"):
+            require_po_branch_access(db, auth.user, scope_id)
+        elif scope_l in {"sample", "konfirmasi-sample"} or "sample" in scope_l:
+            require_allocation_branch_access(db, auth.user, scope_id)
+        elif (
+            scope_l in {"delivery", "delivery-photo", "delivery-signature"}
+            or "delivery" in scope_l
+        ):
+            require_sj_branch_access(db, auth.user, scope_id)
+        elif not bypasses_branch(auth.user):
+            raise ObjectAuthError(
+                "Scope evidence tidak dapat divalidasi — akses ditolak."
+            )
+    except LookupError as exc:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, str(exc)) from exc
+    except ObjectAuthError as exc:
+        raise HTTPException(status.HTTP_403_FORBIDDEN, str(exc)) from exc
     return {
         "items": evidence.list_evidence(
             db, scope=scope, scope_id=scope_id, include_deleted=include_deleted

@@ -198,6 +198,71 @@ def filter_tasks_for_actor(
     return out
 
 
+def filter_delivery_notes_for_actor(
+    user: dict[str, Any], notes: list[dict[str, Any]]
+) -> list[dict[str, Any]]:
+    """Saring daftar SJ agar akun terbatas tidak melihat cabang lain."""
+    if bypasses_branch(user):
+        return notes
+    out: list[dict[str, Any]] = []
+    for note in notes:
+        try:
+            assert_branch_access(user, scope_object=note)
+        except ObjectAuthError:
+            continue
+        out.append(note)
+    return out
+
+
+def require_po_branch_access(
+    db: Database, user: dict[str, Any], accurate_po_id: str
+) -> dict[str, Any]:
+    """GET/detail PO operasional: fail-closed bila cabang tidak terbukti."""
+    from app.repositories.po_repository import get_by_accurate_id
+
+    po_doc = get_by_accurate_id(db, str(accurate_po_id))
+    if po_doc is None:
+        raise LookupError(f"PO tidak ditemukan: {accurate_po_id}")
+    assert_branch_access(user, scope_object=po_doc)
+    return po_doc
+
+
+def require_sj_branch_access(
+    db: Database, user: dict[str, Any], accurate_sj_id: str
+) -> dict[str, Any]:
+    from app.repositories import delivery_repository as deliveries
+
+    note = deliveries.get_delivery_note(db, str(accurate_sj_id))
+    if note is None:
+        raise LookupError(f"Surat Jalan tidak ditemukan: {accurate_sj_id}")
+    assert_branch_access(user, scope_object=note)
+    return note
+
+
+def require_allocation_branch_access(
+    db: Database, user: dict[str, Any], allocation_id: str
+) -> tuple[dict[str, Any], dict[str, Any] | None]:
+    from app.repositories import schedule_repository as schedules
+    from app.repositories.po_repository import get_by_accurate_id
+
+    alloc = schedules.get_allocation(db, str(allocation_id))
+    if alloc is None:
+        raise LookupError(f"Alokasi tidak ditemukan: {allocation_id}")
+    po_doc = get_by_accurate_id(db, str(alloc.get("accurate_po_id") or ""))
+    scope = po_doc if object_branch_code(po_doc) else (
+        alloc if object_branch_code(alloc) else po_doc or alloc
+    )
+    assert_branch_access(user, scope_object=scope)
+    return alloc, po_doc
+
+
+def require_task_branch_access(
+    db: Database, user: dict[str, Any], task: dict[str, Any]
+) -> None:
+    scope = resolve_scope_object_for_task(db, task)
+    assert_branch_access(user, scope_object=scope)
+
+
 def resolve_scope_object_for_task(
     db: Database, task: dict[str, Any]
 ) -> dict[str, Any] | None:

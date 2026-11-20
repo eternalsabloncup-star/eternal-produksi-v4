@@ -18,6 +18,7 @@ from app.services.audit_log import append_audit_event
 from app.services.object_auth import (
     actor_email,
     assert_branch_access,
+    filter_delivery_notes_for_actor,
 )
 from app.services.task_engine import require_action
 
@@ -141,11 +142,17 @@ def ingest_delivery_note(
     return deliveries.run_delivery_mongo_txn(db, _operation)
 
 
-def validate_loading(db: Database, accurate_sj_id: str) -> dict[str, Any]:
+def validate_loading(
+    db: Database,
+    accurate_sj_id: str,
+    user: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     """Cek setiap item SJ terhadap Qty QC (Cetak) atau SJ itu sendiri (Non-Cetak)."""
     note = deliveries.get_delivery_note(db, accurate_sj_id)
     if note is None:
         raise LookupError(f"Surat Jalan tidak ditemukan: {accurate_sj_id}")
+    if user is not None:
+        assert_branch_access(user, scope_object=note)
     if note.get("superseded_by"):
         raise LoadingValidationError(
             f"Surat Jalan {note['sj_no']} sudah digantikan oleh "
@@ -1079,14 +1086,21 @@ def active_delivery_evidence(db: Database, accurate_sj_id: str) -> dict[str, Any
 
 def delivery_schedule(
     db: Database,
+    user: dict[str, Any] | None = None,
     *,
     ship_date_from: str | None = None,
     ship_date_to: str | None = None,
 ) -> dict[str, Any]:
-    """Jadwal Pengiriman: satu baris per SJ + ringkasan periode."""
+    """Jadwal Pengiriman: satu baris per SJ + ringkasan periode.
+
+    Akun terbatas hanya melihat SJ cabangnya; ``operations.full`` /
+    ``access.all_branches`` / Super Admin melihat semua.
+    """
     notes = deliveries.list_delivery_notes(
         db, ship_date_from=ship_date_from, ship_date_to=ship_date_to
     )
+    if user is not None:
+        notes = filter_delivery_notes_for_actor(user, notes)
     rows = []
     qty_by_unit: dict[str, float] = {}
     destinations: set[str] = set()

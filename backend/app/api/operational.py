@@ -246,10 +246,16 @@ def get_task_confirmations(
     task_key: str,
     auth: AuthContext = Depends(require_session),
 ) -> dict[str, Any]:
+    from app.services.object_auth import require_task_branch_access
+
     db = get_db()
     task = tasks.get_task(db, task_key)
     if task is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Tugas tidak ditemukan")
+    try:
+        require_task_branch_access(db, auth.user, task)
+    except ObjectAuthError as exc:
+        raise HTTPException(status.HTTP_403_FORBIDDEN, str(exc)) from exc
     return {
         "task_key": task_key,
         "items": tasks.list_confirmations(db, task_key),
