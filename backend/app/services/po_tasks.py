@@ -76,11 +76,15 @@ def derive_tasks_for_po(
 ) -> dict[str, Any]:
     """Buat/refresh tugas untuk satu PO. Idempoten: tidak menggandakan tugas."""
     from app.services.po_acceptance import is_po_accepted, require_po_accepted
-    from app.services.po_repair_maintenance import po_repair_writer_section
+    from app.services.po_repair_maintenance import WriterFence, po_repair_writer_section
 
-    with po_repair_writer_section(db):
+    with po_repair_writer_section(db) as fence:
         return _derive_tasks_under_writer_lease(
-            db, po_doc, session=session, require_accepted=require_accepted
+            db,
+            po_doc,
+            session=session,
+            require_accepted=require_accepted,
+            writer_fence=fence,
         )
 
 
@@ -90,9 +94,11 @@ def _derive_tasks_under_writer_lease(
     *,
     session: Any | None = None,
     require_accepted: bool = False,
+    writer_fence: WriterFence,
 ) -> dict[str, Any]:
     from app.services.po_acceptance import is_po_accepted, require_po_accepted
 
+    writer_fence.assert_valid(db, session=session)
     accurate_po_id = str(po_doc.get("accurate_id") or "")
     if not accurate_po_id:
         raise ValueError("PO wajib memiliki accurate_id.")

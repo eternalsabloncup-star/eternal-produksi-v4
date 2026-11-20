@@ -397,20 +397,17 @@ def test_inflight_writer_blocks_maintenance_acquire(ingest_db: Database) -> None
         acquire_po_repair_maintenance,
         enter_po_repair_writer_section,
         exit_po_repair_writer_section,
+        release_po_repair_maintenance,
     )
 
-    token = enter_po_repair_writer_section(ingest_db)
+    fence = enter_po_repair_writer_section(ingest_db)
     try:
         with pytest.raises(PoRepairMaintenanceError, match="writers_in_flight"):
             acquire_po_repair_maintenance(ingest_db, ttl_seconds=60)
     finally:
-        exit_po_repair_writer_section(ingest_db, token)
-    # Setelah writer keluar, acquire boleh.
+        exit_po_repair_writer_section(ingest_db, fence)
     handle = acquire_po_repair_maintenance(ingest_db, ttl_seconds=60)
-    release = __import__(
-        "app.services.po_repair_maintenance", fromlist=["release_po_repair_maintenance"]
-    ).release_po_repair_maintenance
-    release(
+    release_po_repair_maintenance(
         ingest_db,
         owner_token=handle["owner_token"],
         job_tokens=handle.get("job_tokens"),
@@ -429,6 +426,169 @@ def test_maintenance_then_writer_enter_refused(ingest_db: Database) -> None:
     try:
         with pytest.raises(PoRepairMaintenanceError):
             enter_po_repair_writer_section(ingest_db)
+    finally:
+        release_po_repair_maintenance(
+            ingest_db,
+            owner_token=handle["owner_token"],
+            job_tokens=handle.get("job_tokens"),
+        )
+
+
+def test_writer_finishes_before_ttl(ingest_db: Database) -> None:
+    from app.services.po_repair_maintenance import (
+        enter_po_repair_writer_section,
+        exit_po_repair_writer_section,
+    )
+
+    fence = enter_po_repair_writer_section(ingest_db, ttl_seconds=60)
+    fence.assert_valid(ingest_db)
+    fence.assert_valid(ingest_db)  # renewal
+    exit_po_repair_writer_section(ingest_db, fence)
+
+
+def test_stale_writer_past_ttl_cannot_commit_after_maintenance(
+    ingest_db: Database,
+) -> None:
+    """Writer melewati TTL; maintenance acquire; stale process tidak boleh commit."""
+    import threading
+
+    from app.services.po_repair_maintenance import (
+        WRITER_ID_PREFIX,
+        WriterFenceLostError,
+        acquire_po_repair_maintenance,
+        enter_po_repair_writer_section,
+        exit_po_repair_writer_section,
+        release_po_repair_maintenance,
+    )
+
+    fence = enter_po_repair_writer_section(ingest_db, ttl_seconds=60)
+    # Simulasi TTL habis tanpa sleep.
+    past = datetime.now(timezone.utc) - timedelta(seconds=5)
+    ingest_db["sync_locks"].update_one(
+        {"_id": f"{WRITER_ID_PREFIX}{fence.token}"},
+        {"$set": {"expires_at": past}},
+    )
+    # Renew gagal sebelum maintenance.
+    with pytest.raises(WriterFenceLostError, match="lease_expired"):
+        fence.assert_valid(ingest_db)
+
+    # Maintenance boleh acquire (unexpired count = 0) + bump epoch.
+    handle = acquire_po_repair_maintenance(ingest_db, ttl_seconds=60)
+    try:
+        with pytest.raises(WriterFenceLostError):
+            fence.assert_valid(ingest_db)
+        committed = {"ok": False}
+
+        def stale_resume() -> None:
+            try:
+                fence.assert_valid(ingest_db)
+                committed["ok"] = True
+            except WriterFenceLostError:
+                committed["ok"] = False
+
+        t = threading.Thread(target=stale_resume)
+        t.start()
+        t.join(timeout=2)
+        assert committed["ok"] is False
+    finally:
+        release_po_repair_maintenance(
+            ingest_db,
+            owner_token=handle["owner_token"],
+            job_tokens=handle.get("job_tokens"),
+        )
+        exit_po_repair_writer_section(ingest_db, fence)
+
+
+def test_renewal_keeps_maintenance_blocked(ingest_db: Database) -> None:
+    from app.services.po_repair_maintenance import (
+        PoRepairMaintenanceError,
+        acquire_po_repair_maintenance,
+        enter_po_repair_writer_section,
+        exit_po_repair_writer_section,
+    )
+
+    fence = enter_po_repair_writer_section(ingest_db, ttl_seconds=30)
+    try:
+        fence.assert_valid(ingest_db)
+        with pytest.raises(PoRepairMaintenanceError, match="writers_in_flight"):
+            acquire_po_repair_maintenance(ingest_db, ttl_seconds=60)
+    finally:
+        exit_po_repair_writer_section(ingest_db, fence)
+
+
+def test_concurrent_writer_and_maintenance_only_one_wins(ingest_db: Database) -> None:
+    import threading
+
+    from app.services.po_repair_maintenance import (
+        PoRepairMaintenanceError,
+        acquire_po_repair_maintenance,
+        enter_po_repair_writer_section,
+        exit_po_repair_writer_section,
+        release_po_repair_maintenance,
+    )
+
+    barrier = threading.Barrier(2)
+    outcomes: dict[str, str] = {}
+
+    def writer() -> None:
+        barrier.wait(timeout=5)
+        try:
+            fence = enter_po_repair_writer_section(ingest_db, ttl_seconds=60)
+            fence.assert_valid(ingest_db)
+            outcomes["writer"] = "held"
+            exit_po_repair_writer_section(ingest_db, fence)
+        except PoRepairMaintenanceError:
+            outcomes["writer"] = "refused"
+
+    def maint() -> None:
+        barrier.wait(timeout=5)
+        try:
+            handle = acquire_po_repair_maintenance(ingest_db, ttl_seconds=60)
+            outcomes["maint"] = "held"
+            release_po_repair_maintenance(
+                ingest_db,
+                owner_token=handle["owner_token"],
+                job_tokens=handle.get("job_tokens"),
+            )
+        except PoRepairMaintenanceError:
+            outcomes["maint"] = "refused"
+
+    tw = threading.Thread(target=writer)
+    tm = threading.Thread(target=maint)
+    tw.start()
+    tm.start()
+    tw.join(timeout=5)
+    tm.join(timeout=5)
+    assert set(outcomes) == {"writer", "maint"}
+    # Tidak boleh keduanya held tanpa salah satu refuse — setidaknya satu held.
+    assert "held" in outcomes.values()
+    if outcomes["writer"] == "held" and outcomes["maint"] == "held":
+        raise AssertionError("both held — exclusivity broken")
+
+
+def test_orphan_expired_lease_cleaned_after_epoch_bump(ingest_db: Database) -> None:
+    """Crash writer: lease orphan expired → maintenance bump epoch + hapus aman."""
+    from app.services.po_repair_maintenance import (
+        WRITER_ID_PREFIX,
+        WRITER_KIND,
+        acquire_po_repair_maintenance,
+        enter_po_repair_writer_section,
+        release_po_repair_maintenance,
+    )
+
+    fence = enter_po_repair_writer_section(ingest_db, ttl_seconds=60)
+    # Crash: jangan exit; expire lease.
+    past = datetime.now(timezone.utc) - timedelta(seconds=10)
+    ingest_db["sync_locks"].update_one(
+        {"_id": f"{WRITER_ID_PREFIX}{fence.token}"},
+        {"$set": {"expires_at": past}},
+    )
+    handle = acquire_po_repair_maintenance(ingest_db, ttl_seconds=60)
+    try:
+        assert (
+            ingest_db["sync_locks"].count_documents({"kind": WRITER_KIND}) == 0
+        )
+        assert handle.get("fence_epoch", 0) >= 1
     finally:
         release_po_repair_maintenance(
             ingest_db,

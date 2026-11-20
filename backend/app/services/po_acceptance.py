@@ -90,15 +90,18 @@ def accept_po(
 ) -> dict[str, Any]:
     """Terima PO → aktifkan derive tasks. Idempotent & fail-closed."""
     from app.services.po_repair_maintenance import (
+        WriterFence,
         enter_po_repair_writer_section,
         exit_po_repair_writer_section,
     )
 
-    writer_token = enter_po_repair_writer_section(db)
+    writer_fence = enter_po_repair_writer_section(db)
     try:
-        return _accept_po_under_writer_lease(db, user, accurate_po_id=accurate_po_id)
+        return _accept_po_under_writer_lease(
+            db, user, accurate_po_id=accurate_po_id, writer_fence=writer_fence
+        )
     finally:
-        exit_po_repair_writer_section(db, writer_token)
+        exit_po_repair_writer_section(db, writer_fence)
 
 
 def _accept_po_under_writer_lease(
@@ -106,7 +109,9 @@ def _accept_po_under_writer_lease(
     user: dict[str, Any],
     *,
     accurate_po_id: str,
+    writer_fence: WriterFence,
 ) -> dict[str, Any]:
+    writer_fence.assert_valid(db)
     require_accept_permission(user)
     po_id = str(accurate_po_id).strip()
     if not po_id:
@@ -135,6 +140,8 @@ def _accept_po_under_writer_lease(
     now = datetime.now(timezone.utc)
 
     def _operation(session: Any) -> dict[str, Any]:
+        # Fence di dalam txn: commit boundary gagal jika lease/epoch hilang.
+        writer_fence.assert_valid(db, session=session)
         claimed = pos.po_collection(db).find_one_and_update(
             {
                 "accurate_id": po_id,

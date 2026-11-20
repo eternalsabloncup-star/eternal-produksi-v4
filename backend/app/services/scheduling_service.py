@@ -179,9 +179,9 @@ def create_allocations(
 ) -> dict[str, Any]:
     """Konfirmasi jadwal: bagi Qty item line ke satu/beberapa operator."""
     from app.services.po_acceptance import PoAcceptanceError, require_po_accepted
-    from app.services.po_repair_maintenance import po_repair_writer_section
+    from app.services.po_repair_maintenance import WriterFence, po_repair_writer_section
 
-    with po_repair_writer_section(db):
+    with po_repair_writer_section(db) as fence:
         try:
             require_po_accepted(po_doc)
         except PoAcceptanceError as exc:
@@ -195,6 +195,7 @@ def create_allocations(
             allocations=allocations,
             idempotency_key=idempotency_key,
             schedule_date=schedule_date,
+            writer_fence=fence,
         )
 
 
@@ -207,7 +208,9 @@ def _create_allocations_under_writer_lease(
     allocations: list[dict[str, Any]],
     idempotency_key: str,
     schedule_date: str | None = None,
+    writer_fence: WriterFence,
 ) -> dict[str, Any]:
+    writer_fence.assert_valid(db)
     require_action(db, user, task_type="penjadwalan", action="confirm")
     if not idempotency_key.strip():
         raise ValueError("idempotency_key wajib diisi.")
@@ -251,6 +254,7 @@ def _create_allocations_under_writer_lease(
     created: list[dict[str, Any]] = []
     from app.repositories import settings_user_repository as users
 
+    writer_fence.assert_valid(db)
     for entry in allocations:
         operator = str(entry.get("operator_email") or "").strip()
         qty = float(entry.get("qty") or 0)
@@ -448,9 +452,9 @@ def revise_allocation_qty(
     transaksi replica set agar tidak commit state invalid terhadap print konkuren
     atau revisi alokasi lain pada item yang sama.
     """
-    from app.services.po_repair_maintenance import po_repair_writer_section
+    from app.services.po_repair_maintenance import WriterFence, po_repair_writer_section
 
-    with po_repair_writer_section(db):
+    with po_repair_writer_section(db) as fence:
         return _revise_allocation_qty_under_writer_lease(
             db,
             user,
@@ -458,6 +462,7 @@ def revise_allocation_qty(
             allocation_id=allocation_id,
             qty=qty,
             reason=reason,
+            writer_fence=fence,
         )
 
 
@@ -469,7 +474,9 @@ def _revise_allocation_qty_under_writer_lease(
     allocation_id: str,
     qty: float,
     reason: str,
+    writer_fence: WriterFence,
 ) -> dict[str, Any]:
+    writer_fence.assert_valid(db)
     require_action(db, user, task_type="penjadwalan", action="edit")
     if qty < 0:
         raise ScheduleQuantityError("Qty alokasi tidak boleh negatif.")
@@ -642,11 +649,11 @@ def scan_reschedule(
     as_of: str | None = None,
 ) -> dict[str, Any]:
     """Pergantian hari dengan Qty cetak kurang → satu tugas Penjadwalan Ulang."""
-    from app.services.po_repair_maintenance import po_repair_writer_section
+    from app.services.po_repair_maintenance import WriterFence, po_repair_writer_section
 
-    with po_repair_writer_section(db):
+    with po_repair_writer_section(db) as fence:
         return _scan_reschedule_under_writer_lease(
-            db, user, po_doc=po_doc, as_of=as_of
+            db, user, po_doc=po_doc, as_of=as_of, writer_fence=fence
         )
 
 
@@ -656,7 +663,9 @@ def _scan_reschedule_under_writer_lease(
     *,
     po_doc: dict[str, Any],
     as_of: str | None = None,
+    writer_fence: WriterFence,
 ) -> dict[str, Any]:
+    writer_fence.assert_valid(db)
     require_action(db, user, task_type="penjadwalan-ulang", action="input")
     today = as_of or date.today().isoformat()
     accurate_po_id = str(po_doc.get("accurate_id") or "")

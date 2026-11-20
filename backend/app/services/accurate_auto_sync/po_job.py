@@ -256,11 +256,15 @@ def sync_one_listed_sales_order(
 ) -> dict[str, Any]:
     """Fetch detail → normalize → conditional upsert dengan guard acceptance + lease."""
     require_owns_job_lock(db, job="po", owner_token=owner_token)
-    from app.services.po_repair_maintenance import po_repair_writer_section
+    from app.services.po_repair_maintenance import WriterFence, po_repair_writer_section
 
-    with po_repair_writer_section(db):
+    with po_repair_writer_section(db) as fence:
         return _sync_one_listed_sales_order_under_writer_lease(
-            db, accurate_id, client=client, owner_token=owner_token
+            db,
+            accurate_id,
+            client=client,
+            owner_token=owner_token,
+            writer_fence=fence,
         )
 
 
@@ -270,8 +274,11 @@ def _sync_one_listed_sales_order_under_writer_lease(
     *,
     client: AccurateReadClient,
     owner_token: str,
+    writer_fence: WriterFence,
 ) -> dict[str, Any]:
+    writer_fence.assert_valid(db)
     payload = client.fetch_sales_order_detail(accurate_id)
+    writer_fence.assert_valid(db)
     require_owns_job_lock(db, job="po", owner_token=owner_token)
     from app.services.accurate_auto_sync.date_floor import detail_scope_outcome
     from app.services.po_ingest_guards import (
