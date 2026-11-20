@@ -41,9 +41,11 @@ Jika PR #26 belum merged / guard belum di target → **ACTIVATION = HOLD**.
 
 Script: `scripts/activate_loading_sj_release.py`
 
-1. Validasi exact approved SHA = HEAD deploy.
-2. Pastikan PR #26 merged (simbol `_require_accepted_po_for_note` + call sites).
-3. Pastikan guard ada di `delivery_service` / mapping API.
+1. Validasi **SHA40 penuh** approved = HEAD (prefix pendek ditolak).
+2. Wajib `--pr26-merged-ref` = SHA40 merge commit PR #26 yang **ancestor** HEAD
+   (canonical: `cff64838d62ef233fd7c02f73b6ca403913d3f26`).
+3. Verifikasi guard Loading **dan** Delivery di tree (`_require_accepted_po_for_note`
+   + call sites) — bukan pencarian simbol semata.
 4. Pastikan regression Accepted ditandai PASS (`--guard-regression-ok`).
 5. Pastikan indeks Master sudah tersedia (tidak createIndex di bootstrap M5).
 6. Konfirmasi backup Master/grants/config/DB (`--backup-ok`).
@@ -55,9 +57,10 @@ Script: `scripts/activate_loading_sj_release.py`
    - Grant custom/ambigu → HOLD (tidak overwrite)
 10. Verifikasi Master + least privilege (kontrak penuh).
 11. Upsert `V4_LOADING_SJ_TASK_ENABLED=1` ke `backend.env`.
-12. Restart backend terkendali (ops runbook VPS; callback opsional).
-13. Verifikasi Settings efektif ON.
-14. Verifikasi health backend/Mongo.
+12. **Restart backend wajib** (`--restart-cmd`) — bukan opsional.
+13. **Probe backend berjalan** `GET /api/health` — `status=ok`, `mongodb`,
+    `features.loading_sj_task_enabled=true`. Env proses script **bukan** bukti.
+14. Baru boleh `activated=True`. Kegagalan probe/restart → HOLD (bukan SUCCESS palsu).
 15. Simpan audit JSON keluaran script (before/after reconciliation).
 
 Reconciliation **hanya** di approved release path (`activate_loading_sj_release`).
@@ -76,14 +79,17 @@ PYTHONPATH=backend python3 scripts/bootstrap_loading_sj.py \
 
 ## HOLD conditions
 
-- PR #26 belum merged / guard hilang di target SHA
+- approved_sha bukan SHA40 penuh / ≠ HEAD
+- Merge commit PR #26 bukan ancestor HEAD / tidak SHA40
+- Guard Loading/Delivery belum efektif di tree
 - Master/grant invalid atau terlalu luas (termasuk grant KP custom ≠ legacy)
 - Reconciliation CAS miss / concurrent modification
+- Restart backend hilang/gagal
+- Probe backend berjalan gagal / flag masih OFF di proses berjalan
 - Index Master hilang
 - Backup / deploy isolation / health gagal
-- SHA tidak cocok
 
-Jangan set flag ON untuk melewati gate.
+Jangan set flag ON untuk melewati gate. Env script ≠ aktivasi efektif.
 
 ## Coding phase
 

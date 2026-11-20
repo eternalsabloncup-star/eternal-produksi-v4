@@ -216,7 +216,7 @@ def test_helper_no_cancel_driver_no_grant(bare_db: Database) -> None:
 def test_release_reconcile_legacy_then_flag(
     bare_db: Database, tmp_path: Path
 ) -> None:
-    """Approved release: legacy KP → reconcile → flag ON; failure path flag OFF."""
+    """Approved release: legacy KP → reconcile → probe PASS → activated."""
     import textwrap
     import subprocess
 
@@ -262,9 +262,24 @@ def test_release_reconcile_legacy_then_flag(
     )
     subprocess.run(["git", "add", "-A"], cwd=repo, check=True, capture_output=True)
     subprocess.run(
-        ["git", "commit", "-m", "fix"], cwd=repo, check=True, capture_output=True
+        ["git", "commit", "-m", "pr26"], cwd=repo, check=True, capture_output=True
     )
-    sha = subprocess.run(
+    pr26 = subprocess.run(
+        ["git", "rev-parse", "HEAD"],
+        cwd=repo,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    (svc / "delivery_service.py").write_text(
+        (svc / "delivery_service.py").read_text(encoding="utf-8") + "\n# m5\n",
+        encoding="utf-8",
+    )
+    subprocess.run(["git", "add", "-A"], cwd=repo, check=True, capture_output=True)
+    subprocess.run(
+        ["git", "commit", "-m", "m5"], cwd=repo, check=True, capture_output=True
+    )
+    head = subprocess.run(
         ["git", "rev-parse", "HEAD"],
         cwd=repo,
         check=True,
@@ -272,16 +287,19 @@ def test_release_reconcile_legacy_then_flag(
         text=True,
     ).stdout.strip()
 
-    # Legacy KP grant + helper via bootstrap then strip KP confirm.
     boot.bootstrap_loading_sj_master(bare_db, expected_db_name=bare_db.name)
-    master.set_role_actions(
-        bare_db,
-        role="production-head",
-        task_type="loading-sj",
-        actions=["view", "edit", "cancel"],
-    )
     env_file = tmp_path / "backend.env"
     env_file.write_text("V4_LOADING_SJ_TASK_ENABLED=0\n", encoding="utf-8")
+
+    def _restart() -> dict:
+        return {"ok": True}
+
+    def _probe() -> dict:
+        return {
+            "ok": True,
+            "healthy": True,
+            "loading_sj_task_enabled": True,
+        }
 
     # Failure path: custom grant → HOLD, flag tetap OFF.
     master.set_role_actions(
@@ -293,9 +311,10 @@ def test_release_reconcile_legacy_then_flag(
     hold = act.activate_loading_sj_release(
         repo=repo,
         db=bare_db,
-        approved_sha=sha,
+        approved_sha=head,
         expected_db_name=bare_db.name,
         env_file=env_file,
+        pr26_merged_ref=pr26,
         backup_ok=True,
         no_other_deploy=True,
         backend_healthy=True,
@@ -303,13 +322,14 @@ def test_release_reconcile_legacy_then_flag(
         guard_regression_ok=True,
         dry_run=False,
         skip_bootstrap=True,
-        apply_environ_for_verify=False,
+        restart_callback=_restart,
+        running_backend_probe=_probe,
     )
     assert hold["hold"] is True
     assert hold["gate"] == "reconcile"
     assert act.read_env_flag(env_file) == "0"
 
-    # Success path: restore legacy → reconcile in release.
+    # Success path: legacy → reconcile + restart + running probe.
     master.set_role_actions(
         bare_db,
         role="production-head",
@@ -319,9 +339,10 @@ def test_release_reconcile_legacy_then_flag(
     ok = act.activate_loading_sj_release(
         repo=repo,
         db=bare_db,
-        approved_sha=sha,
+        approved_sha=head,
         expected_db_name=bare_db.name,
         env_file=env_file,
+        pr26_merged_ref=pr26,
         backup_ok=True,
         no_other_deploy=True,
         backend_healthy=True,
@@ -329,16 +350,10 @@ def test_release_reconcile_legacy_then_flag(
         guard_regression_ok=True,
         dry_run=False,
         skip_bootstrap=True,
-        apply_environ_for_verify=True,
-        restore_environ_after_verify=True,
+        restart_callback=_restart,
+        running_backend_probe=_probe,
     )
     assert ok["activated"] is True
     assert ok["reconcile"]["result"] == boot.RECONCILE_RESULT_RECONCILED
     assert act.read_env_flag(env_file) == "1"
     boot.verify_loading_sj_contract(bare_db)
-    # Scrub process env.
-    import os
-
-    os.environ["V4_LOADING_SJ_TASK_ENABLED"] = "0"
-    os.environ.pop("LOADING_SJ_TASK_ENABLED", None)
-    clear_settings_cache()

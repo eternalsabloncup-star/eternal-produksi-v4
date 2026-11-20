@@ -6,7 +6,6 @@ Owner approval + PR #26 guard Accepted terverifikasi pada exact SHA.
 
 from __future__ import annotations
 
-import os
 import re
 import subprocess
 from dataclasses import dataclass, field
@@ -15,7 +14,6 @@ from typing import Any, Callable
 
 from pymongo.database import Database
 
-from app.config import clear_settings_cache, get_settings
 from app.repositories import master_repository as master
 from app.services.loading_sj_bootstrap import (
     LOADING_SJ_TASK_TYPE,
@@ -33,12 +31,26 @@ ACCEPTED_GUARD_SYMBOL = "_require_accepted_po_for_note"
 DELIVERY_SERVICE_REL = Path("backend/app/services/delivery_service.py")
 DELIVERY_API_REL = Path("backend/app/api/delivery.py")
 
+# Merge commit PR #26 di main (Owner). Wajib ancestor target release (SHA40).
+PR26_MERGE_COMMIT_SHA = "cff64838d62ef233fd7c02f73b6ca403913d3f26"
+
+_SHA40_RE = re.compile(r"^[0-9a-f]{40}$")
+
 # Call sites yang wajib memanggil guard Accepted (kontrak PR #26).
+# Loading + Delivery — verifikasi tree gabungan, bukan simbol semata.
 REQUIRED_GUARD_CALL_SITES = (
     "confirm_loading",
     "confirm_delivery_success",
     "confirm_delivery_failure",
 )
+
+
+def normalize_sha40(value: str | None) -> str | None:
+    """SHA40 penuh saja — prefix pendek ditolak."""
+    text = str(value or "").strip().lower()
+    if not _SHA40_RE.fullmatch(text):
+        return None
+    return text
 
 
 class LoadingSjActivationHold(RuntimeError):
@@ -88,54 +100,86 @@ def resolve_head_sha(repo: Path) -> str:
 
 
 def gate_exact_sha(repo: Path, approved_sha: str) -> ActivationGateResult:
+    """Wajib SHA40 penuh — bandingkan exact approved SHA dengan HEAD."""
     head = resolve_head_sha(repo)
-    want = str(approved_sha or "").strip().lower()
-    have = head.lower()
-    if not want or len(want) < 7:
-        return ActivationGateResult(
-            False, "exact_sha", "approved_sha wajib (exact release SHA)."
-        )
-    # Izinkan SHA penuh atau prefix singkat (≥7) yang saling mencocokkan.
-    if not (have.startswith(want) or want.startswith(have)):
+    want = normalize_sha40(approved_sha)
+    have = normalize_sha40(head)
+    if want is None:
         return ActivationGateResult(
             False,
             "exact_sha",
-            f"HEAD {head} ≠ approved_sha {approved_sha}",
-            {"head": head, "approved_sha": approved_sha},
+            "approved_sha wajib SHA40 penuh (40 hex); prefix pendek ditolak.",
+            {"approved_sha": approved_sha},
+        )
+    if have is None:
+        return ActivationGateResult(
+            False,
+            "exact_sha",
+            f"HEAD bukan SHA40 valid: {head!r}",
+            {"head": head},
+        )
+    if want != have:
+        return ActivationGateResult(
+            False,
+            "exact_sha",
+            f"HEAD {have} ≠ approved_sha {want}",
+            {"head": have, "approved_sha": want},
         )
     return ActivationGateResult(
-        True, "exact_sha", "SHA cocok", {"head": head, "approved_sha": approved_sha}
+        True,
+        "exact_sha",
+        "SHA40 exact cocok",
+        {"head": have, "approved_sha": want},
     )
 
 
 def gate_pr26_merged(repo: Path, *, merged_ref: str | None = None) -> ActivationGateResult:
-    """Pastikan guard Accepted PR #26 ada di tree (merged ke target).
+    """Wajib: merge commit PR #26 (SHA40) adalah ancestor HEAD + guard di tree.
 
-    Prefer bukti source: simbol + call sites. Opsional: merged_ref berisi
-    merge commit / branch tip yang harus reachable dari HEAD.
+    Tidak mengandalkan pencarian simbol semata — ancestor merge commit
+    dan call sites Loading/Delivery harus lulus.
     """
+    ref = normalize_sha40(merged_ref)
+    if ref is None:
+        return ActivationGateResult(
+            False,
+            "pr26_merged",
+            (
+                "pr26_merged_ref wajib SHA40 penuh (merge commit PR #26). "
+                f"Contoh main: {PR26_MERGE_COMMIT_SHA}"
+            ),
+            {"merged_ref": merged_ref},
+        )
+    try:
+        _run_git(repo, "merge-base", "--is-ancestor", ref, "HEAD")
+    except LoadingSjActivationHold as exc:
+        return ActivationGateResult(
+            False,
+            "pr26_merged",
+            f"Merge commit PR #26 {ref} bukan ancestor HEAD: {exc}",
+            {"merged_ref": ref},
+        )
+
     source_gate = gate_accepted_guard_in_source(repo)
     if not source_gate.ok:
         return ActivationGateResult(
             False,
             "pr26_merged",
-            f"PR #26 belum terbukti di target: {source_gate.detail}",
-            source_gate.data,
+            (
+                "Merge commit ancestor OK, tetapi guard Loading/Delivery "
+                f"belum efektif di tree: {source_gate.detail}"
+            ),
+            {"merged_ref": ref, "source": source_gate.data},
         )
-    if merged_ref:
-        try:
-            _run_git(repo, "merge-base", "--is-ancestor", merged_ref, "HEAD")
-        except LoadingSjActivationHold as exc:
-            return ActivationGateResult(
-                False,
-                "pr26_merged",
-                f"merged_ref {merged_ref!r} bukan ancestor HEAD: {exc}",
-            )
     return ActivationGateResult(
         True,
         "pr26_merged",
-        "Guard Accepted PR #26 terbukti di source target",
-        source_gate.data,
+        "PR #26 merge commit ancestor + guard Loading/Delivery efektif",
+        {
+            "merged_ref": ref,
+            "source": source_gate.data,
+            "canonical_pr26_merge": PR26_MERGE_COMMIT_SHA,
+        },
     )
 
 
@@ -311,29 +355,91 @@ def upsert_env_flag(
     }
 
 
-def verify_effective_flag_on(*, environ: dict[str, str] | None = None) -> ActivationGateResult:
-    """Baca Settings efektif — wajib ON setelah aktivasi."""
-    clear_settings_cache()
-    if environ is not None:
-        for k, v in environ.items():
-            os.environ[k] = v
-        clear_settings_cache()
-    settings = get_settings()
-    enabled = bool(settings.loading_sj_task_enabled)
-    summary = {"loading_sj_task_enabled": enabled}
-    if not enabled:
+def verify_running_backend_activation(
+    probe: Callable[[], dict[str, Any]],
+) -> ActivationGateResult:
+    """Verifikasi flag efektif di **backend yang sedang berjalan** + health PASS.
+
+    Jangan memakai env proses script sebagai bukti aktivasi.
+    ``probe`` harus mengembalikan dict minimal:
+      ok, healthy, loading_sj_task_enabled
+    """
+    try:
+        data = probe()
+    except Exception as exc:  # noqa: BLE001
         return ActivationGateResult(
             False,
-            "effective_flag",
-            "loading_sj_task_enabled masih OFF di Settings efektif",
-            summary,
+            "running_backend_probe",
+            f"Probe backend berjalan gagal: {exc}",
+        )
+    if not isinstance(data, dict):
+        return ActivationGateResult(
+            False,
+            "running_backend_probe",
+            "Probe harus mengembalikan dict.",
+        )
+    if not data.get("ok") or not data.get("healthy"):
+        return ActivationGateResult(
+            False,
+            "running_backend_health",
+            "Backend berjalan tidak healthy / probe ok=false.",
+            dict(data),
+        )
+    if not bool(data.get("loading_sj_task_enabled")):
+        return ActivationGateResult(
+            False,
+            "running_backend_flag",
+            "Flag loading_sj_task_enabled masih OFF di backend berjalan.",
+            dict(data),
         )
     return ActivationGateResult(
         True,
-        "effective_flag",
-        "Settings efektif ON",
-        summary,
+        "running_backend_flag",
+        "Backend berjalan healthy + flag ON",
+        dict(data),
     )
+
+
+def probe_running_backend_http(
+    base_url: str,
+    *,
+    timeout_seconds: float = 5.0,
+) -> dict[str, Any]:
+    """Probe GET {base_url}/api/health — baca status + features.loading_sj_task_enabled."""
+    import json
+    import urllib.error
+    import urllib.request
+
+    url = str(base_url or "").rstrip("/") + "/api/health"
+    req = urllib.request.Request(url, method="GET")
+    try:
+        with urllib.request.urlopen(req, timeout=timeout_seconds) as resp:
+            body = resp.read().decode("utf-8")
+            payload = json.loads(body)
+    except (urllib.error.URLError, urllib.error.HTTPError, TimeoutError, ValueError) as exc:
+        return {
+            "ok": False,
+            "healthy": False,
+            "loading_sj_task_enabled": False,
+            "error": str(exc),
+            "url": url,
+        }
+    features = payload.get("features") if isinstance(payload, dict) else None
+    enabled = False
+    if isinstance(features, dict):
+        enabled = bool(features.get("loading_sj_task_enabled"))
+    healthy = (
+        isinstance(payload, dict)
+        and str(payload.get("status") or "").lower() == "ok"
+        and bool(payload.get("mongodb"))
+    )
+    return {
+        "ok": True,
+        "healthy": healthy,
+        "loading_sj_task_enabled": enabled,
+        "url": url,
+        "payload": payload,
+    }
 
 
 def evaluate_activation_gates(
@@ -478,16 +584,17 @@ def activate_loading_sj_release(
     dry_run: bool = False,
     skip_bootstrap: bool = False,
     restart_callback: Callable[[], dict[str, Any]] | None = None,
-    apply_environ_for_verify: bool = True,
-    restore_environ_after_verify: bool = False,
+    running_backend_probe: Callable[[], dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
-    """Prosedur aktivasi penuh. HOLD → tidak set flag ON.
+    """Prosedur aktivasi penuh. HOLD → tidak set flag ON / tidak klaim SUCCESS palsu.
 
-    Urutan: gates → bootstrap → verify master → set flag → verify efektif.
+    Urutan: gates (SHA40 + PR26 ancestor) → bootstrap → reconcile → verify →
+    set flag → **restart wajib** → **probe backend berjalan** (health + flag).
+
+    ``activated=True`` hanya jika probe backend berjalan membuktikan flag ON.
+    Env proses script **bukan** bukti aktivasi.
     """
     audit_log: list[dict[str, Any]] = []
-    _prev_flag = os.environ.get(FLAG_KEY)
-    _prev_alias = os.environ.get("LOADING_SJ_TASK_ENABLED")
 
     def _hold(gate: str, detail: str, **extra: Any) -> dict[str, Any]:
         payload = {
@@ -496,10 +603,13 @@ def activate_loading_sj_release(
             "hold": True,
             "gate": gate,
             "detail": detail,
-            "flag_written": False,
+            "flag_written": bool(extra.get("flag_written", False)),
             "audit": audit_log,
-            **extra,
+            **{k: v for k, v in extra.items() if k != "flag_written"},
         }
+        # Pastikan flag_written konsisten di top-level.
+        if "flag_written" in extra:
+            payload["flag_written"] = bool(extra["flag_written"])
         return payload
 
     # Pre-bootstrap gates (Master missing is expected before bootstrap).
@@ -617,43 +727,72 @@ def activate_loading_sj_release(
     flag_result = upsert_env_flag(env_file, key=FLAG_KEY, value="1", dry_run=False)
     audit_log.append({"stage": "flag_upsert", "result": flag_result})
 
-    restart_result = None
-    if restart_callback is not None:
-        restart_result = restart_callback()
-        audit_log.append({"stage": "restart", "result": restart_result})
+    # Restart backend wajib sebelum klaim aktivasi efektif.
+    if restart_callback is None:
+        return _hold(
+            "restart_required",
+            (
+                "Restart backend wajib untuk verifikasi flag efektif di proses "
+                "berjalan. Tanpa restart_callback → HOLD (bukan SUCCESS palsu)."
+            ),
+            flag_written=True,
+            flag_result=flag_result,
+            bootstrap=bootstrap_result,
+            reconcile=reconcile_result,
+            rollback_hint=f"Set {FLAG_KEY}=0 di {env_file} bila perlu.",
+        )
 
-    if apply_environ_for_verify:
-        os.environ[FLAG_KEY] = "1"
-        # Alias historis.
-        os.environ["LOADING_SJ_TASK_ENABLED"] = "1"
-        try:
-            eff = verify_effective_flag_on()
-            audit_log.append({"stage": "effective_flag", "result": eff.__dict__})
-            if not eff.ok:
-                # Jangan klaim ON palsu — file sudah ditulis; caller harus rollback manual.
-                return {
-                    "ok": False,
-                    "activated": False,
-                    "hold": True,
-                    "gate": "effective_flag",
-                    "detail": eff.detail,
-                    "flag_written": True,
-                    "flag_result": flag_result,
-                    "bootstrap": bootstrap_result,
-                    "audit": audit_log,
-                    "rollback_hint": f"Set {FLAG_KEY}=0 di {env_file} lalu restart.",
-                }
-        finally:
-            if restore_environ_after_verify:
-                if _prev_flag is None:
-                    os.environ.pop(FLAG_KEY, None)
-                else:
-                    os.environ[FLAG_KEY] = _prev_flag
-                if _prev_alias is None:
-                    os.environ.pop("LOADING_SJ_TASK_ENABLED", None)
-                else:
-                    os.environ["LOADING_SJ_TASK_ENABLED"] = _prev_alias
-                clear_settings_cache()
+    try:
+        restart_result = restart_callback()
+    except Exception as exc:  # noqa: BLE001
+        return _hold(
+            "restart_failed",
+            f"Restart backend gagal: {exc}",
+            flag_written=True,
+            flag_result=flag_result,
+            bootstrap=bootstrap_result,
+            reconcile=reconcile_result,
+        )
+    audit_log.append({"stage": "restart", "result": restart_result})
+    if isinstance(restart_result, dict) and restart_result.get("ok") is False:
+        return _hold(
+            "restart_failed",
+            str(restart_result.get("detail") or "Restart callback ok=false"),
+            flag_written=True,
+            flag_result=flag_result,
+            bootstrap=bootstrap_result,
+            reconcile=reconcile_result,
+            restart=restart_result,
+        )
+
+    if running_backend_probe is None:
+        return _hold(
+            "running_backend_probe_required",
+            (
+                "Probe backend berjalan wajib (health + loading_sj_task_enabled). "
+                "Env proses script bukan bukti aktivasi."
+            ),
+            flag_written=True,
+            flag_result=flag_result,
+            bootstrap=bootstrap_result,
+            reconcile=reconcile_result,
+            restart=restart_result,
+        )
+
+    probe_gate = verify_running_backend_activation(running_backend_probe)
+    audit_log.append({"stage": "running_backend_probe", "result": probe_gate.__dict__})
+    if not probe_gate.ok:
+        return _hold(
+            probe_gate.gate,
+            probe_gate.detail,
+            flag_written=True,
+            flag_result=flag_result,
+            bootstrap=bootstrap_result,
+            reconcile=reconcile_result,
+            restart=restart_result,
+            probe=probe_gate.data,
+            rollback_hint=f"Set {FLAG_KEY}=0 di {env_file} lalu restart.",
+        )
 
     return {
         "ok": True,
@@ -664,6 +803,7 @@ def activate_loading_sj_release(
         "bootstrap": bootstrap_result,
         "reconcile": reconcile_result,
         "restart": restart_result,
+        "running_backend": probe_gate.data,
         "audit": audit_log,
         "task_type": LOADING_SJ_TASK_TYPE,
     }

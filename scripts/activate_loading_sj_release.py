@@ -2,22 +2,29 @@
 """Release activation Loading SJ (M5) — satu prosedur otomatis saat deploy disetujui.
 
 Urutan fail-closed:
-  SHA → PR#26/guard Accepted → regression → indexes → backup → isolation →
-  bootstrap loading-sj → verify grants → set V4_LOADING_SJ_TASK_ENABLED=1 →
-  (opsional restart) → verify Settings efektif.
+  SHA40 exact → PR#26 merge commit ancestor → guard Loading/Delivery di tree →
+  regression → indexes → backup → isolation → bootstrap → reconcile →
+  set V4_LOADING_SJ_TASK_ENABLED=1 → restart backend (wajib) →
+  probe /api/health (healthy + features.loading_sj_task_enabled) →
+  baru boleh klaim activated=True.
 
-Contoh dry-run (coding / preflight):
+Env proses script BUKAN bukti aktivasi.
+
+Contoh dry-run:
   PYTHONPATH=backend python3 scripts/activate_loading_sj_release.py \\
-    --approved-sha <SHA> --expected-db-name eternal_v4_test_m5 \\
+    --approved-sha <SHA40> \\
+    --pr26-merged-ref cff64838d62ef233fd7c02f73b6ca403913d3f26 \\
+    --expected-db-name eternal_v4_test_m5 \\
     --env-file /tmp/m5-backend.env --dry-run
 
-Production: Owner approval wajib. Jangan jalankan tanpa PR #26 merged + guard PASS.
+Production: Owner approval wajib. Jangan jalankan tanpa restart + probe.
 """
 
 from __future__ import annotations
 
 import argparse
 import json
+import subprocess
 import sys
 from pathlib import Path
 
@@ -29,15 +36,21 @@ if str(BACKEND) not in sys.path:
 from app.config import clear_settings_cache, get_settings  # noqa: E402
 from app.db import close_client, get_db  # noqa: E402
 from app.services.loading_sj_activation import (  # noqa: E402
+    PR26_MERGE_COMMIT_SHA,
     LoadingSjActivationHold,
     activate_loading_sj_release,
+    probe_running_backend_http,
 )
 
 
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description="Activate Loading SJ release (M5).")
     p.add_argument("--repo", type=Path, default=ROOT, help="Path repo git.")
-    p.add_argument("--approved-sha", required=True, help="Exact approved release SHA.")
+    p.add_argument(
+        "--approved-sha",
+        required=True,
+        help="Exact approved release SHA40 (40 hex; prefix ditolak).",
+    )
     p.add_argument("--expected-db-name", required=True, help="Target DB eksplisit.")
     p.add_argument(
         "--env-file",
@@ -47,8 +60,25 @@ def parse_args() -> argparse.Namespace:
     )
     p.add_argument(
         "--pr26-merged-ref",
+        required=True,
+        help=(
+            "SHA40 merge commit PR #26 yang wajib ancestor HEAD "
+            f"(canonical main: {PR26_MERGE_COMMIT_SHA})."
+        ),
+    )
+    p.add_argument(
+        "--backend-base-url",
         default=None,
-        help="Opsional: merge commit / ref PR #26 yang harus ancestor HEAD.",
+        help="Base URL backend berjalan untuk probe /api/health (wajib selain dry-run).",
+    )
+    p.add_argument(
+        "--restart-cmd",
+        default=None,
+        help=(
+            "Perintah shell restart backend (wajib selain dry-run). "
+            "Contoh: systemctl restart eternal-v4-backend. "
+            "JANGAN dijalankan di coding phase tanpa approval."
+        ),
     )
     p.add_argument("--allow-production", action="store_true")
     p.add_argument("--backup-ok", action="store_true")
@@ -74,6 +104,58 @@ def main() -> int:
     clear_settings_cache()
     settings = get_settings()
     db = get_db(settings)
+
+    restart_callback = None
+    running_backend_probe = None
+    if not args.dry_run:
+        if not args.restart_cmd:
+            print(
+                json.dumps(
+                    {
+                        "ok": False,
+                        "hold": True,
+                        "gate": "restart_required",
+                        "error": "--restart-cmd wajib selain dry-run",
+                    }
+                ),
+                file=sys.stderr,
+            )
+            return 3
+        if not args.backend_base_url:
+            print(
+                json.dumps(
+                    {
+                        "ok": False,
+                        "hold": True,
+                        "gate": "running_backend_probe_required",
+                        "error": "--backend-base-url wajib selain dry-run",
+                    }
+                ),
+                file=sys.stderr,
+            )
+            return 3
+
+        restart_cmd = args.restart_cmd
+
+        def restart_callback() -> dict:
+            proc = subprocess.run(
+                restart_cmd,
+                shell=True,
+                check=False,
+                capture_output=True,
+                text=True,
+            )
+            return {
+                "ok": proc.returncode == 0,
+                "returncode": proc.returncode,
+                "detail": (proc.stderr or proc.stdout or "").strip()[:500],
+            }
+
+        base_url = args.backend_base_url
+
+        def running_backend_probe() -> dict:
+            return probe_running_backend_http(base_url)
+
     try:
         result = activate_loading_sj_release(
             repo=args.repo.resolve(),
@@ -90,11 +172,13 @@ def main() -> int:
             guard_regression_ok=bool(args.guard_regression_ok),
             dry_run=bool(args.dry_run),
             skip_bootstrap=bool(args.skip_bootstrap),
-            restart_callback=None,
-            apply_environ_for_verify=not bool(args.dry_run),
+            restart_callback=restart_callback,
+            running_backend_probe=running_backend_probe,
         )
         print(json.dumps(result, default=str))
         if result.get("hold") or not result.get("ok"):
+            return 3
+        if not args.dry_run and not result.get("activated"):
             return 3
         return 0
     except LoadingSjActivationHold as exc:
