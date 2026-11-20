@@ -9,3 +9,6 @@ def test_health_ok(app_client) -> None:
     body = response.json()
     assert body["status"] == "ok"
     assert body["mongodb"] is True
+    assert "features" in body
+    assert "loading_sj_task_enabled" in body["features"]
+    assert body["features"]["loading_sj_task_enabled"] is False

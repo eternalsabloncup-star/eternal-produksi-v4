@@ -166,7 +166,7 @@ def seed_master_defaults(db: Database) -> dict[str, int]:
         if grant.upserted_id is not None:
             inserted_grants += 1
 
-        # loading-sj cancel → production-head (bootstrap/test only; prod = Master manual).
+        # loading-sj → production-head: view/confirm/edit/cancel (Owner final; test/bootstrap).
         if spec.task_type == "loading-sj":
             kp_grant = actions_coll.update_one(
                 {"role": "production-head", "task_type": "loading-sj"},
@@ -174,7 +174,7 @@ def seed_master_defaults(db: Database) -> dict[str, int]:
                     "$setOnInsert": {
                         "role": "production-head",
                         "task_type": "loading-sj",
-                        "actions": ["view", "edit", "cancel"],
+                        "actions": ["view", "confirm", "edit", "cancel"],
                         "is_default_mapping": True,
                         "created_at": now,
                         "updated_at": now,

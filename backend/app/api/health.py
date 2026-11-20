@@ -27,4 +27,8 @@ def health(settings: Settings = Depends(get_settings_dep)) -> dict[str, object]:
         "status": "ok",
         "app_env": settings.app_env,
         "mongodb": mongo_ok,
+        # Read-only feature flags untuk verifikasi aktivasi ops (bukan toggle).
+        "features": {
+            "loading_sj_task_enabled": bool(settings.loading_sj_task_enabled),
+        },
     }
