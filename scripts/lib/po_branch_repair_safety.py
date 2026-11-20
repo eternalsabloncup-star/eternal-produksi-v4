@@ -21,6 +21,17 @@ REQUIRED_DB = "eternal_v4"
 REQUIRED_PORT = 27018
 FORBIDDEN_PORT = 27017
 
+# Settings kanonis yang wajib OFF sebelum repair write.
+# Invoice/receipt ikut gate: berbagi sync_locks / Accurate writer path.
+# SJ: kill-switch + production SJ path.
+REQUIRED_AUTO_SYNC_OFF_FIELDS: tuple[str, ...] = (
+    "po_auto_sync_enabled",
+    "invoice_auto_sync_enabled",
+    "receipt_auto_sync_enabled",
+    "sj_sync_enabled",
+    "sj_sync_production_enabled",
+)
+
 
 def file_sha256(path: Path) -> str:
     h = hashlib.sha256()
@@ -265,15 +276,52 @@ def load_maintenance_lock(path: Path, *, max_age_hours: float = 4.0) -> dict[str
     return lock
 
 
+def require_auto_sync_flags_off(settings: Any) -> dict[str, bool]:
+    """Fail-closed: Settings sync flags harus ada, bool, dan False.
+
+    Tidak boleh ``getattr(..., False)`` — atribut hilang/unreadable/invalid
+    wajib REFUSE (bukan dianggap OFF).
+    """
+    if settings is None:
+        raise ValueError("auto_sync_settings_missing")
+    verified: dict[str, bool] = {}
+    for name in REQUIRED_AUTO_SYNC_OFF_FIELDS:
+        # Jangan pakai hasattr(): property yang raise ikut terpropagasi.
+        try:
+            raw = getattr(settings, name)
+        except AttributeError as exc:
+            raise ValueError(f"auto_sync_flag_missing:{name}") from exc
+        except Exception as exc:  # noqa: BLE001 — fail-closed on any read error
+            raise ValueError(
+                f"auto_sync_flag_unreadable:{name}:{type(exc).__name__}"
+            ) from exc
+        if type(raw) is not bool:
+            raise ValueError(f"auto_sync_flag_invalid:{name}:{type(raw).__name__}")
+        if raw is True:
+            raise ValueError(f"auto_sync_must_be_off:{name}")
+        verified[name] = False
+    return verified
+
+
 def assert_no_po_sync_worker() -> None:
-    """Best-effort process check — not a lock substitute."""
+    """Best-effort process check — terpisah dari env-flag gate; bukan pengganti lock."""
     try:
         out = subprocess.check_output(["ps", "-eo", "args="], text=True, timeout=10)
     except (subprocess.CalledProcessError, OSError, subprocess.TimeoutExpired):
         raise ValueError("cannot_verify_workers")
     for line in out.splitlines():
-        if "accurate_auto_sync_worker.py" in line and "--job po" in line:
-            raise ValueError("po_auto_sync_worker_running")
+        if "accurate_auto_sync_worker.py" in line:
+            # Flag OFF ≠ worker sudah berhenti; tolak job Accurate yang masih hidup.
+            if any(
+                token in line
+                for token in (
+                    "--job po",
+                    "--job invoice",
+                    "--job receipt",
+                    "--job all",
+                )
+            ):
+                raise ValueError("accurate_auto_sync_worker_running")
         if "po_branch_repair_apply.py" in line and "--execute" in line:
             # allow self
             continue
