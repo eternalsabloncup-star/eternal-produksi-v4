@@ -34,7 +34,7 @@ import {
   type PoDetailSummary,
 } from "../api/poDetail";
 import { useAuth } from "../auth";
-import { formatDateTimeDisplay } from "../lib/formatDate";
+import { formatDateDisplay, formatDateTimeDisplay } from "../lib/formatDate";
 import { isSuperAdmin } from "../roles";
 import { ConfirmationSuccessOverlay } from "./ConfirmationSuccessOverlay";
 import { DataTable } from "./DataTable/DataTable";
@@ -378,7 +378,8 @@ export function TeamTaskApiPanel({ role, roleLabel }: Props) {
   }
 
   const columns: ColumnDef<OperationalTask>[] = useMemo(
-    () => [
+    () => {
+      const base: ColumnDef<OperationalTask>[] = [
       {
         id: "taskType",
         label: "Jenis Pekerjaan",
@@ -402,6 +403,41 @@ export function TeamTaskApiPanel({ role, roleLabel }: Props) {
         getFilterValue: (t) => t.ref.po_no || t.ref.sj_no || "",
         render: (t) => t.ref.po_no || t.ref.sj_no || "—",
       },
+      ];
+      if (role === "production-head") {
+        base.push(
+          {
+            id: "outletName",
+            label: "Nama Outlet",
+            hideable: true,
+            filterType: "text",
+            defaultWidth: 160,
+            getFilterValue: (t) => t.outlet_name || "",
+            render: (t) => t.outlet_name?.trim() || "—",
+          },
+          {
+            id: "shipDates",
+            label: "Tanggal Pengiriman",
+            hideable: true,
+            filterType: "date",
+            defaultWidth: 150,
+            getFilterValue: (t) => (t.ship_dates || []).join(" "),
+            getSortValue: (t) => (t.ship_dates && t.ship_dates[0]) || "",
+            render: (t) => {
+              const dates = t.ship_dates || [];
+              if (!dates.length) return "—";
+              const text = dates
+                .map((d) => formatDateDisplay(d, ""))
+                .filter(Boolean)
+                .join(", ");
+              return (
+                <span title={text || undefined}>{text || "—"}</span>
+              );
+            },
+          },
+        );
+      }
+      base.push(
       {
         id: "line",
         label: "Item Line",
@@ -484,8 +520,10 @@ export function TeamTaskApiPanel({ role, roleLabel }: Props) {
           </button>
         ),
       },
-    ],
-    [openTask],
+      );
+      return base;
+    },
+    [openTask, role],
   );
 
   async function reloadAfterAction(task: OperationalTask) {

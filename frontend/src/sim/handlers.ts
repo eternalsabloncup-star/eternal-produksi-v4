@@ -511,6 +511,132 @@ export function handleSimRequest(
       ],
     });
   }
+  if (path === "/api/scheduling/board" && method === "GET") {
+    const cetak = SIM_SCHEDULE_LINES.lines.filter(
+      (l) => (l as { process_kind?: string }).process_kind === "Cetak",
+    );
+    const page = Math.max(1, Number(url.searchParams.get("page") || 1));
+    const pageSize = Math.max(
+      1,
+      Math.min(500, Number(url.searchParams.get("pageSize") || 100)),
+    );
+    const q = (url.searchParams.get("q") || "").trim().toLowerCase();
+    let filtered = q
+      ? cetak.filter(
+          (l) =>
+            l.po_no.toLowerCase().includes(q) ||
+            (l.outlet_name || "").toLowerCase().includes(q) ||
+            (l.paint_color || "").toLowerCase().includes(q) ||
+            l.item_name.toLowerCase().includes(q) ||
+            l.item_code.toLowerCase().includes(q) ||
+            l.accurate_line_id.toLowerCase().includes(q),
+        )
+      : [...cetak];
+
+    const facets = {
+      outletName: Array.from(
+        new Set(filtered.map((l) => l.outlet_name || "").filter(Boolean)),
+      ).sort(),
+      paintColor: Array.from(
+        new Set(filtered.map((l) => l.paint_color || "").filter(Boolean)),
+      ).sort(),
+      poNo: Array.from(new Set(filtered.map((l) => l.po_no))).sort(),
+      itemName: Array.from(new Set(filtered.map((l) => l.item_name))).sort(),
+      lineId: Array.from(
+        new Set(filtered.map((l) => l.accurate_line_id)),
+      ).sort(),
+      shipDates: Array.from(
+        new Set(
+          filtered.flatMap((l) =>
+            Array.isArray(l.ship_dates) ? l.ship_dates : [],
+          ),
+        ),
+      ).sort(),
+    };
+
+    const rawCf = url.searchParams.get("columnFilters");
+    if (rawCf) {
+      try {
+        const cf = JSON.parse(rawCf) as Record<string, string[] | null>;
+        const map: Record<string, (l: (typeof filtered)[number]) => string> = {
+          outletName: (l) => l.outlet_name || "",
+          paintColor: (l) => l.paint_color || "",
+          poNo: (l) => l.po_no,
+          itemName: (l) => l.item_name,
+          lineId: (l) => l.accurate_line_id,
+        };
+        for (const [col, selected] of Object.entries(cf)) {
+          if (selected == null) continue;
+          const wanted = new Set(selected.map(String));
+          if (col === "shipDates") {
+            filtered = filtered.filter((l) =>
+              (l.ship_dates || []).some((d) => wanted.has(String(d))),
+            );
+            continue;
+          }
+          const getter = map[col];
+          if (!getter) continue;
+          filtered = filtered.filter((l) => wanted.has(getter(l)));
+        }
+      } catch {
+        // ignore invalid JSON in sim
+      }
+    }
+
+    const sortBy = url.searchParams.get("sortBy") || "";
+    const sortDir = (url.searchParams.get("sortDir") || "desc").toLowerCase();
+    const mul = sortDir === "asc" ? 1 : -1;
+    const sortGet: Record<string, (l: (typeof filtered)[number]) => string | number> = {
+      poNo: (l) => l.po_no,
+      outletName: (l) => l.outlet_name || "",
+      paintColor: (l) => l.paint_color || "",
+      itemName: (l) => l.item_name,
+      lineId: (l) => l.accurate_line_id,
+      qtyTarget: (l) => l.qty_target,
+      shipDates: (l) => (l.ship_dates && l.ship_dates[0]) || "",
+    };
+    if (sortBy && sortGet[sortBy]) {
+      const get = sortGet[sortBy];
+      filtered = [...filtered].sort((a, b) => {
+        const va = get(a);
+        const vb = get(b);
+        if (typeof va === "number" && typeof vb === "number") {
+          return (va - vb) * mul;
+        }
+        return String(va).localeCompare(String(vb), "id", { numeric: true }) * mul;
+      });
+    }
+
+    const total = filtered.length;
+    const totalPages = Math.max(1, Math.ceil(total / pageSize) || 1);
+    const start = (page - 1) * pageSize;
+    const items = filtered.slice(start, start + pageSize);
+    const totalQty = filtered.reduce((s, l) => s + l.qty_target, 0);
+    const qtyAllocated = filtered.reduce((s, l) => s + l.qty_allocated, 0);
+    const qtyPrinted = filtered.reduce((s, l) => s + l.qty_printed, 0);
+    return json({
+      items,
+      total,
+      total_rows: total,
+      page,
+      pageSize,
+      total_pages: totalPages,
+      po_count: 1,
+      accepted_only: true,
+      source: "api-simulation",
+      filter_facets: facets,
+      sort_by: sortBy || "updated_at",
+      sort_dir: sortDir,
+      kpi: {
+        total_qty_so: totalQty,
+        qty_allocated: qtyAllocated,
+        qty_printed: qtyPrinted,
+        rows_unscheduled: filtered.filter((l) => l.qty_unallocated > 0).length,
+        rows_unlocked: filtered.filter((l) => l.scheduling_unlocked).length,
+        print_line_count: filtered.length,
+      },
+    });
+  }
   if (path.startsWith("/api/scheduling/") && method === "GET") {
     if (path.includes("/lines/")) {
       const lineId = path.split("/lines/")[1]?.split("/")[0];

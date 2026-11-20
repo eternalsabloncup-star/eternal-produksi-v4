@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import { PoAcceptError } from "../api/poAcceptance";
 import {
   TERIMA_PO_SUCCESS_FEEDBACK,
+  TERIMA_PO_UNCERTAIN_FEEDBACK,
   isTerimaPoAcceptDisabled,
   terimaPoErrorFeedback,
   terimaPoFeedbackMessage,
@@ -118,6 +119,56 @@ describe("ConfirmationSuccessOverlay contract for Terima PO", () => {
     expect(onAccepted).toHaveBeenCalledTimes(1);
     expect(next.status).toBe("PO Diterima");
     expect(TERIMA_PO_SUCCESS_FEEDBACK.tone).toBe("success");
+  });
+});
+
+describe("network uncertain / timeout reconcile contract", () => {
+  it("maps uncertain PoAcceptError to dedicated feedback (no success)", () => {
+    const err = new PoAcceptError("Status penerimaan belum dapat dipastikan", 0, {
+      uncertain: true,
+    });
+    expect(terimaPoErrorFeedback(err)).toEqual(TERIMA_PO_UNCERTAIN_FEEDBACK);
+    expect(terimaPoFeedbackMessage(err)).toBe(TERIMA_PO_UNCERTAIN_FEEDBACK.message);
+    expect(TERIMA_PO_UNCERTAIN_FEEDBACK.tone).toBe("error");
+  });
+
+  it("reconcile accepted after uncertain uses success path without re-accept", async () => {
+    const onAccepted = vi.fn();
+    const acceptPo = vi.fn().mockRejectedValue(
+      new PoAcceptError("Status penerimaan belum dapat dipastikan", 0, {
+        uncertain: true,
+      }),
+    );
+    const fetchStatus = vi.fn().mockResolvedValue({
+      status: "accepted",
+      inbox_status: "PO Diterima",
+      accepted_by: "kp@eternal.local",
+      accepted_at: "2026-11-20T00:00:00Z",
+    });
+
+    let feedback:
+      | typeof TERIMA_PO_SUCCESS_FEEDBACK
+      | typeof TERIMA_PO_UNCERTAIN_FEEDBACK
+      | null = null;
+    try {
+      await acceptPo("acc-1");
+      feedback = TERIMA_PO_SUCCESS_FEEDBACK;
+    } catch (err) {
+      if (err instanceof PoAcceptError && err.uncertain) {
+        const status = await fetchStatus("acc-1");
+        if (status?.status === "accepted") {
+          feedback = TERIMA_PO_SUCCESS_FEEDBACK;
+          onAccepted({ acceptanceStatus: "accepted" });
+        } else {
+          feedback = TERIMA_PO_UNCERTAIN_FEEDBACK;
+        }
+      }
+    }
+
+    expect(acceptPo).toHaveBeenCalledTimes(1);
+    expect(fetchStatus).toHaveBeenCalledTimes(1);
+    expect(feedback).toEqual(TERIMA_PO_SUCCESS_FEEDBACK);
+    expect(onAccepted).toHaveBeenCalledTimes(1);
   });
 });
 

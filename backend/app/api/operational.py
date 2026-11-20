@@ -238,7 +238,10 @@ def list_operational_tasks(
         limit=fetch_limit,
     )
     filtered = filter_tasks_for_actor(db, auth.user, items)[:limit]
-    return {"items": filtered, "total": len(filtered), "source": "mongodb"}
+    from app.services.display_enrichment import enrich_operational_tasks
+
+    enriched = enrich_operational_tasks(db, filtered)
+    return {"items": enriched, "total": len(enriched), "source": "mongodb"}
 
 
 @router.get("/tasks/{task_key:path}/confirmations")
