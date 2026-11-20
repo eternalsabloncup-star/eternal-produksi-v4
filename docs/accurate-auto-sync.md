@@ -34,6 +34,23 @@ Relasi:
 - Receipt → Invoice: `detailInvoice[].invoiceId` + `paymentAmount`
 - Receipt → PO: via snapshot invoice V4 (invoice sync harus jalan dulu)
 
+### PO list pagination (Stage 6A.3 — verified GET)
+
+| Param | Verified behavior |
+| --- | --- |
+| `sp.page` + `sp.pageSize` | Contiguous pages |
+| `sp.sort=id\|asc` | Stable ascending id; used for **backfill** |
+| `sp.sort=lastUpdate\|desc` | Accepted; used for **incremental** re-scan |
+| `filter.id.op=GREATER_*` | **Silently ignored** — do not use as cursor |
+
+Strategy:
+
+1. **Backfill:** walk `id|asc` from checkpoint `next_page`; advance page only after full page success.
+2. **Checkpoint:** `accurate_auto_sync_status.checkpoint` under `sync_locks` lease; mid-page failure keeps the same page.
+3. **End of history:** short/empty page → `backfill_complete=true`; then incremental `lastUpdate|desc` (recent window).
+4. **COMPLETE:** only when `backfill_complete` and no failures — not merely because a cycle hit `max_pages`.
+5. Same-cycle dedupe: IDs already synced in backfill are not detail-fetched again in incremental.
+
 ## Index (manual maintenance)
 
 - `accurate_auto_sync_status.uniq_auto_sync_job`
