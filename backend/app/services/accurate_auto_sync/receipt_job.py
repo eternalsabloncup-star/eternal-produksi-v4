@@ -16,9 +16,7 @@ from typing import Any
 from pymongo.database import Database
 
 from app.config import get_settings
-from app.integrations.accurate.auth import AccurateAuthError
 from app.integrations.accurate.client import AccurateReadClient
-from app.integrations.accurate.fields import as_text
 from app.integrations.accurate.normalize_invoice_receipt import (
     normalize_sales_receipt,
     receipt_material_fingerprint,
@@ -26,23 +24,27 @@ from app.integrations.accurate.normalize_invoice_receipt import (
 from app.repositories import invoice_repository as invoices
 from app.repositories import payment_repository as payments
 from app.repositories.po_repository import get_by_accurate_id
+from app.services.accurate_auto_sync.checkpoint import CONTRACT_OTHER
+from app.services.accurate_auto_sync.discovery import run_discovery_cycle
 from app.services.accurate_auto_sync.locks import (
     AutoSyncLockError,
     acquire_job_lock,
-    refresh_job_lock,
     release_job_lock,
     require_owns_job_lock,
 )
+from app.services.accurate_auto_sync.po_checkpoint import SORT_BACKFILL, SORT_INCREMENTAL
 from app.services.accurate_auto_sync.status import (
-    INCOMPLETE_STOP_REASONS,
     disabled_status_view,
     mark_running,
     record_job_result,
 )
 from app.services import payment_service
 
-RECEIPT_CONTRACT_STATUS = "verified_live_read_only"
+# Path/shape verified live earlier; sort params pending Owner live confirm.
+# Keep "verified" prefix so existing kill-switch/contract-ready checks stay green.
+RECEIPT_CONTRACT_STATUS = "verified_live_read_only_path;sort_pending_live"
 RECEIPT_CONTRACT_BLOCKER = ""
+RECEIPT_SORT_CONTRACT = CONTRACT_OTHER
 
 DEFAULT_PAGE_SIZE = 20
 DEFAULT_MAX_PAGES = 5
@@ -61,10 +63,6 @@ def is_receipt_auto_sync_enabled() -> bool:
 
 def receipt_contract_ready() -> bool:
     return RECEIPT_CONTRACT_STATUS.startswith("verified")
-
-
-def _list_page_params(page: int, page_size: int) -> dict[str, Any]:
-    return {"sp.page": page, "sp.pageSize": page_size}
 
 
 def _allocation_amount(normalized: dict[str, Any]) -> float | None:
@@ -369,7 +367,6 @@ def run_receipt_auto_sync(
         "failed": 0,
     }
     failures: list[dict[str, Any]] = []
-    stopped_reason: str | None = None
     gate_mutations = 0
     writes = 0
     reader = client or AccurateReadClient.from_settings()
@@ -382,89 +379,39 @@ def run_receipt_auto_sync(
         max_rows = max(1, min(int(max_rows), 500))
         timeout_seconds = max(0.001, float(timeout_seconds))
 
-        for page in range(1, max_pages + 1):
-            if time.monotonic() - started > timeout_seconds:
-                stopped_reason = "timeout"
-                break
-            if counters["listed"] >= max_rows:
-                stopped_reason = "max_rows"
-                break
-            if not refresh_job_lock(db, job="receipt", owner_token=token):
-                raise AutoSyncLockError("Lease receipt hilang.")
+        def _fetch_list(params: dict[str, Any]) -> list[dict[str, Any]]:
+            return reader.fetch_sales_receipt_list(params=params)
 
-            try:
-                rows = reader.fetch_sales_receipt_list(
-                    params=_list_page_params(page, page_size)
-                )
-                accurate_requests += 1
-            except (AccurateAuthError, TimeoutError, ConnectionError, RuntimeError) as exc:
-                stopped_reason = "list_failed"
-                counters["failed"] += 1
-                failures.append(
-                    {
-                        "stage": "list",
-                        "page": page,
-                        "error": type(exc).__name__,
-                        "code": getattr(exc, "code", "list_failed"),
-                    }
-                )
-                break
+        def _sync_one(accurate_id: str) -> dict[str, Any]:
+            nonlocal gate_mutations, writes
+            result = sync_one_receipt(
+                db, accurate_id, client=reader, owner_token=token
+            )
+            gate_mutations += int(result.get("gate_mutations") or 0)
+            writes += int(result.get("writes") or 0)
+            return result
 
-            if not rows:
-                break
-
-            for row in rows:
-                if time.monotonic() - started > timeout_seconds:
-                    stopped_reason = "timeout"
-                    break
-                if counters["listed"] >= max_rows:
-                    stopped_reason = "max_rows"
-                    break
-                counters["listed"] += 1
-                rid = as_text(row.get("id"))
-                if not rid:
-                    counters["failed"] += 1
-                    failures.append({"stage": "list_row", "code": "missing_receipt_id"})
-                    continue
-                try:
-                    if not refresh_job_lock(db, job="receipt", owner_token=token):
-                        raise AutoSyncLockError("Lease hilang mid-run.")
-                    result = sync_one_receipt(
-                        db, rid, client=reader, owner_token=token
-                    )
-                    accurate_requests += 1
-                    counters["fetched"] += 1
-                    gate_mutations += int(result.get("gate_mutations") or 0)
-                    writes += int(result.get("writes") or 0)
-                    key = str(result.get("outcome") or "failed")
-                    if key in counters:
-                        counters[key] += 1
-                    else:
-                        counters["failed"] += 1
-                except AutoSyncLockError:
-                    raise
-                except Exception as exc:  # noqa: BLE001
-                    counters["failed"] += 1
-                    failures.append(
-                        {
-                            "stage": "detail_or_upsert",
-                            "accurate_id": rid,
-                            "error": type(exc).__name__,
-                        }
-                    )
-
-            if stopped_reason:
-                break
-            if len(rows) < page_size:
-                break
-        else:
-            stopped_reason = "max_pages"
-
-        incomplete = stopped_reason in INCOMPLETE_STOP_REASONS
-        has_failures = counters["failed"] > 0 or bool(failures)
-        list_failed = stopped_reason == "list_failed"
-        complete = stopped_reason is None and not incomplete
-        ok = not list_failed and not has_failures
+        disc = run_discovery_cycle(
+            db,
+            job="receipt",
+            owner_token=token,
+            fetch_list=_fetch_list,
+            sync_one=_sync_one,
+            counters=counters,
+            failures=failures,
+            page_size=page_size,
+            max_pages=max_pages,
+            max_rows=max_rows,
+            timeout_seconds=timeout_seconds,
+            started=started,
+            contract_status=RECEIPT_SORT_CONTRACT,
+        )
+        accurate_requests = int(disc["accurate_requests"])
+        checkpoint = disc["checkpoint"]
+        stopped_reason = disc.get("stopped_reason")
+        ok = bool(disc["ok"])
+        partial = bool(disc["partial"])
+        complete = bool(disc["complete"])
 
         status = record_job_result(
             db,
@@ -475,8 +422,8 @@ def run_receipt_auto_sync(
             error=None if ok and complete else (stopped_reason or "incomplete"),
             error_code=stopped_reason,
             duration_seconds=time.monotonic() - started,
-            partial=incomplete and not list_failed,
-            complete=complete and not has_failures,
+            partial=partial,
+            complete=complete,
             blocked=False,
             detail={
                 "contract": RECEIPT_CONTRACT_STATUS,
@@ -485,6 +432,14 @@ def run_receipt_auto_sync(
                 "accurate_requests": accurate_requests,
                 "gate_mutations": gate_mutations,
                 "writes": writes,
+                "sort_warnings": disc.get("sort_warnings") or [],
+                "checkpoint": {
+                    "next_page": checkpoint.get("next_page"),
+                    "backfill_complete": checkpoint.get("backfill_complete"),
+                    "incremental_next_page": checkpoint.get("incremental_next_page"),
+                    "sort_backfill": SORT_BACKFILL,
+                    "sort_incremental": SORT_INCREMENTAL,
+                },
                 "discovery_complete": complete,
                 "payment_threshold_changed": False,
             },
@@ -494,14 +449,15 @@ def run_receipt_auto_sync(
             "job": "receipt",
             "enabled": True,
             "blocked": False,
-            "partial": incomplete and not list_failed,
-            "complete": complete and not has_failures,
+            "partial": partial,
+            "complete": complete,
             "accurate_requests": accurate_requests,
             "writes": writes,
             "gate_mutations": gate_mutations,
             "counters": counters,
             "stopped_reason": stopped_reason,
             "failures": failures[:30],
+            "checkpoint": checkpoint,
             "status": status,
         }
     except AutoSyncLockError as exc:

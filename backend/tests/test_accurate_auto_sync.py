@@ -46,8 +46,12 @@ class FakeAccurateClient:
         elif sort.startswith("id|desc"):
             rows = sorted(rows, key=lambda r: int(r.get("id") or 0), reverse=True)
         elif "lastUpdate" in sort:
-            # Fake: treat higher id as more recently updated.
-            rows = sorted(rows, key=lambda r: int(r.get("id") or 0), reverse=True)
+            # Sort by actual lastUpdate stamp — bukan proxy id.
+            rows = sorted(
+                rows,
+                key=lambda r: str(r.get("lastUpdate") or ""),
+                reverse=True,
+            )
         start = (page - 1) * size
         return rows[start : start + size]
 

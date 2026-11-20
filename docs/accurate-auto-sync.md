@@ -34,22 +34,31 @@ Relasi:
 - Receipt → Invoice: `detailInvoice[].invoiceId` + `paymentAmount`
 - Receipt → PO: via snapshot invoice V4 (invoice sync harus jalan dulu)
 
-### PO list pagination (Stage 6A.3 — verified GET)
+### Shared list discovery (PO / SJ / Invoice / Receipt)
 
-| Param | Verified behavior |
+| Endpoint | Path verified live | Sort `id\|asc` / `lastUpdate\|desc` |
+| --- | --- | --- |
+| Sales Order | yes | **verified live** |
+| Delivery Order | yes (path/shape) | pending Owner live confirm |
+| Sales Invoice | yes (path/shape) | pending Owner live confirm |
+| Sales Receipt | yes (path/shape) | pending Owner live confirm |
+
+Shared engine (`discovery.py` + `checkpoint.py`):
+
+| Param | Behavior |
 | --- | --- |
 | `sp.page` + `sp.pageSize` | Contiguous pages |
-| `sp.sort=id\|asc` | Stable ascending id; used for **backfill** |
-| `sp.sort=lastUpdate\|desc` | Accepted; used for **incremental** re-scan |
-| `filter.id.op=GREATER_*` | **Silently ignored** — do not use as cursor |
+| `sp.sort=id\|asc` | Backfill; runtime monotonicity guard |
+| `sp.sort=lastUpdate\|desc` | Incremental crawl + page-1 hot refresh |
+| `filter.id.op=GREATER_*` | Do not use (SO live: silently ignored) |
 
-Strategy:
+Per-job checkpoint on `accurate_auto_sync_status.checkpoint` (`po` / `sj` / `invoice` / `receipt`):
 
-1. **Backfill:** walk `id|asc` from checkpoint `next_page`; advance page only after full page success.
-2. **Checkpoint:** `accurate_auto_sync_status.checkpoint` under `sync_locks` lease; mid-page failure keeps the same page.
-3. **End of history:** short/empty page → `backfill_complete=true`; then incremental `lastUpdate|desc` (recent window).
-4. **COMPLETE:** only when `backfill_complete` and no failures — not merely because a cycle hit `max_pages`.
-5. Same-cycle dedupe: IDs already synced in backfill are not detail-fetched again in incremental.
+- `next_page`, `backfill_complete`, `incremental_next_page`, `incremental_cycles_completed`, sorts, `contract_status`
+- Advance only after full page success; mid-page failure keeps the page
+- COMPLETE only when `backfill_complete` and zero failures
+- Incremental: every cycle refreshes `lastUpdate\|desc` page 1, then continues crawl — no fixed 3-page starvation
+- Same-cycle ID dedupe; no FastAPI background loop
 
 ## Index (manual maintenance)
 

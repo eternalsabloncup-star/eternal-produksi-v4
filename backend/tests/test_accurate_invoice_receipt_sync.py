@@ -120,10 +120,28 @@ class FakeDocClient:
         self.receipts = receipts
         self.list_calls = 0
         self.detail_calls = 0
+        self._inv_lu = {int(k): k for k in invoices}
+        self._rcpt_lu = {int(k): k for k in receipts}
+
+    def _page(self, ids: list[int], params: dict[str, Any] | None, updates: dict[int, str]):
+        params = params or {}
+        page = int(params.get("sp.page") or 1)
+        size = int(params.get("sp.pageSize") or 20)
+        sort = str(params.get("sp.sort") or "")
+        ordered = list(ids)
+        if sort.startswith("id|asc") or sort == "id":
+            ordered = sorted(ordered)
+        elif "lastUpdate" in sort:
+            ordered = sorted(ordered, key=lambda i: updates.get(i, ""), reverse=True)
+        elif sort.startswith("id|desc"):
+            ordered = sorted(ordered, reverse=True)
+        start = (page - 1) * size
+        chunk = ordered[start : start + size]
+        return [{"id": i, "lastUpdate": updates.get(i)} for i in chunk]
 
     def fetch_sales_invoice_list(self, *, params: dict[str, Any] | None = None) -> list[dict[str, Any]]:
         self.list_calls += 1
-        return [{"id": int(k)} for k in self.invoices]
+        return self._page([int(k) for k in self.invoices], params, self._inv_lu)
 
     def fetch_sales_invoice_detail(self, accurate_id: str | int) -> dict[str, Any]:
         self.detail_calls += 1
@@ -131,7 +149,7 @@ class FakeDocClient:
 
     def fetch_sales_receipt_list(self, *, params: dict[str, Any] | None = None) -> list[dict[str, Any]]:
         self.list_calls += 1
-        return [{"id": int(k)} for k in self.receipts]
+        return self._page([int(k) for k in self.receipts], params, self._rcpt_lu)
 
     def fetch_sales_receipt_detail(self, accurate_id: str | int) -> dict[str, Any]:
         self.detail_calls += 1

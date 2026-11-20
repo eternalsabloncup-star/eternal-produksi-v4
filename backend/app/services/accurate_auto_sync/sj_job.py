@@ -1,4 +1,4 @@
-"""Auto-sync Delivery Order / SJ — membungkus delivery_sync, kill switch OFF."""
+"""Auto-sync Delivery Order / SJ — discovery checkpoint + delivery ingest guards."""
 
 from __future__ import annotations
 
@@ -9,13 +9,16 @@ from pymongo.database import Database
 
 from app.config import get_settings
 from app.integrations.accurate.client import AccurateReadClient
+from app.services.accurate_auto_sync.checkpoint import CONTRACT_OTHER
+from app.services.accurate_auto_sync.discovery import run_discovery_cycle
 from app.services.accurate_auto_sync.locks import (
     AutoSyncLockError,
     acquire_job_lock,
     release_job_lock,
+    require_owns_job_lock,
 )
+from app.services.accurate_auto_sync.po_checkpoint import SORT_BACKFILL, SORT_INCREMENTAL
 from app.services.accurate_auto_sync.status import (
-    INCOMPLETE_STOP_REASONS,
     disabled_status_view,
     mark_running,
     record_job_result,
@@ -23,14 +26,40 @@ from app.services.accurate_auto_sync.status import (
 from app.services.delivery_sync import (
     DeliverySyncDisabledError,
     is_sj_sync_enabled,
-    sync_delivery_orders_from_accurate,
+    sync_delivery_order_payload,
 )
 
-# User sistem untuk audit ingest SJ (bukan aktor manusia).
+SJ_CONTRACT_STATUS = CONTRACT_OTHER
+
 _SYSTEM_USER = {
     "email_normalized": "system:accurate-auto-sync",
     "role": "super_admin",
 }
+
+DEFAULT_PAGE_SIZE = 20
+DEFAULT_MAX_PAGES = 5
+DEFAULT_MAX_ROWS = 100
+DEFAULT_TIMEOUT_SECONDS = 50.0
+
+
+def sync_one_sj(
+    db: Database,
+    accurate_id: str,
+    *,
+    client: AccurateReadClient,
+    owner_token: str,
+    mongo_guard: str = "test",
+) -> dict[str, Any]:
+    require_owns_job_lock(db, job="sj", owner_token=owner_token)
+    detail = client.fetch_delivery_order_detail(accurate_id)
+    require_owns_job_lock(db, job="sj", owner_token=owner_token)
+    return sync_delivery_order_payload(
+        db,
+        _SYSTEM_USER,
+        detail,
+        mongo_guard="test",  # type: ignore[arg-type]
+        require_registered_po=True,
+    )
 
 
 def run_sj_auto_sync(
@@ -38,10 +67,13 @@ def run_sj_auto_sync(
     *,
     client: AccurateReadClient | None = None,
     mongo_guard: str = "test",
+    page_size: int = DEFAULT_PAGE_SIZE,
+    max_pages: int = DEFAULT_MAX_PAGES,
+    max_rows: int = DEFAULT_MAX_ROWS,
+    timeout_seconds: float = DEFAULT_TIMEOUT_SECONDS,
 ) -> dict[str, Any]:
     """Satu siklus auto-sync SJ. Memerlukan V4_SJ_SYNC_ENABLED=1."""
     if not is_sj_sync_enabled():
-        # ZERO WRITE: tanpa lock, status mutation, Accurate HTTP.
         return {
             "ok": True,
             "job": "sj",
@@ -54,33 +86,56 @@ def run_sj_auto_sync(
     mark_running(db, "sj")
     started = time.monotonic()
     token: str | None = None
+    counters = {
+        "listed": 0,
+        "fetched": 0,
+        "created": 0,
+        "updated": 0,
+        "unchanged": 0,
+        "skipped": 0,
+        "review_required": 0,
+        "failed": 0,
+    }
+    failures: list[dict[str, Any]] = []
+    reader = client or AccurateReadClient.from_settings()
+    accurate_requests = 0
+
     try:
         token = acquire_job_lock(db, job="sj")
-        result = sync_delivery_orders_from_accurate(
+        page_size = max(1, min(int(page_size), 100))
+        max_pages = max(1, min(int(max_pages), 50))
+        max_rows = max(1, min(int(max_rows), 500))
+        timeout_seconds = max(0.001, float(timeout_seconds))
+
+        def _fetch_list(params: dict[str, Any]) -> list[dict[str, Any]]:
+            return reader.fetch_delivery_order_list(params=params)
+
+        def _sync_one(accurate_id: str) -> dict[str, Any]:
+            return sync_one_sj(
+                db, accurate_id, client=reader, owner_token=token, mongo_guard=mongo_guard
+            )
+
+        disc = run_discovery_cycle(
             db,
-            _SYSTEM_USER,
-            client=client,
-            mongo_guard="test",  # type: ignore[arg-type]
-            scope="auto",
+            job="sj",
+            owner_token=token,
+            fetch_list=_fetch_list,
+            sync_one=_sync_one,
+            counters=counters,
+            failures=failures,
+            page_size=page_size,
+            max_pages=max_pages,
+            max_rows=max_rows,
+            timeout_seconds=timeout_seconds,
+            started=started,
+            contract_status=SJ_CONTRACT_STATUS,
         )
-        counters = {
-            "listed": int(result.get("listed") or 0),
-            "fetched": int(result.get("listed") or 0),
-            "created": int(result.get("created") or 0),
-            "updated": int(result.get("updated") or 0),
-            "unchanged": int(result.get("unchanged") or 0),
-            "skipped": int(result.get("skipped") or 0),
-            "review_required": 0,
-            "failed": int(result.get("failed") or 0),
-        }
-        stopped = result.get("stopped_reason")
-        incomplete = stopped in INCOMPLETE_STOP_REASONS
-        has_failures = counters["failed"] > 0
-        list_failed = stopped == "list_failed"
-        complete = stopped is None and not incomplete
-        ok = bool(result.get("ok")) and not has_failures and not list_failed
-        if has_failures or list_failed:
-            ok = False
+        accurate_requests = int(disc["accurate_requests"])
+        checkpoint = disc["checkpoint"]
+        stopped_reason = disc.get("stopped_reason")
+        ok = bool(disc["ok"])
+        partial = bool(disc["partial"])
+        complete = bool(disc["complete"])
 
         status = record_job_result(
             db,
@@ -88,19 +143,29 @@ def run_sj_auto_sync(
             enabled=True,
             ok=ok,
             counters=counters,
-            error=None if ok and complete else str(stopped or "sj_sync_failed"),
-            error_code=stopped,
+            error=None if ok and complete else str(stopped_reason or "sj_sync_failed"),
+            error_code=stopped_reason,
             duration_seconds=time.monotonic() - started,
-            partial=incomplete and not list_failed,
-            complete=complete and not has_failures,
+            partial=partial,
+            complete=complete,
             detail={
                 "auto_sync": True,
                 "mongo_guard": "test",
+                "contract_status": SJ_CONTRACT_STATUS,
+                "sort_warnings": disc.get("sort_warnings") or [],
                 "note": (
                     "Auto SJ memakai guard test existing; aktivasi production "
-                    "memerlukan keputusan CEO + jalur guard terpisah."
+                    "memerlukan keputusan CEO + jalur guard terpisah. "
+                    "Sort contract pending Owner live confirm."
                 ),
-                "failures": (result.get("failures") or [])[:20],
+                "failures": failures[:20],
+                "checkpoint": {
+                    "next_page": checkpoint.get("next_page"),
+                    "backfill_complete": checkpoint.get("backfill_complete"),
+                    "incremental_next_page": checkpoint.get("incremental_next_page"),
+                    "sort_backfill": SORT_BACKFILL,
+                    "sort_incremental": SORT_INCREMENTAL,
+                },
                 "discovery_complete": complete,
             },
         )
@@ -108,29 +173,17 @@ def run_sj_auto_sync(
             "ok": ok,
             "job": "sj",
             "enabled": True,
-            "partial": incomplete and not list_failed,
-            "complete": complete and not has_failures,
-            "accurate_requests": counters["listed"] + int(result.get("pages") or 0),
+            "partial": partial,
+            "complete": complete,
+            "accurate_requests": accurate_requests,
             "writes": counters["created"] + counters["updated"],
             "counters": counters,
-            "result": {
-                k: result.get(k)
-                for k in (
-                    "ok",
-                    "stopped_reason",
-                    "pages",
-                    "listed",
-                    "created",
-                    "updated",
-                    "unchanged",
-                    "skipped",
-                    "failed",
-                )
-            },
+            "stopped_reason": stopped_reason,
+            "failures": failures[:30],
+            "checkpoint": checkpoint,
             "status": status,
         }
     except DeliverySyncDisabledError as exc:
-        # Race: flag dimatikan setelah check awal — jangan tulis status sebagai enabled success.
         return {
             "ok": True,
             "job": "sj",
@@ -169,4 +222,5 @@ def sj_auto_sync_settings_note() -> dict[str, Any]:
     return {
         "sj_sync_enabled": bool(s.sj_sync_enabled),
         "production_guard": "test_only_until_ceo_approval",
+        "contract_status": SJ_CONTRACT_STATUS,
     }

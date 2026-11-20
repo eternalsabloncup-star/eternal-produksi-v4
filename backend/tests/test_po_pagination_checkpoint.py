@@ -33,29 +33,38 @@ def _payload(so_id: int, *, ship_zone: str = "K", qty: float = 10) -> dict[str, 
 
 
 class UniverseClient:
-    """Fake Accurate: id|asc contiguous pages; lastUpdate|desc = id desc."""
+    """Fake Accurate: id|asc contiguous; lastUpdate|desc by real timestamps."""
 
     def __init__(self) -> None:
         self.ids: list[int] = []
         self.details: dict[str, dict[str, Any]] = {}
+        self.last_update: dict[int, str] = {}
+        self._clock = 1_700_000_000
         self.fail_ids: set[str] = set()
         self.list_calls: list[dict[str, Any]] = []
         self.detail_calls = 0
+
+    def _tick(self) -> str:
+        self._clock += 1
+        return str(self._clock)
 
     def seed(self, n: int, *, start: int = 1) -> None:
         for i in range(start, start + n):
             if i not in self.ids:
                 self.ids.append(i)
             self.details[str(i)] = _payload(i)
+            self.last_update[i] = self._tick()
         self.ids = sorted(set(self.ids))
 
     def add_new(self, so_id: int, *, ship_zone: str = "Z") -> None:
         self.ids.append(so_id)
         self.ids = sorted(set(self.ids))
         self.details[str(so_id)] = _payload(so_id, ship_zone=ship_zone)
+        self.last_update[so_id] = self._tick()
 
     def mutate(self, so_id: int, *, ship_zone: str) -> None:
         self.details[str(so_id)] = _payload(so_id, ship_zone=ship_zone)
+        self.last_update[so_id] = self._tick()
 
     def fetch_sales_order_list(self, *, params: dict[str, Any] | None = None) -> list[dict]:
         params = params or {}
@@ -63,14 +72,19 @@ class UniverseClient:
         size = int(params.get("sp.pageSize") or 20)
         sort = str(params.get("sp.sort") or "")
         self.list_calls.append({"page": page, "size": size, "sort": sort})
-        ordered = list(self.ids)
         if sort.startswith("id|asc") or sort == "id":
-            ordered = sorted(ordered)
-        elif "lastUpdate" in sort or sort.startswith("id|desc"):
-            ordered = sorted(ordered, reverse=True)
+            ordered = sorted(self.ids)
+        elif "lastUpdate" in sort:
+            ordered = sorted(
+                self.ids, key=lambda i: self.last_update.get(i, ""), reverse=True
+            )
+        elif sort.startswith("id|desc"):
+            ordered = sorted(self.ids, reverse=True)
+        else:
+            ordered = list(self.ids)
         start = (page - 1) * size
         chunk = ordered[start : start + size]
-        return [{"id": i} for i in chunk]
+        return [{"id": i, "lastUpdate": self.last_update.get(i)} for i in chunk]
 
     def fetch_sales_order_detail(self, accurate_id: str | int) -> dict[str, Any]:
         self.detail_calls += 1
@@ -264,3 +278,38 @@ def test_timeout_keeps_checkpoint(
     assert r["stopped_reason"] == "timeout"
     assert r["complete"] is False
     assert load_po_checkpoint(pdb)["next_page"] >= 1
+
+
+def test_old_mutation_found_beyond_three_page_window(
+    pdb: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Mutasi PO lama harus ketemu meski >3 halaman lastUpdate lebih baru."""
+    _enable(monkeypatch)
+    client = UniverseClient()
+    client.seed(15)
+    for _ in range(3):
+        r = po_job.run_po_auto_sync(
+            pdb, client=client, page_size=5, max_pages=4, max_rows=100, timeout_seconds=50
+        )
+        if r.get("complete"):
+            break
+    assert load_po_checkpoint(pdb)["backfill_complete"] is True
+    # 20 PO baru → >3 halaman (page_size=5) lebih baru dari id=3
+    for i in range(1000, 1020):
+        client.add_new(i, ship_zone="NEW")
+    client.mutate(3, ship_zone="DEEP")
+    found_old = False
+    found_new = False
+    for _ in range(12):
+        po_job.run_po_auto_sync(
+            pdb, client=client, page_size=5, max_pages=4, max_rows=100, timeout_seconds=50
+        )
+        doc = get_by_accurate_id(pdb, "3")
+        if doc and doc["header"]["ship_zone"] == "DEEP":
+            found_old = True
+        if get_by_accurate_id(pdb, "1000") is not None:
+            found_new = True
+        if found_old and found_new:
+            break
+    assert found_old is True
+    assert found_new is True
