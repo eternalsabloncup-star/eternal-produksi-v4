@@ -72,6 +72,7 @@ def create_user(db: Database, actor: dict[str, Any], body: dict[str, Any]) -> di
     _require(actor, PERM_MANAGE_USERS)
     role = str(body.get("role") or ROLE_USER)
     perms = _resolve_module_perms_for_role(db, role)
+    branch_ids = org.validate_branch_ids_for_assignment(db, body.get("branch_ids"))
     created = users.create_user(
         db,
         email=str(body["email"]),
@@ -79,7 +80,7 @@ def create_user(db: Database, actor: dict[str, Any], body: dict[str, Any]) -> di
         password=str(body["password"]),
         role=role,
         operational_role=body.get("operational_role"),
-        branch_ids=body.get("branch_ids"),
+        branch_ids=branch_ids,
         effective_module_permissions=perms,
     )
     append_audit_event(
@@ -87,7 +88,11 @@ def create_user(db: Database, actor: dict[str, Any], body: dict[str, Any]) -> di
         action="settings.user.create",
         actor_email=_actor(actor),
         target_email=created["email"],
-        detail={"after": {k: created[k] for k in created if k != "id"}, "user_id": created["id"]},
+        detail={
+            "after": {k: created[k] for k in created if k != "id"},
+            "user_id": created["id"],
+            "branch_ids": created.get("branch_ids") or [],
+        },
     )
     return created
 
@@ -101,13 +106,16 @@ def update_user(db: Database, actor: dict[str, Any], user_id: str, body: dict[st
     perms = None
     if role is not None:
         perms = _resolve_module_perms_for_role(db, str(role))
+    branch_ids = None
+    if "branch_ids" in body:
+        branch_ids = org.validate_branch_ids_for_assignment(db, body.get("branch_ids"))
     updated = users.update_user(
         db,
         user_id,
         display_name=body.get("display_name"),
         role=str(role) if role is not None else None,
         operational_role=body["operational_role"] if "operational_role" in body else ...,
-        branch_ids=body.get("branch_ids"),
+        branch_ids=branch_ids,
         effective_module_permissions=perms,
     )
     append_audit_event(
@@ -115,7 +123,13 @@ def update_user(db: Database, actor: dict[str, Any], user_id: str, body: dict[st
         action="settings.user.update",
         actor_email=_actor(actor),
         target_email=updated["email"],
-        detail={"before": before, "after": updated, "reason": body.get("reason")},
+        detail={
+            "before": before,
+            "after": updated,
+            "reason": body.get("reason"),
+            "branch_ids_before": before.get("branch_ids") or [],
+            "branch_ids_after": updated.get("branch_ids") or [],
+        },
     )
     return updated
 
@@ -451,12 +465,19 @@ def deactivate_task_type(
 
 
 def list_branches(db: Database, actor: dict[str, Any]) -> list[dict[str, Any]]:
-    _require(actor, PERM_MANAGE_SETTINGS)
-    return org.list_docs(db, org.BRANCHES)
+    # Pengaturan Pengguna perlu daftar cabang aktif tanpa wajib settings.manage.
+    if not (
+        has_permission(actor, PERM_MANAGE_SETTINGS)
+        or has_permission(actor, PERM_MANAGE_USERS)
+    ):
+        raise TaskPermissionError("Akses ditolak")
+    items = org.list_docs(db, org.BRANCHES)
+    return org.enrich_branches_with_mapping_status(items)
 
 
 def save_branch(db: Database, actor: dict[str, Any], body: dict[str, Any]) -> dict[str, Any]:
     _require(actor, PERM_MANAGE_SETTINGS)
+    before = org.get_branch(db, str(body["code"]))
     doc = org.upsert_branch(
         db,
         code=str(body["code"]),
@@ -468,9 +489,9 @@ def save_branch(db: Database, actor: dict[str, Any], body: dict[str, Any]) -> di
         action="settings.branch.upsert",
         actor_email=_actor(actor),
         target_email=None,
-        detail={"after": doc},
+        detail={"before": before, "after": doc},
     )
-    return doc
+    return org.enrich_branches_with_mapping_status([doc])[0]
 
 
 def set_branch_active(
@@ -483,15 +504,60 @@ def set_branch_active(
             raise SettingsDependencyError(
                 f"Cabang masih dipakai {n} pengguna aktif — sertakan reason."
             )
+    before = org.get_branch(db, code)
     doc = org.set_branch_active(db, code, is_active=is_active)
     append_audit_event(
         db,
         action="settings.branch.activate" if is_active else "settings.branch.deactivate",
         actor_email=_actor(actor),
         target_email=None,
-        detail={"after": doc, "reason": reason},
+        detail={"before": before, "after": doc, "reason": reason},
     )
-    return doc
+    return org.enrich_branches_with_mapping_status([doc])[0]
+
+
+def set_branch_accurate_mapping(
+    db: Database,
+    actor: dict[str, Any],
+    code: str,
+    *,
+    accurate_branch_id: str | None,
+    reason: str | None,
+) -> dict[str, Any]:
+    """Simpan/ganti mapping Accurate branchId pada Master Cabang."""
+    _require(actor, PERM_MANAGE_SETTINGS)
+    if not (reason or "").strip():
+        raise ValueError("Alasan perubahan mapping wajib.")
+    before = org.get_branch(db, code)
+    if before is None:
+        raise LookupError("Cabang tidak ditemukan.")
+    try:
+        doc = org.set_branch_accurate_mapping(
+            db, code, accurate_branch_id=accurate_branch_id
+        )
+    except ValueError as exc:
+        msg = str(exc)
+        if "sudah dipetakan" in msg:
+            raise SettingsConflictError(msg) from exc
+        raise
+    append_audit_event(
+        db,
+        action="settings.branch.accurate_mapping",
+        actor_email=_actor(actor),
+        target_email=None,
+        detail={
+            "before": {
+                "code": before.get("code"),
+                "accurate_branch_id": before.get("accurate_branch_id"),
+            },
+            "after": {
+                "code": doc.get("code"),
+                "accurate_branch_id": doc.get("accurate_branch_id"),
+            },
+            "reason": (reason or "").strip(),
+        },
+    )
+    return org.enrich_branches_with_mapping_status([doc])[0]
 
 
 def list_machines(db: Database, actor: dict[str, Any]) -> list[dict[str, Any]]:

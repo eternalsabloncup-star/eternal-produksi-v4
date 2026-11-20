@@ -51,6 +51,14 @@ def test_settings_users_crud_and_forbid_without_permission(
     assert denied.status_code == 403
 
     csrf = _login(app_client, "owner@eternal.local")
+    assert (
+        app_client.put(
+            "/api/settings/branches",
+            json={"code": "JKT", "name": "Jakarta"},
+            headers={"X-CSRF-Token": csrf},
+        ).status_code
+        == 200
+    )
     created = app_client.post(
         "/api/settings/users",
         json={
@@ -66,6 +74,7 @@ def test_settings_users_crud_and_forbid_without_permission(
     assert created.status_code == 200, created.text
     body = created.json()
     assert body["email"] == "op@eternal.local"
+    assert body["branch_ids"] == ["JKT"]
     assert "password" not in body and "password_hash" not in body
     uid = body["id"]
 
@@ -332,3 +341,142 @@ def test_sessions_list_hides_token_and_workflow_policies_readonly(
         p["id"] == "master_products_screen_size" and p["status"] == "available"
         for p in items
     )
+
+
+def test_user_branch_assignment_validation_and_audit(
+    app_client: TestClient, db: Database
+) -> None:
+    """Create/update branch_ids — valid multi, reject unknown/inactive, audit."""
+    from app.services.audit_log import list_audit_events
+
+    _seed_owner(db)
+    csrf = _login(app_client)
+    for code, name in (("HQ", "Head Office"), ("SMG", "Semarang")):
+        assert (
+            app_client.put(
+                "/api/settings/branches",
+                json={"code": code, "name": name},
+                headers={"X-CSRF-Token": csrf},
+            ).status_code
+            == 200
+        )
+
+    multi = app_client.post(
+        "/api/settings/users",
+        json={
+            "email": "multi@eternal.local",
+            "display_name": "Multi Cabang",
+            "password": PASSWORD,
+            "role": "user",
+            "operational_role": "operator",
+            "branch_ids": ["hq", "SMG"],
+        },
+        headers={"X-CSRF-Token": csrf},
+    )
+    assert multi.status_code == 200, multi.text
+    assert multi.json()["branch_ids"] == ["HQ", "SMG"]
+    uid = multi.json()["id"]
+
+    unknown = app_client.post(
+        "/api/settings/users",
+        json={
+            "email": "badbr@eternal.local",
+            "display_name": "Bad",
+            "password": PASSWORD,
+            "role": "user",
+            "branch_ids": ["XYZ"],
+        },
+        headers={"X-CSRF-Token": csrf},
+    )
+    assert unknown.status_code == 422
+
+    assert (
+        app_client.post(
+            "/api/settings/branches/SMG/active",
+            json={"is_active": False, "reason": "maintenance"},
+            headers={"X-CSRF-Token": csrf},
+        ).status_code
+        == 200
+    )
+    inactive = app_client.patch(
+        f"/api/settings/users/{uid}",
+        json={"branch_ids": ["HQ", "SMG"], "reason": "try-inactive"},
+        headers={"X-CSRF-Token": csrf},
+    )
+    assert inactive.status_code == 422
+
+    ok = app_client.patch(
+        f"/api/settings/users/{uid}",
+        json={"branch_ids": ["HQ"], "reason": "drop-smg"},
+        headers={"X-CSRF-Token": csrf},
+    )
+    assert ok.status_code == 200, ok.text
+    assert ok.json()["branch_ids"] == ["HQ"]
+
+    events = list_audit_events(db, module="settings", limit=50)["items"]
+    assert any(
+        e.get("action") == "settings.user.update"
+        and (e.get("detail") or {}).get("branch_ids_after") == ["HQ"]
+        for e in events
+    )
+
+
+def test_plain_user_cannot_patch_branch_ids(
+    app_client: TestClient, db: Database
+) -> None:
+    _seed_owner(db)
+    csrf = _login(app_client)
+    assert (
+        app_client.put(
+            "/api/settings/branches",
+            json={"code": "HQ", "name": "HQ"},
+            headers={"X-CSRF-Token": csrf},
+        ).status_code
+        == 200
+    )
+    created = app_client.post(
+        "/api/settings/users",
+        json={
+            "email": "target@eternal.local",
+            "display_name": "Target",
+            "password": PASSWORD,
+            "role": "user",
+            "branch_ids": ["HQ"],
+        },
+        headers={"X-CSRF-Token": csrf},
+    )
+    assert created.status_code == 200
+    uid = created.json()["id"]
+
+    db["users"].insert_one(
+        {
+            "email_normalized": normalize_email("plain2@eternal.local"),
+            "display_name": "Plain2",
+            "password_hash": hash_password(PASSWORD),
+            "role": "user",
+            "operational_role": "helper",
+            "is_active": True,
+            "branch_ids": ["HQ"],
+            "effective_module_permissions": [],
+        }
+    )
+    plain = _login(app_client, "plain2@eternal.local")
+    denied = app_client.patch(
+        f"/api/settings/users/{uid}",
+        json={"branch_ids": []},
+        headers={"X-CSRF-Token": plain},
+    )
+    assert denied.status_code == 403
+
+
+def test_invalid_branch_code_format_rejected(
+    app_client: TestClient, db: Database
+) -> None:
+    _seed_owner(db)
+    csrf = _login(app_client)
+    bad = app_client.put(
+        "/api/settings/branches",
+        json={"code": "bad code", "name": "X"},
+        headers={"X-CSRF-Token": csrf},
+    )
+    assert bad.status_code == 422

@@ -99,6 +99,22 @@ export async function createSettingsUser(body: {
   });
 }
 
+export async function updateSettingsUser(
+  userId: string,
+  body: {
+    display_name?: string;
+    role?: string;
+    operational_role?: string | null;
+    branch_ids?: string[];
+    reason?: string;
+  },
+) {
+  return request<SettingsUser>(`/api/settings/users/${encodeURIComponent(userId)}`, {
+    method: "PATCH",
+    body: JSON.stringify(body),
+  });
+}
+
 export async function setUserActive(userId: string, is_active: boolean, reason?: string) {
   return request<SettingsUser>(`/api/settings/users/${userId}/active`, {
     method: "POST",
@@ -147,17 +163,54 @@ export async function saveRolePermissions(
   );
 }
 
+export type BranchMappingStatus = "mapped" | "unmapped" | "conflict";
+
+export type SettingsBranch = {
+  code: string;
+  name: string;
+  is_active: boolean;
+  accurate_branch_id?: string | null;
+  mapping_status?: BranchMappingStatus;
+  accurate_verified?: boolean;
+};
+
 export async function fetchBranches() {
-  return request<{ items: Array<{ code: string; name: string; is_active: boolean }> }>(
-    "/api/settings/branches",
+  return request<{ items: SettingsBranch[] }>("/api/settings/branches");
+}
+
+export async function upsertBranch(code: string, name: string, is_active = true) {
+  return request<SettingsBranch>("/api/settings/branches", {
+    method: "PUT",
+    body: JSON.stringify({ code, name, is_active }),
+  });
+}
+
+export async function setBranchActive(
+  code: string,
+  is_active: boolean,
+  reason?: string,
+) {
+  return request<SettingsBranch>(
+    `/api/settings/branches/${encodeURIComponent(code)}/active`,
+    {
+      method: "POST",
+      body: JSON.stringify({ is_active, reason }),
+    },
   );
 }
 
-export async function upsertBranch(code: string, name: string) {
-  return request("/api/settings/branches", {
-    method: "PUT",
-    body: JSON.stringify({ code, name, is_active: true }),
-  });
+export async function setBranchAccurateMapping(
+  code: string,
+  accurate_branch_id: string | null,
+  reason: string,
+) {
+  return request<SettingsBranch>(
+    `/api/settings/branches/${encodeURIComponent(code)}/accurate-mapping`,
+    {
+      method: "PUT",
+      body: JSON.stringify({ accurate_branch_id, reason }),
+    },
+  );
 }
 
 export async function fetchMachines() {

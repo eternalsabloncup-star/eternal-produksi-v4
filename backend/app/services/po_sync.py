@@ -104,7 +104,19 @@ def sync_sales_order_payload(
     *,
     mongo_guard: MongoGuardMode = "test",
 ) -> dict[str, Any]:
-    """Normalisasi + upsert. Aman dijalankan berulang tanpa duplikasi header."""
+    """Normalisasi + upsert. Aman dijalankan berulang tanpa duplikasi header.
+
+    Cabang kanonis: isi ``branch_id`` dari Accurate ``branchId`` bila dokumen
+    belum punya identitas. Re-ingest / edit manual tidak ditimpa diam-diam.
+    Mapping Master tidak diperlukan untuk otorisasi.
+    """
+    from app.repositories.po_repository import set_branch_id_if_empty
+    from app.services.branch_identity import (
+        extract_accurate_branch_id,
+        normalize_branch_identity,
+    )
+    from app.services.object_auth import object_branch_code
+
     _guard_db(db, mongo_guard=mongo_guard)
     po: PoHeaderModel = normalize_sales_order(payload)
     try:
@@ -112,6 +124,25 @@ def sync_sales_order_payload(
         before = 1 if before_doc else 0
         line_diff = diff_synced_lines(before_doc, po)
         stored = upsert_sales_order(db, po, line_diff=line_diff)
+        accurate_branch_id = extract_accurate_branch_id(stored)
+        if accurate_branch_id is None and isinstance(po.raw_sync_meta, dict):
+            accurate_branch_id = normalize_branch_identity(
+                po.raw_sync_meta.get("accurate_branch_id")
+            )
+        branch_apply = "preserve_existing"
+        if object_branch_code(before_doc):
+            branch_apply = "preserve_existing"
+        elif accurate_branch_id:
+            filled = set_branch_id_if_empty(
+                db, po.accurate_id or "", accurate_branch_id
+            )
+            if filled is not None:
+                stored = filled
+                branch_apply = "set_from_accurate"
+            else:
+                branch_apply = "leave_unset"
+        else:
+            branch_apply = "leave_unset"
         after = count_by_accurate_id(db, po.accurate_id or "")
     except UnsafeMongoTargetError:
         raise
@@ -133,6 +164,7 @@ def sync_sales_order_payload(
         "count_after": after,
         "line_diff": line_diff,
         "operational_preserved": isinstance(stored.get("operational"), dict),
+        "branch_apply": branch_apply,
     }
 
 

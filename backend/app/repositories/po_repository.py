@@ -141,6 +141,87 @@ def upsert_sales_order(
     return result
 
 
+def set_branch_code_if_empty(
+    db: Database, accurate_id: str | int, branch_code: str
+) -> dict[str, Any] | None:
+    """Legacy helper — isi ``branch_code`` hanya jika kosong (CAS)."""
+    require_po_indexes(db)
+    code = str(branch_code or "").strip().upper()
+    if not code:
+        return None
+    return po_collection(db).find_one_and_update(
+        {
+            "accurate_id": str(accurate_id),
+            "$or": [
+                {"branch_code": {"$exists": False}},
+                {"branch_code": None},
+                {"branch_code": ""},
+            ],
+        },
+        {"$set": {"branch_code": code, "updated_at": datetime.now(timezone.utc)}},
+        return_document=ReturnDocument.AFTER,
+    )
+
+
+def set_branch_id_if_empty(
+    db: Database, accurate_id: str | int, branch_id: str
+) -> dict[str, Any] | None:
+    """Isi ``branch_id`` kanonis (Accurate) hanya jika belum ada. Tidak menimpa historis/manual."""
+    require_po_indexes(db)
+    from app.services.branch_identity import normalize_branch_identity
+
+    nid = normalize_branch_identity(branch_id)
+    if not nid:
+        return None
+    return po_collection(db).find_one_and_update(
+        {
+            "accurate_id": str(accurate_id),
+            "$or": [
+                {"branch_id": {"$exists": False}},
+                {"branch_id": None},
+                {"branch_id": ""},
+            ],
+        },
+        {
+            "$set": {
+                "branch_id": nid,
+                "updated_at": datetime.now(timezone.utc),
+            }
+        },
+        return_document=ReturnDocument.AFTER,
+    )
+
+
+def set_po_branch_id(
+    db: Database,
+    accurate_id: str | int,
+    *,
+    branch_id: str,
+    expected_previous: str | None,
+) -> dict[str, Any] | None:
+    """Compare-and-set identitas cabang PO (edit berizin)."""
+    require_po_indexes(db)
+    from app.services.branch_identity import normalize_branch_identity
+
+    nid = normalize_branch_identity(branch_id)
+    if not nid:
+        raise ValueError("branch_id wajib.")
+    filt: dict[str, Any] = {"accurate_id": str(accurate_id)}
+    if expected_previous:
+        filt["branch_id"] = normalize_branch_identity(expected_previous)
+    else:
+        filt["$or"] = [
+            {"branch_id": {"$exists": False}},
+            {"branch_id": None},
+            {"branch_id": ""},
+        ]
+    return po_collection(db).find_one_and_update(
+        filt,
+        {"$set": {"branch_id": nid, "updated_at": datetime.now(timezone.utc)}},
+        return_document=ReturnDocument.AFTER,
+    )
+
+
 def get_by_accurate_id(db: Database, accurate_id: str | int) -> dict[str, Any] | None:
     return po_collection(db).find_one({"accurate_id": str(accurate_id)})
 
@@ -153,6 +234,74 @@ def count_by_accurate_id(db: Database, accurate_id: str | int) -> int:
     return po_collection(db).count_documents({"accurate_id": str(accurate_id)})
 
 
+def _field_empty(path: str) -> dict[str, Any]:
+    """Field hilang / null / string kosong — dipakai prioritas identitas."""
+    return {
+        "$or": [
+            {path: {"$exists": False}},
+            {path: None},
+            {path: ""},
+        ]
+    }
+
+
+def branch_scope_query(branch_ids: list[str] | set[str] | None) -> dict[str, Any]:
+    """Filter Mongo selaras ``object_branch_code`` / ``extract_accurate_branch_id``.
+
+    Prioritas (jangan OR longgar antar sumber):
+    1. ``branch_id`` kanonis ada → hanya ``branch_id`` yang dihitung.
+    2. Kanonis kosong → fallback Accurate meta / ``accurate_branch_id``.
+    3. Keduanya kosong → legacy ``branch_code`` (transisi).
+
+    Fail-closed: daftar kosong → tidak match dokumen apa pun.
+    Tidak membuat index baru; tidak mengubah metadata Accurate.
+    """
+    from app.services.branch_identity import normalize_branch_identity
+
+    ids = [
+        nid
+        for nid in (normalize_branch_identity(x) for x in (branch_ids or []))
+        if nid
+    ]
+    if not ids:
+        return {"_id": {"$exists": False}}
+
+    canonical_empty = _field_empty("branch_id")
+    meta_empty = {
+        "$and": [
+            _field_empty("accurate_branch_id"),
+            _field_empty("header.raw_sync_meta.accurate_branch_id"),
+        ]
+    }
+    return {
+        "$or": [
+            {"branch_id": {"$in": ids}},
+            {
+                "$and": [
+                    canonical_empty,
+                    {
+                        "$or": [
+                            {"accurate_branch_id": {"$in": ids}},
+                            {
+                                "header.raw_sync_meta.accurate_branch_id": {
+                                    "$in": ids
+                                }
+                            },
+                        ]
+                    },
+                ]
+            },
+            {
+                "$and": [
+                    canonical_empty,
+                    meta_empty,
+                    {"branch_code": {"$in": ids}},
+                ]
+            },
+        ]
+    }
+
+
 def list_sales_orders(
     db: Database,
     *,
@@ -163,8 +312,13 @@ def list_sales_orders(
     urgent: bool | None = None,
     sort_by: str = "updated_at",
     sort_dir: int = -1,
+    branch_ids: list[str] | set[str] | None = None,
+    branch_scope: bool = False,
 ) -> tuple[list[dict[str, Any]], int]:
-    """Baca dari Mongo saja (bukan Accurate live). Return (rows, total)."""
+    """Baca dari Mongo saja (bukan Accurate live). Return (rows, total).
+
+    ``branch_scope=True`` menerapkan filter cabang sebelum pagination.
+    """
     query: dict[str, Any] = {}
     if origin:
         query["origin"] = origin
@@ -181,6 +335,13 @@ def list_sales_orders(
         query["header.urgent"] = True
     elif urgent is False:
         query["header.urgent"] = {"$ne": True}
+    if branch_scope:
+        scope = branch_scope_query(branch_ids)
+        # Gabungkan dengan filter teks ($and) agar tidak menimpa $or pencarian.
+        if "$or" in query:
+            query = {"$and": [query, scope]}
+        else:
+            query.update(scope)
 
     allowed_sort = {
         "updated_at": "updated_at",
@@ -207,14 +368,19 @@ def aggregate_inbox_metrics(
     db: Database,
     *,
     origin: str = "accurate",
+    branch_ids: list[str] | set[str] | None = None,
+    branch_scope: bool = False,
 ) -> dict[str, int]:
     """KPI Inbox Accurate via agregasi Mongo — tanpa fetch seluruh dokumen.
 
     Tidak membuat indeks; memakai data nyata di ``header.items`` /
     ``header.urgent``. Field operasional/produksi tidak dikarang.
     """
+    match: dict[str, Any] = {"origin": origin}
+    if branch_scope:
+        match = {"$and": [match, branch_scope_query(branch_ids)]}
     pipeline: list[dict[str, Any]] = [
-        {"$match": {"origin": origin}},
+        {"$match": match},
         {
             "$project": {
                 "urgent_flag": {

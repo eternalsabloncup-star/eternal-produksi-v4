@@ -93,6 +93,11 @@ class BranchBody(BaseModel):
     is_active: bool = True
 
 
+class BranchAccurateMappingBody(BaseModel):
+    accurate_branch_id: str | None = None
+    reason: str
+
+
 class MachineBody(BaseModel):
     code: str
     label: str
@@ -334,6 +339,24 @@ def post_branch_active(
     try:
         return svc.set_branch_active(
             get_db(), auth.user, code, is_active=body.is_active, reason=body.reason
+        )
+    except Exception as exc:  # noqa: BLE001
+        raise _handle(exc) from exc
+
+
+@router.put("/branches/{code}/accurate-mapping")
+def put_branch_accurate_mapping(
+    code: str,
+    body: BranchAccurateMappingBody,
+    auth: AuthContext = Depends(require_csrf),
+) -> dict[str, Any]:
+    try:
+        return svc.set_branch_accurate_mapping(
+            get_db(),
+            auth.user,
+            code,
+            accurate_branch_id=body.accurate_branch_id,
+            reason=body.reason,
         )
     except Exception as exc:  # noqa: BLE001
         raise _handle(exc) from exc

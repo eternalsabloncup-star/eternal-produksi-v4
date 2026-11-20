@@ -26,6 +26,8 @@ PERM_VIEW_AUDIT_LOG: Final = "audit.view"
 PERM_OPERATIONS_FULL: Final = "operations.full"
 # Bypass Payment tidak terikat role tertentu — diberikan lewat Master.
 PERM_BYPASS_PAYMENT: Final = "payment.bypass"
+# Edit identitas cabang PO (bukan write Accurate).
+PERM_EDIT_PO_BRANCH: Final = "po.branch.edit"
 
 ALL_PERMISSIONS: Final[frozenset[str]] = frozenset(
     {
@@ -38,6 +40,7 @@ ALL_PERMISSIONS: Final[frozenset[str]] = frozenset(
         PERM_VIEW_AUDIT_LOG,
         PERM_OPERATIONS_FULL,
         PERM_BYPASS_PAYMENT,
+        PERM_EDIT_PO_BRANCH,
     }
 )
 
@@ -90,6 +93,7 @@ SENSITIVE_MODULE_PERMISSIONS: Final[frozenset[str]] = frozenset(
         PERM_MANAGE_SETTINGS,
         PERM_OPERATIONS_FULL,
         PERM_BYPASS_PAYMENT,
+        PERM_EDIT_PO_BRANCH,
     }
 )
 
