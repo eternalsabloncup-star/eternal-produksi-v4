@@ -415,7 +415,12 @@ def revise_allocation_qty(
     qty: float,
     reason: str,
 ) -> dict[str, Any]:
-    """Revisi Qty alokasi — boleh meski sudah ada cetak, selama >= Qty cetak & <= kapasitas PO."""
+    """Revisi Qty alokasi — boleh meski sudah ada cetak, selama >= Qty cetak & <= kapasitas PO.
+
+    Mutasi alokasi + sync target cetak + kapasitas line berjalan dalam satu
+    transaksi replica set agar tidak commit state invalid terhadap print konkuren
+    atau revisi alokasi lain pada item yang sama.
+    """
     require_action(db, user, task_type="penjadwalan", action="edit")
     if qty < 0:
         raise ScheduleQuantityError("Qty alokasi tidak boleh negatif.")
@@ -448,7 +453,7 @@ def revise_allocation_qty(
         raise AllocationBelowConfirmedPrintError()
 
     # Screen per-alokasi: jangan biarkan Qty di bawah progres Screen tanpa aturan bisnis pindah ledger.
-    from app.services.production_service import screen_confirmed_qty
+    from app.services.production_service import print_task_key, screen_confirmed_qty
 
     screened = screen_confirmed_qty(db, alloc)
     if qty < screened:
@@ -468,20 +473,82 @@ def revise_allocation_qty(
         )
 
     actor = str(user.get("email_normalized") or "")
-    # Optimistic concurrency: tulis hanya jika Qty belum berubah sejak dibaca.
-    updated = schedules.update_allocation_qty(
-        db,
-        allocation_id=allocation_id,
-        qty=qty,
-        actor_email=actor,
-        reason=reason.strip(),
-        expected_qty=expected_qty,
-    )
-    if updated is None:
-        # Re-check: print mungkin naik atau qty berubah di tengah jalan.
+    reason_s = reason.strip()
+    print_key = print_task_key(alloc)
+
+    def _operation(session: Any) -> dict[str, Any]:
+        # Serialize kapasitas line antar alokasi (bukan process-local lock).
+        schedules.touch_line_guard(db, line_id, session=session)
+        live = schedules.get_allocation(db, allocation_id, session=session)
+        if live is None:
+            raise LookupError(f"Alokasi tidak ditemukan: {allocation_id}")
+        if float(live["qty"]) != expected_qty:
+            raise AllocationConcurrencyError(
+                "Alokasi berubah oleh proses lain — muat ulang lalu coba revisi lagi."
+            )
+
+        print_task = tasks.get_task(db, print_key, session=session)
+        printed_now = float((print_task or {}).get("qty_confirmed") or 0)
+        if qty < printed_now:
+            raise AllocationBelowConfirmedPrintError()
+
+        total_others = (
+            schedules.active_allocated_qty(db, line_id, session=session) - expected_qty
+        )
+        if total_others < 0:
+            total_others = 0.0
+        if total_others + qty > qty_target:
+            raise ScheduleQuantityError(
+                f"Total alokasi {total_others + qty:g} melampaui Qty item line {qty_target:g}."
+            )
+
+        updated = schedules.update_allocation_qty(
+            db,
+            allocation_id=allocation_id,
+            qty=qty,
+            actor_email=actor,
+            reason=reason_s,
+            expected_qty=expected_qty,
+            session=session,
+        )
+        if updated is None:
+            raise AllocationConcurrencyError(
+                "Alokasi berubah oleh proses lain — muat ulang lalu coba revisi lagi."
+            )
+
+        # Sinkronkan target cetak agar print konkuren tidak memakai stale qty_target.
+        if print_task is not None:
+            synced = tasks.tasks_collection(db).find_one_and_update(
+                {
+                    "task_key": print_key,
+                    "$expr": {
+                        "$lte": [{"$ifNull": ["$qty_confirmed", 0]}, qty]
+                    },
+                },
+                {
+                    "$set": {
+                        "qty_target": qty,
+                        "updated_at": datetime.now(timezone.utc),
+                    }
+                },
+                session=session,
+            )
+            if synced is None:
+                raise AllocationBelowConfirmedPrintError()
+
+        final_total = schedules.active_allocated_qty(db, line_id, session=session)
+        if final_total > qty_target:
+            raise ScheduleQuantityError(
+                f"Total alokasi {final_total:g} melampaui Qty item line {qty_target:g}."
+            )
+        return updated
+
+    try:
+        updated = tasks.run_in_transaction(db, _operation)
+    except AllocationConcurrencyError:
         fresh = schedules.get_allocation(db, allocation_id)
         if fresh is None:
-            raise LookupError(f"Alokasi tidak ditemukan: {allocation_id}")
+            raise LookupError(f"Alokasi tidak ditemukan: {allocation_id}") from None
         printed_now = printed_qty_for_allocation(
             db,
             accurate_po_id=accurate_po_id,
@@ -489,10 +556,8 @@ def revise_allocation_qty(
             allocation_id=allocation_id,
         )
         if qty < printed_now:
-            raise AllocationBelowConfirmedPrintError()
-        raise AllocationConcurrencyError(
-            "Alokasi berubah oleh proses lain — muat ulang lalu coba revisi lagi."
-        )
+            raise AllocationBelowConfirmedPrintError() from None
+        raise
 
     _mark_scheduling_task(db, accurate_po_id, line_id, qty)
     append_audit_event(
@@ -507,7 +572,7 @@ def revise_allocation_qty(
             "qty_before": expected_qty,
             "qty_after": qty,
             "qty_printed": printed,
-            "reason": reason.strip(),
+            "reason": reason_s,
         },
     )
     # Enrich response untuk konsumen UI.

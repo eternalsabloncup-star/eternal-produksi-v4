@@ -17,8 +17,12 @@ from app.repositories.po_repository import get_by_accurate_id
 from app.repositories.task_repository import TaskQuantityError
 from app.repositories import master_repository as master
 from app.services import production_service
+from app.services.evidence_access import (
+    EvidenceAccessDenied,
+    assert_sample_evidence_access,
+)
 from app.services.index_preflight import MissingRequiredIndexError
-from app.services.task_engine import TaskPermissionError, can_act
+from app.services.task_engine import TaskPermissionError
 
 router = APIRouter(prefix="/api/production", tags=["production"])
 
@@ -148,21 +152,16 @@ def get_sample_evidence_content(
 ) -> StreamingResponse:
     """Read-only stream bukti sampel — scope allocation; bukan public URL."""
     db = get_db()
-    if not (
-        can_act(db, auth.user, task_type=production_service.SAMPLE_TASK, action="view")
-        or can_act(
-            db, auth.user, task_type=production_service.APPROVAL_TASK, action="view"
-        )
-        or can_act(
-            db, auth.user, task_type=production_service.APPROVAL_TASK, action="approve"
-        )
-    ):
-        raise HTTPException(
-            status.HTTP_403_FORBIDDEN,
-            "Tidak berizin melihat bukti sampel.",
-        )
-    if schedules.get_allocation(db, allocation_id) is None:
+    alloc = schedules.get_allocation(db, allocation_id)
+    if alloc is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Alokasi tidak ditemukan")
+    po_doc = get_by_accurate_id(db, str(alloc.get("accurate_po_id") or ""))
+    try:
+        assert_sample_evidence_access(
+            db, auth.user, allocation=alloc, po_doc=po_doc
+        )
+    except EvidenceAccessDenied as exc:
+        raise HTTPException(status.HTTP_403_FORBIDDEN, str(exc)) from exc
     sample_rows = samples.list_samples(db, allocation_id)
     allowed = {
         str(s.get("evidence_id"))

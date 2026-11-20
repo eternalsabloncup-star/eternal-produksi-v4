@@ -238,16 +238,29 @@ def upload_sample_draft(
             "sample_phase": "draft",
         },
     )
-    sample = samples.create_sample(
-        db,
-        allocation_id=allocation_id,
-        accurate_po_id=str(alloc["accurate_po_id"]),
-        accurate_line_id=str(alloc["accurate_line_id"]),
-        evidence_id=stored["evidence_id"],
-        filename=filename,
-        submitted_by=actor,
-        status=samples.STATUS_DRAFT,
-    )
+    try:
+        sample = samples.create_sample(
+            db,
+            allocation_id=allocation_id,
+            accurate_po_id=str(alloc["accurate_po_id"]),
+            accurate_line_id=str(alloc["accurate_line_id"]),
+            evidence_id=stored["evidence_id"],
+            filename=filename,
+            submitted_by=actor,
+            status=samples.STATUS_DRAFT,
+        )
+    except Exception:
+        # Jangan sisakan evidence tanpa baris sampel yang bisa dilacak.
+        try:
+            evidence.soft_delete_evidence(
+                db,
+                evidence_id=str(stored["evidence_id"]),
+                actor_email=actor,
+                reason="sample_insert_failed_cleanup",
+            )
+        except Exception:  # noqa: BLE001 — cleanup best-effort; raise original
+            pass
+        raise
 
     # Operator tetap punya tugas terbuka sampai Konfirmasi.
     sample_task = tasks.upsert_task(
@@ -620,10 +633,23 @@ def confirm_print(
         )
 
     def _operation(session: Any) -> dict[str, Any]:
+        # Serialize dengan revisi kapasitas line; muat ulang qty alokasi hidup.
+        schedules.touch_line_guard(db, accurate_line_id, session=session)
+        live = schedules.get_allocation(db, allocation_id, session=session)
+        if live is None:
+            raise LookupError(f"Alokasi tidak ditemukan: {allocation_id}")
+        live_qty = float(live.get("qty") or 0)
+        pkey = print_task_key(live)
+        # Target cetak = qty alokasi terkini (bukan stale upsert sebelumnya).
+        tasks.tasks_collection(db).update_one(
+            {"task_key": pkey},
+            {"$set": {"qty_target": live_qty}},
+            session=session,
+        )
         return confirm_task(
             db,
             user,
-            task_key=print_task_key(alloc),
+            task_key=pkey,
             qty=qty,
             idempotency_key=idempotency_key,
             note=note,

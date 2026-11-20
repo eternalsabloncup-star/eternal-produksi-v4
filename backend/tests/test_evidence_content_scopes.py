@@ -246,3 +246,108 @@ def test_sample_reject_sets_sampel_ulang_label(db: Database) -> None:
     assert sample_task["context"].get("display_kind") == "sampel-ulang"
     assert sample_task["status"] == tasks.TASK_STATUS_OPEN
     assert samples.list_samples(db, alloc)[0]["status"] == samples.STATUS_REJECTED
+
+
+def test_sample_evidence_assignment_and_branch(app_client: TestClient, db: Database) -> None:
+    """Operator lain / cabang salah → 403; KP & super_admin → 200."""
+    po = _seed(db)
+    _users(db)
+    db["users"].insert_one(
+        {
+            "email_normalized": normalize_email("op2@eternal.local"),
+            "display_name": "Op2",
+            "password_hash": hash_password(PASSWORD),
+            "role": "user",
+            "operational_role": "operator",
+            "is_active": True,
+            "branch_ids": ["JKT"],
+        }
+    )
+    db["users"].update_one(
+        {"email_normalized": normalize_email("op@eternal.local")},
+        {"$set": {"branch_ids": []}},
+    )
+    head = {
+        "email_normalized": "kp@eternal.local",
+        "role": "user",
+        "operational_role": "production-head",
+    }
+    op = {
+        "email_normalized": "op@eternal.local",
+        "role": "user",
+        "operational_role": "operator",
+    }
+    created = scheduling_service.create_allocations(
+        db,
+        head,
+        po_doc=po,
+        accurate_line_id=LINE_A,
+        allocations=[{"operator_email": "op@eternal.local", "qty": 400}],
+        idempotency_key="evid-assign-1",
+    )
+    alloc = created["allocations"][0]["allocation_id"]
+    from app.domain.operational import TaskRef, build_task_key
+    from app.repositories import task_repository as tasks
+
+    ref = TaskRef(accurate_po_id=PO_ID, accurate_line_id=LINE_A, allocation_id=alloc)
+    tasks.upsert_task(
+        db,
+        task_type="persiapan-cup",
+        scope="po_line",
+        assigned_role="helper",
+        ref=TaskRef(accurate_po_id=PO_ID, accurate_line_id=LINE_A),
+        qty_target=1000,
+        label="Persiapan",
+    )
+    tasks.confirm_task_qty(
+        db,
+        task_key=build_task_key(
+            "persiapan-cup",
+            "po_line",
+            TaskRef(accurate_po_id=PO_ID, accurate_line_id=LINE_A),
+        ),
+        qty=400,
+        actor_email="helper@eternal.local",
+        actor_role="helper",
+        idempotency_key="prep-assign-1",
+    )
+    tasks.upsert_task(
+        db,
+        task_type="screen",
+        scope="po_line_allocation",
+        assigned_role="screener",
+        ref=ref,
+        qty_target=400,
+        label="Screen",
+    )
+    tasks.confirm_task_qty(
+        db,
+        task_key=build_task_key("screen", "po_line_allocation", ref),
+        qty=10,
+        actor_email="sc@eternal.local",
+        actor_role="screener",
+        idempotency_key="screen-assign-1",
+    )
+    uploaded = prod.submit_sample(
+        db,
+        op,
+        allocation_id=alloc,
+        filename="s1.png",
+        content_type="image/png",
+        content=PNG,
+    )
+    evid = uploaded["evidence"]["evidence_id"]
+    path = f"/api/production/allocations/{alloc}/samples/evidence/{evid}/content"
+
+    _login(app_client, "op@eternal.local")
+    assert app_client.get(path).status_code == 200
+
+    _login(app_client, "op2@eternal.local")
+    # Branch-scoped user + object tanpa cabang terbukti → fail closed 403
+    assert app_client.get(path).status_code == 403
+
+    _login(app_client, "kp@eternal.local")
+    assert app_client.get(path).status_code == 200
+
+    _login(app_client, "owner@eternal.local")
+    assert app_client.get(path).status_code == 200

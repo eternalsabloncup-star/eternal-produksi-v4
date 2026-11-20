@@ -18,6 +18,10 @@ from app.repositories import gate_repository as gates
 from app.repositories import payment_repository as payments
 from app.repositories.po_repository import get_by_accurate_id
 from app.services import design_service, payment_service, po_tasks
+from app.services.evidence_access import (
+    EvidenceAccessDenied,
+    assert_design_evidence_access,
+)
 from app.services.task_engine import TaskPermissionError
 
 router = APIRouter(prefix="/api", tags=["workflow"])
@@ -131,6 +135,13 @@ def get_design_evidence_content(
 ) -> StreamingResponse:
     """Read-only stream bukti desain PO — sesi wajib; tidak membuka Gate/approval."""
     db = get_db()
+    po_doc = get_by_accurate_id(db, accurate_po_id)
+    if po_doc is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "PO Accurate tidak ditemukan")
+    try:
+        assert_design_evidence_access(db, auth.user, po_doc=po_doc)
+    except EvidenceAccessDenied as exc:
+        raise HTTPException(status.HTTP_403_FORBIDDEN, str(exc)) from exc
     submissions = design.list_submissions(db, accurate_po_id)
     allowed_ids = {
         str(s.get("evidence_id"))

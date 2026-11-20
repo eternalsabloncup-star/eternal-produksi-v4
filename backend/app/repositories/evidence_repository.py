@@ -17,8 +17,10 @@ import gridfs
 from pymongo import ASCENDING, DESCENDING, ReturnDocument
 from pymongo.collection import Collection
 from pymongo.database import Database
+from pymongo.errors import DuplicateKeyError
 
 EVIDENCE_COLLECTION = "evidence_files"
+EVIDENCE_META_COLLECTION = "evidence_version_meta"
 GRIDFS_BUCKET = "evidence"
 
 REQUIRED_EVIDENCE_INDEX_SPECS: list[dict[str, Any]] = [
@@ -37,6 +39,12 @@ REQUIRED_EVIDENCE_INDEX_SPECS: list[dict[str, Any]] = [
         ],
         "name": "idx_evidence_scope_version",
         "unique": False,
+    },
+    {
+        "collection": EVIDENCE_META_COLLECTION,
+        "keys": [("scope", ASCENDING), ("scope_id", ASCENDING)],
+        "name": "uniq_evidence_version_meta",
+        "unique": True,
     },
 ]
 
@@ -82,13 +90,30 @@ def _bucket(db: Database) -> gridfs.GridFS:
 
 
 def next_version(db: Database, *, scope: str, scope_id: str) -> int:
+    """Counter atomik per scope — aman untuk unggahan konkuren."""
     _require_once(db)
-    latest = evidence_collection(db).find_one(
+    meta_coll = db[EVIDENCE_META_COLLECTION]
+    if meta_coll.find_one({"scope": scope, "scope_id": scope_id}) is None:
+        latest = evidence_collection(db).find_one(
+            {"scope": scope, "scope_id": scope_id},
+            sort=[("version", DESCENDING)],
+            projection={"version": 1},
+        )
+        seed = int(latest["version"]) if latest else 0
+        try:
+            meta_coll.insert_one(
+                {"scope": scope, "scope_id": scope_id, "next_version": seed}
+            )
+        except DuplicateKeyError:
+            pass
+    meta = meta_coll.find_one_and_update(
         {"scope": scope, "scope_id": scope_id},
-        sort=[("version", DESCENDING)],
-        projection={"version": 1},
+        {"$inc": {"next_version": 1}},
+        return_document=ReturnDocument.AFTER,
     )
-    return int(latest["version"]) + 1 if latest else 1
+    if meta is None:
+        raise RuntimeError(f"Gagal mengalokasikan versi evidence: {scope}/{scope_id}")
+    return int(meta["next_version"])
 
 
 def store_evidence(
@@ -107,37 +132,50 @@ def store_evidence(
         raise ValueError("File bukti kosong.")
     _require_once(db)
 
-    version = next_version(db, scope=scope, scope_id=scope_id)
-    evidence_id = f"evid:{scope}:{scope_id}:v{version}"
-    sha256 = hashlib.sha256(content).hexdigest()
-    file_id = _bucket(db).put(
-        content,
-        filename=filename,
-        contentType=content_type,
-        evidence_id=evidence_id,
-    )
-    doc = {
-        "evidence_id": evidence_id,
-        "scope": scope,
-        "scope_id": scope_id,
-        "kind": kind,
-        "version": version,
-        "filename": filename,
-        "content_type": content_type,
-        "size_bytes": len(content),
-        "sha256": sha256,
-        "gridfs_id": file_id,
-        "uploaded_by": uploaded_by,
-        "uploaded_at": datetime.now(timezone.utc),
-        "deleted_at": None,
-        "deleted_by": None,
-        "delete_reason": None,
-        "context": dict(context or {}),
-    }
-    evidence_collection(db).insert_one(dict(doc))
-    doc.pop("_id", None)
-    doc["gridfs_id"] = str(file_id)
-    return doc
+    last_error: Exception | None = None
+    for _ in range(5):
+        version = next_version(db, scope=scope, scope_id=scope_id)
+        evidence_id = f"evid:{scope}:{scope_id}:v{version}"
+        sha256 = hashlib.sha256(content).hexdigest()
+        file_id = _bucket(db).put(
+            content,
+            filename=filename,
+            contentType=content_type,
+            evidence_id=evidence_id,
+        )
+        doc = {
+            "evidence_id": evidence_id,
+            "scope": scope,
+            "scope_id": scope_id,
+            "kind": kind,
+            "version": version,
+            "filename": filename,
+            "content_type": content_type,
+            "size_bytes": len(content),
+            "sha256": sha256,
+            "gridfs_id": file_id,
+            "uploaded_by": uploaded_by,
+            "uploaded_at": datetime.now(timezone.utc),
+            "deleted_at": None,
+            "deleted_by": None,
+            "delete_reason": None,
+            "context": dict(context or {}),
+        }
+        try:
+            evidence_collection(db).insert_one(dict(doc))
+        except DuplicateKeyError as exc:
+            last_error = exc
+            try:
+                _bucket(db).delete(file_id)
+            except Exception:  # noqa: BLE001
+                pass
+            continue
+        doc.pop("_id", None)
+        doc["gridfs_id"] = str(file_id)
+        return doc
+    raise RuntimeError(
+        f"Gagal menyimpan evidence setelah retry: {scope}/{scope_id}"
+    ) from last_error
 
 
 def list_evidence(

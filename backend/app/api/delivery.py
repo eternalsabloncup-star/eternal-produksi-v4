@@ -17,7 +17,11 @@ from app.repositories import evidence_repository as evidence
 from app.repositories.task_repository import TaskQuantityError
 from app.services import delivery_service
 from app.services import delivery_sync
-from app.services.task_engine import TaskPermissionError, can_act
+from app.services.evidence_access import (
+    EvidenceAccessDenied,
+    assert_delivery_evidence_access,
+)
+from app.services.task_engine import TaskPermissionError
 
 router = APIRouter(prefix="/api/delivery", tags=["delivery"])
 
@@ -173,31 +177,13 @@ def get_delivery_evidence_content(
 ) -> StreamingResponse:
     """Read-only stream foto/tanda tangan pengiriman — scope SJ; soft-delete → 404."""
     db = get_db()
-    if not (
-        can_act(db, auth.user, task_type=delivery_service.DRIVER_TASK, action="view")
-        or can_act(
-            db, auth.user, task_type=delivery_service.DRIVER_TASK, action="confirm"
-        )
-        or can_act(
-            db,
-            auth.user,
-            task_type=delivery_service.DRIVER_TASK,
-            action="manage_evidence",
-        )
-        or can_act(
-            db, auth.user, task_type="pengiriman-gagal-koordinasi", action="view"
-        )
-        or can_act(
-            db, auth.user, task_type="pengiriman-gagal-koordinasi", action="confirm"
-        )
-    ):
-        raise HTTPException(
-            status.HTTP_403_FORBIDDEN,
-            "Tidak berizin melihat bukti pengiriman.",
-        )
     note = deliveries.get_delivery_note(db, accurate_sj_id)
     if note is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Surat Jalan tidak ditemukan")
+    try:
+        assert_delivery_evidence_access(db, auth.user, note=note)
+    except EvidenceAccessDenied as exc:
+        raise HTTPException(status.HTTP_403_FORBIDDEN, str(exc)) from exc
     active = delivery_service.active_delivery_evidence(db, accurate_sj_id)
     allowed = {
         str(item.get("evidence_id"))
