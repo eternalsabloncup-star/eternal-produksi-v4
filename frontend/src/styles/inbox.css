@@ -48,3 +48,28 @@
   border-radius: 6px;
   user-select: none;
 }
+
+.ep-payment-bypassed,
+.ep-payment-open {
+  display: inline-block;
+  max-width: 128px;
+  padding: 4px 8px;
+  font-size: 10px;
+  font-weight: 700;
+  line-height: 1.25;
+  text-align: center;
+  border-radius: 6px;
+  user-select: none;
+}
+
+.ep-payment-bypassed {
+  color: #5a3d12;
+  background: #f8f0de;
+  border: 1px solid #e0c98a;
+}
+
+.ep-payment-open {
+  color: #1f5a3a;
+  background: #e8f5ee;
+  border: 1px solid #b7d4c4;
+}

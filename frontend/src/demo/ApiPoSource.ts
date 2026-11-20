@@ -136,6 +136,18 @@ export function mapHeaderToPoRow(doc: Record<string, unknown>): PoRow | null {
     acceptanceStatus: acceptance.status,
     acceptedBy: acceptance.acceptedBy,
     acceptedAt: acceptance.acceptedAt,
+    paymentGate: (() => {
+      const raw =
+        doc.payment_gate && typeof doc.payment_gate === "object"
+          ? (doc.payment_gate as Record<string, unknown>)
+          : null;
+      if (!raw) return null;
+      return {
+        state: raw.state != null ? String(raw.state) : "closed",
+        bypass: Boolean(raw.bypass),
+        reason: raw.reason != null ? String(raw.reason) : null,
+      };
+    })(),
     customer,
     product: items[0]?.name || "",
     qty: items.reduce((s, i) => s + (Number.isFinite(i.qty) ? i.qty : 0), 0),

@@ -357,29 +357,46 @@ def test_all_branches_does_not_grant_actions_or_bypass(db: Database) -> None:
         )
 
 
+def _reset_payment_gate_closed(db: Database) -> None:
+    """_seed membuka payment untuk alur produksi — bypass butuh state non-open."""
+    gates.set_gate(
+        db,
+        accurate_po_id=PO_ID,
+        gate="payment",
+        state=gates.GATE_CLOSED,
+        reason="reset uji bypass",
+        detail={},
+    )
+
+
 def test_ops_full_payment_bypass_pass(db: Database) -> None:
     _seed(db)
+    _reset_payment_gate_closed(db)
     assert can_approve_payment_bypass(db, OPS_FULL) is True
     doc = payment_service.bypass_payment_gate(
         db, OPS_FULL, accurate_po_id=PO_ID, reason="Owner uji ops.full bypass"
     )
     payment = gates.get_gates(db, PO_ID)["payment"]
     assert payment["state"] == gates.GATE_OPEN
-    assert doc.get("detail", {}).get("bypass") is True or "Bypass" in str(
-        payment.get("reason") or ""
-    )
+    assert (payment.get("detail") or {}).get("bypass") is True
+    assert (doc.get("payment") or {}).get("detail", {}).get("bypass") is True
 
 
 def test_admin_with_ops_full_bypass_pass(db: Database) -> None:
     _seed(db)
+    _reset_payment_gate_closed(db)
     payment_service.bypass_payment_gate(
         db, ADMIN, accurate_po_id=PO_ID, reason="Admin ops.full"
     )
     assert gates.get_gates(db, PO_ID)["payment"]["state"] == gates.GATE_OPEN
+    assert (gates.get_gates(db, PO_ID)["payment"].get("detail") or {}).get(
+        "bypass"
+    ) is True
 
 
 def test_super_admin_bypass_via_effective_ops_full(db: Database) -> None:
     _seed(db)
+    _reset_payment_gate_closed(db)
     assert can_approve_payment_bypass(db, SA) is True
     payment_service.bypass_payment_gate(
         db, SA, accurate_po_id=PO_ID, reason="SA via ops.full"
@@ -416,6 +433,7 @@ def test_bypass_denied_empty_reason(db: Database) -> None:
 
 def test_explicit_master_payment_bypass_grant(db: Database) -> None:
     _seed(db)
+    _reset_payment_gate_closed(db)
     master.set_role_actions(
         db,
         role="production-head",

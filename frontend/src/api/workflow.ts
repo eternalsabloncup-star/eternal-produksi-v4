@@ -206,6 +206,18 @@ export async function ingestPaymentReceipts(
   });
 }
 
+/** Respons POST /api/payment/{id}/bypass — dokumen gate + flag idempotency. */
+export type BypassPaymentResponse = Record<string, GateSlice | unknown> & {
+  payment?: GateSlice;
+  design?: GateSlice;
+  accurate_po_id?: string;
+  duplicate?: boolean;
+  workflow?: {
+    created_task_keys?: string[];
+    scheduling_unlocked?: boolean;
+  } | null;
+};
+
 /**
  * POST /api/payment/{accurate_po_id}/bypass
  * Memerlukan grant Master payment-bypass/approve; alasan wajib; teraudit.
@@ -213,7 +225,7 @@ export async function ingestPaymentReceipts(
 export async function bypassPaymentGate(
   accuratePoId: string,
   reason: string,
-): Promise<Record<string, GateSlice>> {
+): Promise<BypassPaymentResponse> {
   return request(`/api/payment/${encodeURIComponent(accuratePoId)}/bypass`, {
     method: "POST",
     body: JSON.stringify({ reason }),
