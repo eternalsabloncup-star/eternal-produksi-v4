@@ -57,10 +57,13 @@ def object_branch_code(obj: dict[str, Any] | None) -> str | None:
     """Identitas cabang otoritatif untuk object scope.
 
     Prioritas (kontrak Accurate branchId kanonis):
-    1. ``branch_id`` / Accurate meta
-    2. Legacy ``branch_code`` (transisi)
-    3. Objek ``branch.{id|code|no}``
-    ``branch_name`` saja tidak cukup.
+    1. ``branch_id`` dokumen (kanonis) — menang atas meta Accurate lama
+    2. Fallback Accurate meta / ``accurate_branch_id`` hanya jika kanonis kosong
+       (lihat ``extract_accurate_branch_id``)
+    3. Legacy ``branch_code`` (transisi) hanya jika 1–2 kosong
+    4. Objek ``branch.{id|code|no}``
+    ``branch_name`` saja tidak cukup. Meta Accurate tidak boleh menimpa
+    ``branch_id`` yang sudah diedit.
     """
     if not isinstance(obj, dict):
         return None

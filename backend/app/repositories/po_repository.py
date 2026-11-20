@@ -234,11 +234,27 @@ def count_by_accurate_id(db: Database, accurate_id: str | int) -> int:
     return po_collection(db).count_documents({"accurate_id": str(accurate_id)})
 
 
+def _field_empty(path: str) -> dict[str, Any]:
+    """Field hilang / null / string kosong — dipakai prioritas identitas."""
+    return {
+        "$or": [
+            {path: {"$exists": False}},
+            {path: None},
+            {path: ""},
+        ]
+    }
+
+
 def branch_scope_query(branch_ids: list[str] | set[str] | None) -> dict[str, Any]:
-    """Filter Mongo untuk identitas cabang kanonis + legacy.
+    """Filter Mongo selaras ``object_branch_code`` / ``extract_accurate_branch_id``.
+
+    Prioritas (jangan OR longgar antar sumber):
+    1. ``branch_id`` kanonis ada → hanya ``branch_id`` yang dihitung.
+    2. Kanonis kosong → fallback Accurate meta / ``accurate_branch_id``.
+    3. Keduanya kosong → legacy ``branch_code`` (transisi).
 
     Fail-closed: daftar kosong → tidak match dokumen apa pun.
-    Tanpa membuat index baru.
+    Tidak membuat index baru; tidak mengubah metadata Accurate.
     """
     from app.services.branch_identity import normalize_branch_identity
 
@@ -249,11 +265,39 @@ def branch_scope_query(branch_ids: list[str] | set[str] | None) -> dict[str, Any
     ]
     if not ids:
         return {"_id": {"$exists": False}}
+
+    canonical_empty = _field_empty("branch_id")
+    meta_empty = {
+        "$and": [
+            _field_empty("accurate_branch_id"),
+            _field_empty("header.raw_sync_meta.accurate_branch_id"),
+        ]
+    }
     return {
         "$or": [
             {"branch_id": {"$in": ids}},
-            {"branch_code": {"$in": ids}},
-            {"header.raw_sync_meta.accurate_branch_id": {"$in": ids}},
+            {
+                "$and": [
+                    canonical_empty,
+                    {
+                        "$or": [
+                            {"accurate_branch_id": {"$in": ids}},
+                            {
+                                "header.raw_sync_meta.accurate_branch_id": {
+                                    "$in": ids
+                                }
+                            },
+                        ]
+                    },
+                ]
+            },
+            {
+                "$and": [
+                    canonical_empty,
+                    meta_empty,
+                    {"branch_code": {"$in": ids}},
+                ]
+            },
         ]
     }
 

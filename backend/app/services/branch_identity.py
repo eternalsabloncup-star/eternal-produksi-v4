@@ -25,7 +25,11 @@ def normalize_branch_identity(raw: Any) -> str | None:
 
 
 def extract_accurate_branch_id(doc: dict[str, Any] | None) -> str | None:
-    """Ambil Accurate branchId dari dokumen PO / meta."""
+    """Ambil identitas cabang Accurate dengan prioritas kanonis.
+
+    ``branch_id`` dokumen menang. Metadata Accurate / field mentah hanya
+    fallback jika kanonis kosong — jangan biarkan meta lama menimpa edit.
+    """
     if not isinstance(doc, dict):
         return None
     header = doc.get("header") if isinstance(doc.get("header"), dict) else {}
