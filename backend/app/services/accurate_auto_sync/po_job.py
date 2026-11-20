@@ -333,12 +333,20 @@ def _sync_one_listed_sales_order_under_writer_lease(
             }
         # Existing tanpa cabang kanonis + source invalid: jangan perluas scope palsu.
         if not before.get("branch_id"):
-            mark_empty_branch_review(
+            wrote = mark_empty_branch_review(
                 db,
                 accurate_id=str(po.accurate_id or accurate_id),
                 source_branch_id=branch_res.get("source_branch_id"),
                 reason=str(branch_res.get("reason") or "existing_missing_branch_id"),
             )
+            if not wrote:
+                return {
+                    "outcome": "unchanged",
+                    "reason": branch_res.get("reason") or "existing_missing_branch_id",
+                    "code": branch_res.get("code"),
+                    "accurate_id": str(po.accurate_id or accurate_id),
+                    "writes": 0,
+                }
             return {
                 "outcome": "review_required",
                 "reason": branch_res.get("reason") or "existing_missing_branch_id",
@@ -358,19 +366,18 @@ def _sync_one_listed_sales_order_under_writer_lease(
         )
 
     def _note_empty_branch_if_needed(doc: dict[str, Any] | None) -> bool:
-        """True jika existing tanpa branch_id — review, tanpa auto-fill."""
+        """True hanya jika marker review baru ditulis — tanpa auto-fill."""
         if doc is None or doc.get("branch_id"):
             return False
         if branch_action != "set":
             # Source invalid sudah ditangani di atas; tetap tandai bila kosong.
-            mark_empty_branch_review(
+            return mark_empty_branch_review(
                 db,
                 accurate_id=str(po.accurate_id or accurate_id),
                 source_branch_id=branch_res.get("source_branch_id"),
                 reason="existing_missing_branch_id",
             )
-            return True
-        mark_empty_branch_review(
+        return mark_empty_branch_review(
             db,
             accurate_id=str(po.accurate_id or accurate_id),
             source_branch_id=str(branch_id) if branch_id else branch_res.get(
@@ -378,7 +385,6 @@ def _sync_one_listed_sales_order_under_writer_lease(
             ),
             reason="existing_missing_branch_id",
         )
-        return True
 
     if before is None:
         if branch_action != "set" or not branch_id:

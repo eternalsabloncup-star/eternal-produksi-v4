@@ -80,24 +80,29 @@ def mark_empty_branch_review(
     accurate_id: str,
     source_branch_id: str | None,
     reason: str = "existing_missing_branch_id",
-) -> None:
-    """Tandai PO existing tanpa ``branch_id`` untuk repair Owner — tanpa auto-fill/rollback."""
+) -> bool:
+    """Tandai PO existing tanpa ``branch_id`` untuk repair Owner — tanpa auto-fill/rollback.
+
+    Idempotent: tidak menulis ulang bila ``operational.branch_review`` sudah identik.
+    Returns True hanya jika dokumen berubah.
+    """
     from app.repositories.po_repository import po_collection, require_po_indexes
 
     require_po_indexes(db)
-    po_collection(db).update_one(
-        {"accurate_id": str(accurate_id)},
+    payload = {
+        "status": "review_required",
+        "reason": reason,
+        "source_branch_id": source_branch_id,
+        "detail": "ingest_auto_fill_disabled",
+    }
+    result = po_collection(db).update_one(
         {
-            "$set": {
-                "operational.branch_review": {
-                    "status": "review_required",
-                    "reason": reason,
-                    "source_branch_id": source_branch_id,
-                    "detail": "ingest_auto_fill_disabled",
-                }
-            }
+            "accurate_id": str(accurate_id),
+            "$nor": [{"operational.branch_review": payload}],
         },
+        {"$set": {"operational.branch_review": payload}},
     )
+    return int(result.modified_count or 0) > 0
 
 
 # Alias kompatibilitas — jalur sync rutin tidak lagi memanggil CAS auto-heal.
@@ -185,22 +190,27 @@ def mark_branch_conflict_review(
     accurate_id: str,
     existing_branch_id: str,
     source_branch_id: str,
-) -> None:
-    """Catat konflik cabang tanpa mengubah ``branch_id`` / operational snapshot lain."""
+) -> bool:
+    """Catat konflik cabang tanpa mengubah ``branch_id`` / operational snapshot lain.
+
+    Idempotent: tidak menulis ulang bila marker konflik sudah identik.
+    Returns True hanya jika dokumen berubah.
+    """
     from app.repositories.po_repository import po_collection, require_po_indexes
 
     require_po_indexes(db)
-    po_collection(db).update_one(
-        {"accurate_id": str(accurate_id)},
+    payload = {
+        "status": "conflict",
+        "existing_branch_id": existing_branch_id,
+        "source_branch_id": source_branch_id,
+        "reason": "accurate_branch_differs_from_canonical",
+    }
+    result = po_collection(db).update_one(
         {
-            "$set": {
-                "operational.branch_review": {
-                    "status": "conflict",
-                    "existing_branch_id": existing_branch_id,
-                    "source_branch_id": source_branch_id,
-                    "reason": "accurate_branch_differs_from_canonical",
-                }
-            }
+            "accurate_id": str(accurate_id),
+            "$nor": [{"operational.branch_review": payload}],
         },
+        {"$set": {"operational.branch_review": payload}},
     )
+    return int(result.modified_count or 0) > 0
 
