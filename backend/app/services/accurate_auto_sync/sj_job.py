@@ -26,6 +26,7 @@ from app.services.accurate_auto_sync.status import (
 from app.services.delivery_sync import (
     DeliverySyncDisabledError,
     is_sj_sync_enabled,
+    resolve_sj_mongo_guard,
     sync_delivery_order_payload,
 )
 
@@ -48,7 +49,7 @@ def sync_one_sj(
     *,
     client: AccurateReadClient,
     owner_token: str,
-    mongo_guard: str = "test",
+    mongo_guard: str | None = None,
 ) -> dict[str, Any]:
     require_owns_job_lock(db, job="sj", owner_token=owner_token)
     detail = client.fetch_delivery_order_detail(accurate_id)
@@ -58,11 +59,12 @@ def sync_one_sj(
     gated = detail_scope_outcome(detail, accurate_id=str(accurate_id))
     if gated is not None:
         return gated
+    guard = mongo_guard or resolve_sj_mongo_guard()
     return sync_delivery_order_payload(
         db,
         _SYSTEM_USER,
         detail,
-        mongo_guard="test",  # type: ignore[arg-type]
+        mongo_guard=guard,  # type: ignore[arg-type]
         require_registered_po=True,
     )
 
@@ -71,13 +73,17 @@ def run_sj_auto_sync(
     db: Database,
     *,
     client: AccurateReadClient | None = None,
-    mongo_guard: str = "test",
+    mongo_guard: str | None = None,
     page_size: int = DEFAULT_PAGE_SIZE,
     max_pages: int = DEFAULT_MAX_PAGES,
     max_rows: int = DEFAULT_MAX_ROWS,
     timeout_seconds: float = DEFAULT_TIMEOUT_SECONDS,
 ) -> dict[str, Any]:
-    """Satu siklus auto-sync SJ. Memerlukan V4_SJ_SYNC_ENABLED=1."""
+    """Satu siklus auto-sync SJ. Memerlukan V4_SJ_SYNC_ENABLED=1.
+
+    Production write hanya jika V4_SJ_SYNC_PRODUCTION_ENABLED=1 + guard production.
+    Default tetap jalur test / fail-closed.
+    """
     if not is_sj_sync_enabled():
         return {
             "ok": True,
@@ -105,6 +111,7 @@ def run_sj_auto_sync(
     failures: list[dict[str, Any]] = []
     reader = client or AccurateReadClient.from_settings()
     accurate_requests = 0
+    active_guard = mongo_guard or resolve_sj_mongo_guard()
 
     try:
         token = acquire_job_lock(db, job="sj")
@@ -118,7 +125,11 @@ def run_sj_auto_sync(
 
         def _sync_one(accurate_id: str) -> dict[str, Any]:
             return sync_one_sj(
-                db, accurate_id, client=reader, owner_token=token, mongo_guard=mongo_guard
+                db,
+                accurate_id,
+                client=reader,
+                owner_token=token,
+                mongo_guard=active_guard,
             )
 
         disc = run_discovery_cycle(
@@ -156,12 +167,15 @@ def run_sj_auto_sync(
             complete=complete,
             detail={
                 "auto_sync": True,
-                "mongo_guard": "test",
+                "mongo_guard": active_guard,
+                "production_flag": bool(
+                    get_settings().sj_sync_production_enabled
+                ),
                 "contract_status": SJ_CONTRACT_STATUS,
                 "sort_warnings": disc.get("sort_warnings") or [],
                 "note": (
-                    "Auto SJ memakai guard test existing; aktivasi production "
-                    "memerlukan keputusan CEO + jalur guard terpisah."
+                    "Auto SJ default fail-closed ke guard test. Production "
+                    "hanya jika V4_SJ_SYNC_PRODUCTION_ENABLED=1 + CEO."
                 ),
                 "failures": failures[:20],
                 "checkpoint": {
@@ -191,6 +205,7 @@ def run_sj_auto_sync(
             "stopped_reason": stopped_reason,
             "failures": failures[:30],
             "checkpoint": checkpoint,
+            "mongo_guard": active_guard,
             "status": status,
         }
     except DeliverySyncDisabledError as exc:
@@ -231,6 +246,12 @@ def sj_auto_sync_settings_note() -> dict[str, Any]:
     s = get_settings()
     return {
         "sj_sync_enabled": bool(s.sj_sync_enabled),
-        "production_guard": "test_only_until_ceo_approval",
+        "sj_sync_production_enabled": bool(s.sj_sync_production_enabled),
+        "resolved_mongo_guard": resolve_sj_mongo_guard(),
+        "production_guard": (
+            "production_flag_off_default"
+            if not s.sj_sync_production_enabled
+            else "production_flag_on_requires_ceo_ops"
+        ),
         "contract_status": SJ_CONTRACT_STATUS,
     }

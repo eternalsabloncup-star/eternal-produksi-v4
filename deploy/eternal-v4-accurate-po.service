@@ -1,0 +1,19 @@
+[Unit]
+Description=Eternal V4 Accurate auto-sync one-shot (PO)
+After=network.target eternal-v4-mongod.service eternal-v4-backend.service
+Wants=eternal-v4-mongod.service
+
+[Service]
+Type=oneshot
+User=eternaladmin
+Group=eternaladmin
+WorkingDirectory=/home/eternaladmin/eternal-production-v4
+EnvironmentFile=/etc/eternal-v4/backend/backend.env
+Environment=PYTHONPATH=/home/eternaladmin/eternal-production-v4/backend
+# Kill switch tetap dari EnvironmentFile; unit ini hanya memilih job.
+ExecStart=/home/eternaladmin/eternal-production-v4/scripts/vps_accurate_job_flock.sh po
+Nice=10
+TimeoutStartSec=240
+
+[Install]
+WantedBy=multi-user.target
