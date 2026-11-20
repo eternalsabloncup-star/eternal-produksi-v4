@@ -250,8 +250,17 @@ def test_activation_hold_sha_mismatch(
     assert act.read_env_flag(env_file) == "0"
 
 
+def _scrub_loading_sj_flag_env() -> None:
+    """Bersihkan flag proses tanpa monkeypatch (hindari restore ke '1')."""
+    import os
+
+    os.environ["V4_LOADING_SJ_TASK_ENABLED"] = "0"
+    os.environ.pop("LOADING_SJ_TASK_ENABLED", None)
+    clear_settings_cache()
+
+
 def test_activation_all_prereq_pass_sets_flag(
-    bare_db: Database, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    bare_db: Database, tmp_path: Path
 ) -> None:
     repo = _repo_with_guard(tmp_path, with_guard=True)
     sha = _git_init(repo)
@@ -260,41 +269,40 @@ def test_activation_all_prereq_pass_sets_flag(
         "APP_ENV=test\nOTHER=1\nV4_LOADING_SJ_TASK_ENABLED=0\n",
         encoding="utf-8",
     )
-    result = act.activate_loading_sj_release(
-        repo=repo,
-        db=bare_db,
-        approved_sha=sha,
-        expected_db_name=bare_db.name,
-        env_file=env_file,
-        backup_ok=True,
-        no_other_deploy=True,
-        backend_healthy=True,
-        mongo_healthy=True,
-        guard_regression_ok=True,
-        dry_run=False,
-        apply_environ_for_verify=True,
-        restore_environ_after_verify=False,
-    )
-    assert result["ok"] is True
-    assert result["activated"] is True
-    assert result["flag_written"] is True
-    assert act.read_env_flag(env_file) == "1"
-    # OTHER tetap ada.
-    text = env_file.read_text(encoding="utf-8")
-    assert "OTHER=1" in text
-    boot.verify_loading_sj_contract(bare_db)
-    clear_settings_cache()
-    from app.config import get_settings
+    try:
+        result = act.activate_loading_sj_release(
+            repo=repo,
+            db=bare_db,
+            approved_sha=sha,
+            expected_db_name=bare_db.name,
+            env_file=env_file,
+            backup_ok=True,
+            no_other_deploy=True,
+            backend_healthy=True,
+            mongo_healthy=True,
+            guard_regression_ok=True,
+            dry_run=False,
+            apply_environ_for_verify=True,
+            restore_environ_after_verify=False,
+        )
+        assert result["ok"] is True
+        assert result["activated"] is True
+        assert result["flag_written"] is True
+        assert act.read_env_flag(env_file) == "1"
+        # OTHER tetap ada.
+        text = env_file.read_text(encoding="utf-8")
+        assert "OTHER=1" in text
+        boot.verify_loading_sj_contract(bare_db)
+        clear_settings_cache()
+        from app.config import get_settings
 
-    assert get_settings().loading_sj_task_enabled is True
-    # Jangan biarkan flag bocor ke test suite lain.
-    monkeypatch.setenv("V4_LOADING_SJ_TASK_ENABLED", "0")
-    monkeypatch.delenv("LOADING_SJ_TASK_ENABLED", raising=False)
-    clear_settings_cache()
+        assert get_settings().loading_sj_task_enabled is True
+    finally:
+        _scrub_loading_sj_flag_env()
 
 
 def test_activation_second_run_idempotent(
-    bare_db: Database, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    bare_db: Database, tmp_path: Path
 ) -> None:
     repo = _repo_with_guard(tmp_path, with_guard=True)
     sha = _git_init(repo)
@@ -315,17 +323,17 @@ def test_activation_second_run_idempotent(
         apply_environ_for_verify=True,
         restore_environ_after_verify=True,
     )
-    first = act.activate_loading_sj_release(**kwargs)
-    second = act.activate_loading_sj_release(**kwargs)
-    assert first["activated"] is True
-    assert second["ok"] is True
-    assert second["activated"] is True
-    assert act.read_env_flag(env_file) == "1"
-    # Bootstrap kedua noop.
-    assert second["bootstrap"]["noop"] is True
-    monkeypatch.setenv("V4_LOADING_SJ_TASK_ENABLED", "0")
-    monkeypatch.delenv("LOADING_SJ_TASK_ENABLED", raising=False)
-    clear_settings_cache()
+    try:
+        first = act.activate_loading_sj_release(**kwargs)
+        second = act.activate_loading_sj_release(**kwargs)
+        assert first["activated"] is True
+        assert second["ok"] is True
+        assert second["activated"] is True
+        assert act.read_env_flag(env_file) == "1"
+        # Bootstrap kedua noop.
+        assert second["bootstrap"]["noop"] is True
+    finally:
+        _scrub_loading_sj_flag_env()
 
 
 def test_dry_run_does_not_write_flag(
