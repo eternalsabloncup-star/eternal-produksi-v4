@@ -75,7 +75,8 @@ PO terkait harus sudah ada di DB test (sync SO terpisah) atau SJ akan `skipped` 
 ### 4.2 Konfigurasi production (usulan)
 
 - Jalur **terpisah** dari test: jangan memakai `mongo_guard=test` untuk ops.
-- Hanya setelah CEO: implementasi eksplisit `assert_safe_mongo_production_sync_target` + flag terpisah (mis. `V4_SJ_SYNC_PRODUCTION_ENABLED`) — **belum diaktifkan di kode tahap ini**.
+- Kode: `assert_safe_mongo_production_sync_target` + flag `V4_SJ_SYNC_PRODUCTION_ENABLED` (default **OFF**).
+- Aktivasi production sync / timer SJ tetap menunggu CEO + merge/deploy + otorisasi spesifik.
 - Monitoring: counters `created/updated/failed`, durasi, lock contention; alert bila `failed` > ambang.
 - Kill switch: matikan `V4_SJ_SYNC_ENABLED` / flag prod segera bila anomali.
 - Rollback: matikan flag; data SJ tetap; tidak menghapus bukti Loading/pengiriman; restore backup hanya bila korupsi terbukti.

@@ -86,6 +86,15 @@ class Settings(BaseSettings):
         default=False,
         validation_alias=AliasChoices("V4_SJ_SYNC_ENABLED", "SJ_SYNC_ENABLED"),
     )
+    # Jalur production SJ terpisah (default OFF). Memerlukan V4_SJ_SYNC_ENABLED=1
+    # DAN persetujuan CEO eksplisit sebelum dinyalakan di ops 27018.
+    sj_sync_production_enabled: bool = Field(
+        default=False,
+        validation_alias=AliasChoices(
+            "V4_SJ_SYNC_PRODUCTION_ENABLED",
+            "SJ_SYNC_PRODUCTION_ENABLED",
+        ),
+    )
     # Auto-sync Accurate — semua default OFF; worker one-shot terpisah dari FastAPI.
     po_auto_sync_enabled: bool = Field(
         default=False,
@@ -201,6 +210,7 @@ class Settings(BaseSettings):
                 "X-Session-ID (hanya jika session non-kosong)",
             ],
             "sj_sync_enabled": bool(self.sj_sync_enabled),
+            "sj_sync_production_enabled": bool(self.sj_sync_production_enabled),
             "po_auto_sync_enabled": bool(self.po_auto_sync_enabled),
             "receipt_auto_sync_enabled": bool(self.receipt_auto_sync_enabled),
             "invoice_auto_sync_enabled": bool(self.invoice_auto_sync_enabled),
