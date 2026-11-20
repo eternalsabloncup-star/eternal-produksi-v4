@@ -76,6 +76,24 @@ def has_successful_delivery(
     return deliveries.has_successful_delivery_event(db, accurate_sj_id)
 
 
+def _require_accepted_po_for_note(db: Database, note: dict[str, Any]) -> dict[str, Any]:
+    """Fail-closed: Loading/pengiriman hanya setelah PO Accepted (kanonis).
+
+    Sumber otoritatif: ``operational.acceptance.status == accepted``.
+    Tidak mengubah Gate Payment dan tidak auto-accept PO.
+    """
+    from app.services.po_acceptance import require_po_accepted
+
+    po_id = str(note.get("accurate_po_id") or "").strip()
+    if not po_id:
+        raise LookupError("Surat Jalan tanpa referensi PO — operasi ditolak.")
+    po_doc = get_by_accurate_id(db, po_id)
+    if po_doc is None:
+        raise LookupError(f"PO Accurate tidak ditemukan: {po_id}")
+    require_po_accepted(po_doc)
+    return po_doc
+
+
 def ingest_delivery_note(
     db: Database, user: dict[str, Any], payload: dict[str, Any]
 ) -> dict[str, Any]:
@@ -289,16 +307,19 @@ def confirm_loading(
             "duplicate": True,
         }
 
+    note = deliveries.get_delivery_note(db, accurate_sj_id)
+    if note is None:
+        raise LookupError(f"Surat Jalan tidak ditemukan: {accurate_sj_id}")
+    assert_branch_access(user, scope_object=note)
+    # Owner: Loading baru hanya setelah Accepted — sebelum validasi/mutasi/stok.
+    _require_accepted_po_for_note(db, note)
+
     validation = validate_loading(db, accurate_sj_id)
     if not validation["all_matched"]:
         raise LoadingValidationError(
             "Loading terkunci: Qty item tidak cocok dengan Surat Jalan."
         )
 
-    note = deliveries.get_delivery_note(db, accurate_sj_id)
-    if note is None:
-        raise LookupError(f"Surat Jalan tidak ditemukan: {accurate_sj_id}")
-    assert_branch_access(user, scope_object=note)
     actor = actor_email(user) or str(user.get("email_normalized") or "")
     sequence = deliveries.next_loading_sequence(db, accurate_sj_id)
 
@@ -797,6 +818,9 @@ def confirm_delivery_success(
     if existing_success is not None:
         return existing_success
 
+    # Owner: pengiriman baru hanya setelah Accepted — sebelum staging evidence.
+    _require_accepted_po_for_note(db, note)
+
     courier = str(user.get("email_normalized") or "")
     recipient = recipient_name.strip()
     staged_ids: list[str] = []
@@ -984,6 +1008,8 @@ def confirm_delivery_failure(
         raise LookupError(f"Surat Jalan tidak ditemukan: {accurate_sj_id}")
     assert_branch_access(user, scope_object=note)
     _require_active_loading(db, accurate_sj_id)
+    # Owner: konfirmasi gagal kirim juga mutasi state — butuh Accepted.
+    _require_accepted_po_for_note(db, note)
 
     # Fail-closed sebelum mutasi: tidak seed Master, tidak createIndex.
     require_delivery_txn_indexes(db)

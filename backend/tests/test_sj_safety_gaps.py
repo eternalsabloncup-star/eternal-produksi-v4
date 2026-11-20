@@ -1,9 +1,9 @@
-"""SJ safety gaps (6G.2.1) — non-prod isolated; fake Accurate; no production.
+"""SJ safety gaps — non-prod isolated; fake Accurate; no production.
 
-Kontrak Accepted (rekomendasi Owner, belum diaktifkan sebagai gate Loading):
+Kontrak Accepted (Owner final):
 - SJ boleh diingest sebelum PO Accepted (referensi/pending).
-- Loading/delivery sebelum Accepted = keputusan Owner terpisah (belum diubah di prod code).
-- PO missing / multi-SO → fail-closed.
+- Loading & pengiriman hanya setelah ``operational.acceptance.status == accepted``.
+- Tidak auto-accept PO; tidak mengubah Gate Payment; PO missing/multi-SO fail-closed.
 """
 
 from __future__ import annotations
@@ -336,3 +336,165 @@ def test_sj_default_production_flag_off(monkeypatch: pytest.MonkeyPatch) -> None
     note = sj_job.sj_auto_sync_settings_note()
     assert note["sj_sync_enabled"] is False
     assert note["sj_sync_production_enabled"] is False
+
+
+def _stub_loading_ok(monkeypatch: pytest.MonkeyPatch, note_payload: dict) -> None:
+    line0 = note_payload["detailItem"][0]
+    monkeypatch.setattr(
+        delivery,
+        "validate_loading",
+        lambda *_a, **_k: {
+            "all_matched": True,
+            "items": [
+                {
+                    "sj_line_id": str(line0["id"]),
+                    "accurate_line_id": str(
+                        line0.get("salesOrderDetailId") or line0["id"]
+                    ),
+                    "item_code": str(line0.get("itemNo") or "GAP-ITEM"),
+                    "qty": float(line0["quantity"]),
+                    "unit": str(line0.get("itemUnitName") or "PCS"),
+                    "process_kind": "Non-Cetak",
+                }
+            ],
+        },
+    )
+    monkeypatch.setattr(delivery, "require_action", lambda *_a, **_k: None)
+    monkeypatch.setattr(delivery, "_prepare_delivery_txn", lambda *_a, **_k: "driver")
+
+
+def _payment_gate_snapshot(db: Database, po_id: str = "95106") -> dict:
+    from app.repositories import gate_repository as gates
+
+    g = gates.get_gates(db, po_id)
+    pay = g.get("payment") if isinstance(g, dict) else None
+    if not isinstance(pay, dict):
+        return {"state": None, "reason": None}
+    return {"state": pay.get("state"), "reason": pay.get("reason")}
+
+
+def test_loading_blocked_before_po_accepted(
+    db: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from app.services.po_acceptance import PoAcceptanceError
+
+    _seed_po_via_sync(db, accepted=False)
+    before_gate = _payment_gate_snapshot(db)
+    note_payload = _sj_detail(880301)
+    delivery.ingest_delivery_note(db, OWNER, note_payload)
+    _stub_loading_ok(monkeypatch, note_payload)
+
+    with pytest.raises(PoAcceptanceError, match="belum diterima"):
+        delivery.confirm_loading(
+            db, DRIVER, accurate_sj_id="880301", idempotency_key="load-pending"
+        )
+
+    assert deliveries.get_loading_event(db, "880301") is None
+    assert db["loading_events"].count_documents({"accurate_sj_id": "880301"}) == 0
+    po = get_by_accurate_id(db, "95106")
+    assert (po.get("operational") or {}).get("acceptance", {}).get("status") != "accepted"
+    assert _payment_gate_snapshot(db) == before_gate
+
+
+def test_loading_allowed_after_po_accepted(
+    db: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _seed_po_via_sync(db, accepted=True)
+    before_gate = _payment_gate_snapshot(db)
+    note_payload = _sj_detail(880302)
+    delivery.ingest_delivery_note(db, OWNER, note_payload)
+    _stub_loading_ok(monkeypatch, note_payload)
+
+    out = delivery.confirm_loading(
+        db, DRIVER, accurate_sj_id="880302", idempotency_key="load-ok-acc"
+    )
+    assert out["duplicate"] is False
+    assert deliveries.get_loading_event(db, "880302") is not None
+    assert _payment_gate_snapshot(db) == before_gate
+    po = get_by_accurate_id(db, "95106")
+    assert (po.get("operational") or {}).get("acceptance", {}).get("status") == "accepted"
+
+
+def test_delivery_blocked_before_po_accepted_no_partial_evidence(
+    db: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Seed Loading historis + PO pending → delivery baru ditolak tanpa staging."""
+    from app.services.po_acceptance import PoAcceptanceError
+
+    _seed_po_via_sync(db, accepted=False)
+    before_gate = _payment_gate_snapshot(db)
+    note_payload = _sj_detail(880303)
+    delivery.ingest_delivery_note(db, OWNER, note_payload)
+    note = deliveries.get_delivery_note(db, "880303")
+    assert note is not None
+    # Simulasikan Loading historis tanpa melewati guard Accepted baru.
+    deliveries.insert_loading_event(
+        db,
+        accurate_sj_id="880303",
+        accurate_po_id="95106",
+        sj_no=str(note["sj_no"]),
+        items=[
+            {
+                "sj_line_id": str(note_payload["detailItem"][0]["id"]),
+                "accurate_line_id": str(
+                    note_payload["detailItem"][0].get("salesOrderDetailId") or "0"
+                ),
+                "item_code": "GAP",
+                "qty": 1.0,
+                "unit": "PCS",
+                "process_kind": "Non-Cetak",
+            }
+        ],
+        actor_email="driver@eternal.local",
+        idempotency_key="hist-load-880303",
+        sj_version=int(note.get("sj_version") or 1),
+        sequence=1,
+    )
+    monkeypatch.setattr(delivery, "require_action", lambda *_a, **_k: None)
+    png = b"\x89PNG gap"
+
+    with pytest.raises(PoAcceptanceError, match="belum diterima"):
+        delivery.confirm_delivery_success(
+            db,
+            DRIVER,
+            accurate_sj_id="880303",
+            recipient_name="Penerima",
+            photos=[("a.png", "image/png", png), ("b.png", "image/png", png)],
+            signature=("s.png", "image/png", png),
+        )
+
+    assert deliveries.list_delivery_events(db, "880303") == []
+    assert db["evidence_files"].count_documents({"scope_id": "880303"}) == 0
+    assert _payment_gate_snapshot(db) == before_gate
+    po = get_by_accurate_id(db, "95106")
+    assert (po.get("operational") or {}).get("acceptance", {}).get("status") != "accepted"
+
+
+def test_sj_ingest_does_not_open_payment_gate_or_auto_accept(db: Database) -> None:
+    from app.repositories import gate_repository as gates
+
+    _seed_po_via_sync(db, accepted=False)
+    before = _payment_gate_snapshot(db)
+    assert before["state"] in {None, "closed", gates.GATE_CLOSED}
+    delivery_sync.sync_delivery_order_payload(
+        db, OWNER, _sj_detail(880304), mongo_guard="test"
+    )
+    po = get_by_accurate_id(db, "95106")
+    assert (po.get("operational") or {}).get("acceptance", {}).get("status") != "accepted"
+    assert _payment_gate_snapshot(db) == before
+    assert not deliveries.has_successful_delivery_event(db, "880304")
+
+
+def test_multi_so_sj_fail_closed_on_normalize() -> None:
+    payload = _sj_detail(880305)
+    payload["detailItem"][0]["salesOrderId"] = 95106
+    if len(payload["detailItem"]) < 2:
+        payload["detailItem"].append(copy.deepcopy(payload["detailItem"][0]))
+        payload["detailItem"][1]["id"] = int(payload["detailItem"][0]["id"]) + 1
+    payload["detailItem"][1]["salesOrderId"] = 99999
+    if isinstance(payload["detailItem"][1].get("salesOrder"), dict):
+        payload["detailItem"][1]["salesOrder"]["id"] = 99999
+    with pytest.raises(deliveries.DeliveryNoteIdentityError) as exc:
+        deliveries.normalize_delivery_note(payload)
+    assert exc.value.code == "MULTI_SO_NOT_SUPPORTED"
+    assert "multi_so_not_supported" in str(exc.value).lower()

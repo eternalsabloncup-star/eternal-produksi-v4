@@ -78,6 +78,9 @@ def _seed_users(db: Database) -> None:
         password=PASSWORD,
         allow_if_admin_exists=True,
     )
+    # HTTP session membaca effective_module_permissions dari dokumen user.
+    # Tanpa access.all_branches / branch_ids, assert_branch_access menolak
+    # (baseline FAIL setelah gate cabang) — selaraskan dengan fixture service-layer.
     for email, role in (
         ("kp@eternal.local", "production-head"),
         ("helper@eternal.local", "helper"),
@@ -93,6 +96,7 @@ def _seed_users(db: Database) -> None:
                 "role": "user",
                 "operational_role": role,
                 "is_active": True,
+                "effective_module_permissions": ["access.all_branches"],
             }
         )
 
