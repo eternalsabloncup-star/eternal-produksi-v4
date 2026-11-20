@@ -4,7 +4,8 @@ Kontrak diverifikasi live: /accurate/api/sales-receipt/list.do|detail.do
 dengan detailInvoice[].invoiceId + paymentAmount.
 
 Gate payment memakai evaluasi existing — tidak ada threshold baru.
-Receipt ambigu → REVIEW / tidak auto-open.
+Receipt ambigu / void / revisi → REVIEW + re-evaluate gate (fail-closed).
+Idempotent: siklus identik = zero write / zero audit / zero gate history.
 """
 
 from __future__ import annotations
@@ -18,7 +19,10 @@ from app.config import get_settings
 from app.integrations.accurate.auth import AccurateAuthError
 from app.integrations.accurate.client import AccurateReadClient
 from app.integrations.accurate.fields import as_text
-from app.integrations.accurate.normalize_invoice_receipt import normalize_sales_receipt
+from app.integrations.accurate.normalize_invoice_receipt import (
+    normalize_sales_receipt,
+    receipt_material_fingerprint,
+)
 from app.repositories import invoice_repository as invoices
 from app.repositories import payment_repository as payments
 from app.repositories.po_repository import get_by_accurate_id
@@ -37,7 +41,6 @@ from app.services.accurate_auto_sync.status import (
 )
 from app.services import payment_service
 
-# Kontrak path + shape diverifikasi read-only pada Accurate production Owner.
 RECEIPT_CONTRACT_STATUS = "verified_live_read_only"
 RECEIPT_CONTRACT_BLOCKER = ""
 
@@ -64,10 +67,20 @@ def _list_page_params(page: int, page_size: int) -> dict[str, Any]:
     return {"sp.page": page, "sp.pageSize": page_size}
 
 
+def _allocation_amount(normalized: dict[str, Any]) -> float | None:
+    """Ambil nominal alokasi tunggal — tanpa fallback total_payment."""
+    allocs = normalized.get("allocations") or []
+    if len(allocs) != 1:
+        return None
+    return allocs[0].get("payment_amount")
+
+
 def _resolve_po_for_receipt(
     db: Database, normalized: dict[str, Any]
 ) -> dict[str, Any]:
     """Petakan receipt → invoice store → SO id. Fail-closed bila ambigu."""
+    amount = _allocation_amount(normalized)
+
     if normalized.get("review_required"):
         return {
             "ok": False,
@@ -75,7 +88,7 @@ def _resolve_po_for_receipt(
             "reason": normalized.get("review_reason"),
             "accurate_po_id": "",
             "invoice_no": "",
-            "amount": normalized.get("total_payment") or 0.0,
+            "amount": amount,
         }
 
     invoice_ids = list(normalized.get("invoice_ids") or [])
@@ -86,7 +99,7 @@ def _resolve_po_for_receipt(
             "reason": "Receipt tidak punya tepat satu invoiceId.",
             "accurate_po_id": "",
             "invoice_no": "",
-            "amount": normalized.get("total_payment") or 0.0,
+            "amount": amount,
         }
 
     invoice_id = invoice_ids[0]
@@ -101,7 +114,7 @@ def _resolve_po_for_receipt(
             ),
             "accurate_po_id": "",
             "invoice_no": "",
-            "amount": normalized.get("total_payment") or 0.0,
+            "amount": amount,
         }
 
     if inv.get("review_required") or not inv.get("primary_accurate_po_id"):
@@ -112,7 +125,17 @@ def _resolve_po_for_receipt(
             or "Invoice terkait tidak punya primary PO yang sah.",
             "accurate_po_id": "",
             "invoice_no": inv.get("invoice_no") or "",
-            "amount": normalized.get("total_payment") or 0.0,
+            "amount": amount,
+        }
+
+    if amount is None:
+        return {
+            "ok": False,
+            "review": True,
+            "reason": "Nominal alokasi tidak valid — tidak memakai fallback totalPayment.",
+            "accurate_po_id": str(inv.get("primary_accurate_po_id") or ""),
+            "invoice_no": inv.get("invoice_no") or "",
+            "amount": None,
         }
 
     po_id = str(inv["primary_accurate_po_id"])
@@ -123,11 +146,10 @@ def _resolve_po_for_receipt(
             "reason": f"PO {po_id} belum terdaftar di Inbox V4.",
             "accurate_po_id": po_id,
             "invoice_no": inv.get("invoice_no") or "",
-            "amount": normalized.get("total_payment") or 0.0,
+            "amount": amount,
         }
 
     alloc = (normalized.get("allocations") or [None])[0] or {}
-    amount = float(alloc.get("payment_amount") or normalized.get("total_payment") or 0.0)
     return {
         "ok": True,
         "review": False,
@@ -135,6 +157,36 @@ def _resolve_po_for_receipt(
         "invoice_no": inv.get("invoice_no") or alloc.get("invoice_no") or "",
         "amount": amount,
         "po_no": str((get_by_accurate_id(db, po_id) or {}).get("po_no") or ""),
+    }
+
+
+def _candidate_doc(
+    *,
+    normalized: dict[str, Any],
+    accurate_po_id: str,
+    po_no: str,
+    invoice_no: str | None,
+    amount: float | None,
+    review: bool,
+    reason: str | None,
+) -> dict[str, Any]:
+    return {
+        "accurate_receipt_id": normalized["accurate_receipt_id"],
+        "accurate_po_id": accurate_po_id,
+        "po_no": po_no,
+        "invoice_no": invoice_no,
+        "amount": amount,
+        "receipt_date": normalized.get("trans_date"),
+        "raw_ref": {
+            "source": "accurate_auto_sync",
+            "review_required": review,
+            "review_reason": reason,
+            "receipt_no": normalized.get("receipt_no"),
+            "invoice_ids": normalized.get("invoice_ids") or [],
+            "void_cheq": bool(normalized.get("void_cheq")),
+            "allocations": normalized.get("allocations") or [],
+            "gate_mutation": False,
+        },
     }
 
 
@@ -151,35 +203,60 @@ def sync_one_receipt(
     normalized = normalize_sales_receipt(payload)
     mapping = _resolve_po_for_receipt(db, normalized)
 
+    payments.require_payment_indexes(db)
+    before = payments.receipts_collection(db).find_one(
+        {"accurate_receipt_id": normalized["accurate_receipt_id"]}, {"_id": 0}
+    )
+    previous_po = str((before or {}).get("accurate_po_id") or "")
+
     if not mapping["ok"]:
-        # Simpan jejak review tanpa membuka gate spekulatif.
-        payments.upsert_receipt(
-            db,
-            accurate_receipt_id=normalized["accurate_receipt_id"],
-            accurate_po_id=str(mapping.get("accurate_po_id") or "UNMAPPED"),
+        candidate = _candidate_doc(
+            normalized=normalized,
+            accurate_po_id=str(mapping.get("accurate_po_id") or previous_po or "UNMAPPED"),
             po_no="",
             invoice_no=mapping.get("invoice_no") or None,
-            amount=mapping.get("amount") or 0.0,
-            receipt_date=normalized.get("trans_date"),
-            raw_ref={
-                "source": "accurate_auto_sync",
-                "review_required": True,
-                "review_reason": mapping.get("reason"),
-                "receipt_no": normalized.get("receipt_no"),
-                "invoice_ids": normalized.get("invoice_ids") or [],
-                "gate_mutation": False,
-            },
+            amount=mapping.get("amount"),
+            review=True,
+            reason=str(mapping.get("reason") or "review"),
         )
+        if before is not None and receipt_material_fingerprint(
+            before
+        ) == receipt_material_fingerprint(candidate):
+            return {
+                "outcome": "unchanged",
+                "accurate_receipt_id": normalized["accurate_receipt_id"],
+                "gate_mutations": 0,
+                "writes": 0,
+                "audited": False,
+            }
+
+        payments.upsert_receipt(
+            db,
+            accurate_receipt_id=candidate["accurate_receipt_id"],
+            accurate_po_id=candidate["accurate_po_id"],
+            po_no="",
+            invoice_no=candidate.get("invoice_no"),
+            amount=candidate.get("amount"),
+            receipt_date=candidate.get("receipt_date"),
+            raw_ref=candidate["raw_ref"],
+        )
+        # Re-evaluate gate pada PO lama/baru agar open tidak tertahan setelah void/revisi.
+        gate_mutations = 0
+        for po_id in {previous_po, candidate["accurate_po_id"]} - {"", "UNMAPPED"}:
+            _gate, mutated = payment_service.evaluate_payment_gate(
+                db, po_id, only_if_changed=True
+            )
+            if mutated:
+                gate_mutations += 1
         return {
             "outcome": "review_required",
             "accurate_receipt_id": normalized["accurate_receipt_id"],
-            "gate_mutations": 0,
+            "gate_mutations": gate_mutations,
+            "writes": 1,
+            "audited": False,
         }
 
-    before = payments.receipts_collection(db).find_one(
-        {"accurate_receipt_id": normalized["accurate_receipt_id"]}
-    )
-    payment_service.ingest_receipts(
+    result = payment_service.ingest_receipts(
         db,
         _SYSTEM_USER,
         accurate_po_id=mapping["accurate_po_id"],
@@ -192,13 +269,39 @@ def sync_one_receipt(
                 "transDate": normalized.get("trans_date"),
             }
         ],
+        skip_unchanged=True,
+        raw_ref_extra={
+            "source": "accurate_auto_sync",
+            "review_required": False,
+            "receipt_no": normalized.get("receipt_no"),
+            "invoice_ids": normalized.get("invoice_ids") or [],
+            "void_cheq": bool(normalized.get("void_cheq")),
+            "allocations": normalized.get("allocations") or [],
+        },
     )
-    outcome = "created" if before is None else "updated"
+    written = int(result.get("written") or 0)
+    gate_mutations = 1 if result.get("gate_mutated") else 0
+    # Jika PO berubah, re-evaluate PO lama.
+    if previous_po and previous_po != mapping["accurate_po_id"] and previous_po != "UNMAPPED":
+        _g, mutated = payment_service.evaluate_payment_gate(
+            db, previous_po, only_if_changed=True
+        )
+        if mutated:
+            gate_mutations += 1
+
+    if written == 0:
+        outcome = "unchanged"
+    elif before is None:
+        outcome = "created"
+    else:
+        outcome = "updated"
     return {
         "outcome": outcome,
         "accurate_receipt_id": normalized["accurate_receipt_id"],
         "accurate_po_id": mapping["accurate_po_id"],
-        "gate_mutations": 1,
+        "gate_mutations": gate_mutations,
+        "writes": written,
+        "audited": bool(result.get("audited")),
     }
 
 
@@ -268,6 +371,7 @@ def run_receipt_auto_sync(
     failures: list[dict[str, Any]] = []
     stopped_reason: str | None = None
     gate_mutations = 0
+    writes = 0
     reader = client or AccurateReadClient.from_settings()
     accurate_requests = 0
 
@@ -331,6 +435,7 @@ def run_receipt_auto_sync(
                     accurate_requests += 1
                     counters["fetched"] += 1
                     gate_mutations += int(result.get("gate_mutations") or 0)
+                    writes += int(result.get("writes") or 0)
                     key = str(result.get("outcome") or "failed")
                     if key in counters:
                         counters[key] += 1
@@ -379,6 +484,7 @@ def run_receipt_auto_sync(
                 "failures": failures[:30],
                 "accurate_requests": accurate_requests,
                 "gate_mutations": gate_mutations,
+                "writes": writes,
                 "discovery_complete": complete,
                 "payment_threshold_changed": False,
             },
@@ -391,7 +497,7 @@ def run_receipt_auto_sync(
             "partial": incomplete and not list_failed,
             "complete": complete and not has_failures,
             "accurate_requests": accurate_requests,
-            "writes": counters["created"] + counters["updated"] + counters["review_required"],
+            "writes": writes,
             "gate_mutations": gate_mutations,
             "counters": counters,
             "stopped_reason": stopped_reason,

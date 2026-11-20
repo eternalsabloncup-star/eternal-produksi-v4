@@ -11,7 +11,10 @@ from app.config import get_settings
 from app.integrations.accurate.auth import AccurateAuthError
 from app.integrations.accurate.client import AccurateReadClient
 from app.integrations.accurate.fields import as_text
-from app.integrations.accurate.normalize_invoice_receipt import normalize_sales_invoice
+from app.integrations.accurate.normalize_invoice_receipt import (
+    invoice_material_equal,
+    normalize_sales_invoice,
+)
 from app.repositories import invoice_repository as invoices
 from app.services.accurate_auto_sync.locks import (
     AutoSyncLockError,
@@ -53,23 +56,26 @@ def sync_one_invoice(
     require_owns_job_lock(db, job="invoice", owner_token=owner_token)
     normalized = normalize_sales_invoice(payload)
     before = invoices.get_invoice(db, normalized["accurate_invoice_id"])
+    if invoice_material_equal(before, normalized):
+        return {
+            "outcome": "unchanged",
+            "accurate_invoice_id": normalized["accurate_invoice_id"],
+            "accurate_po_ids": normalized.get("accurate_po_ids") or [],
+            "writes": 0,
+        }
     invoices.upsert_invoice(db, normalized)
+    # Invoice sync tidak memanggil payment gate.
     if before is None:
         outcome = "created"
-    elif before.get("total_amount") != normalized.get("total_amount") or before.get(
-        "accurate_po_ids"
-    ) != normalized.get("accurate_po_ids") or before.get("status") != normalized.get(
-        "status"
-    ):
-        outcome = "updated"
-    else:
-        outcome = "unchanged"
-    if normalized.get("review_required"):
+    elif normalized.get("review_required"):
         outcome = "review_required"
+    else:
+        outcome = "updated"
     return {
         "outcome": outcome,
         "accurate_invoice_id": normalized["accurate_invoice_id"],
         "accurate_po_ids": normalized.get("accurate_po_ids") or [],
+        "writes": 1,
     }
 
 
