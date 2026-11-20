@@ -553,9 +553,12 @@ def reject_loading_mismatch(
     """Aksi Tidak Sesuai: discrepancy KP (idempotent) — tidak membuka delivery."""
     _require_loading_permission(db, user, action="confirm")
     _assert_loading_assignee(db, user, accurate_sj_id)
-    assert_branch_access(
-        user, scope_object=deliveries.get_delivery_note(db, accurate_sj_id) or {}
-    )
+    note_scope = deliveries.get_delivery_note(db, accurate_sj_id)
+    if note_scope is None:
+        raise LookupError(f"Surat Jalan tidak ditemukan: {accurate_sj_id}")
+    assert_branch_access(user, scope_object=note_scope)
+    # Owner: aksi Loading (Sesuai/Tidak Sesuai) hanya setelah PO Accepted.
+    _require_accepted_po_for_note(db, note_scope)
     # Paksa mismatch path: raise_quantity_discrepancy menolak jika all_matched.
     # Jika validasi ternyata cocok, tetap buat catatan "Tidak Sesuai" via context.
     validation = validate_loading(db, accurate_sj_id, user=user)
@@ -1015,6 +1018,8 @@ def raise_quantity_discrepancy(
         raise LookupError(f"Surat Jalan tidak ditemukan: {accurate_sj_id}")
     assert_branch_access(user, scope_object=note)
     _assert_loading_assignee(db, user, accurate_sj_id)
+    # Owner: aksi Loading (termasuk discrepancy) hanya setelah PO Accepted.
+    _require_accepted_po_for_note(db, note)
 
     validation = validate_loading(db, accurate_sj_id, user=user)
     if validation["all_matched"]:

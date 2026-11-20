@@ -206,6 +206,16 @@ def test_loading_blocked_then_driver_flow_over_http(
 ) -> None:
     _seed_users(db)
     _seed_packed(db, qty=100)
+    # M5 Master: production-head default loading-sj = view/edit/cancel (tanpa confirm).
+    # Samakan grant dengan test_delivery agar discrepancy KP valid tanpa melemahkan spek.
+    from app.repositories import master_repository as master
+
+    master.set_role_actions(
+        db,
+        role="production-head",
+        task_type="loading-sj",
+        actions=["view", "confirm", "edit", "cancel"],
+    )
     owner_csrf = _login(app_client, "owner@eternal.local")
     app_client.post(
         "/api/delivery/notes",

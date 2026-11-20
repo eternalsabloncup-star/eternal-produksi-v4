@@ -229,28 +229,7 @@ def test_loading_not_duplicated_on_retry(db: Database, monkeypatch: pytest.Monke
     mark_po_accepted(db)
     note_payload = _sj_detail(880208)
     delivery.ingest_delivery_note(db, OWNER, note_payload)
-    line0 = note_payload["detailItem"][0]
-    monkeypatch.setattr(
-        delivery,
-        "validate_loading",
-        lambda *_a, **_k: {
-            "all_matched": True,
-            "items": [
-                {
-                    "sj_line_id": str(line0["id"]),
-                    "accurate_line_id": str(
-                        line0.get("salesOrderDetailId") or line0["id"]
-                    ),
-                    "item_code": str(line0.get("itemNo") or "GAP-ITEM"),
-                    "qty": float(line0["quantity"]),
-                    "unit": str(line0.get("itemUnitName") or "PCS"),
-                    "process_kind": "Non-Cetak",
-                }
-            ],
-        },
-    )
-    monkeypatch.setattr(delivery, "require_action", lambda *_a, **_k: None)
-    monkeypatch.setattr(delivery, "_prepare_delivery_txn", lambda *_a, **_k: "driver")
+    _stub_loading_ok(monkeypatch, note_payload)
     first = delivery.confirm_loading(
         db, DRIVER, accurate_sj_id="880208", idempotency_key="load-a"
     )
@@ -355,11 +334,16 @@ def _stub_loading_ok(monkeypatch: pytest.MonkeyPatch, note_payload: dict) -> Non
                     "qty": float(line0["quantity"]),
                     "unit": str(line0.get("itemUnitName") or "PCS"),
                     "process_kind": "Non-Cetak",
+                    "ledger_mode": "legacy_non_cetak",
                 }
             ],
         },
     )
     monkeypatch.setattr(delivery, "require_action", lambda *_a, **_k: None)
+    monkeypatch.setattr(
+        delivery, "_require_loading_permission", lambda *_a, **_k: None
+    )
+    monkeypatch.setattr(delivery, "_assert_loading_assignee", lambda *_a, **_k: None)
     monkeypatch.setattr(delivery, "_prepare_delivery_txn", lambda *_a, **_k: "driver")
 
 
