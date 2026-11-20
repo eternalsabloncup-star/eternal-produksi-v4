@@ -362,35 +362,6 @@ export function ProductionFlowApiPanel({
         ) : null}
       </div>
 
-      <div className="ep-filterbar is-compact">
-        <label htmlFor="flow-po-filter">PO (opsional)</label>
-        <select
-          id="flow-po-filter"
-          value={poFilterId}
-          onChange={(e) => {
-            setPoFilterId(e.target.value);
-            setPage(1);
-          }}
-        >
-          <option value="">Semua PO diterima</option>
-          {flows.map((f) => (
-            <option key={f.accurate_po_id} value={f.accurate_po_id}>
-              {f.po_no}
-            </option>
-          ))}
-        </select>
-        <button
-          type="button"
-          className="ep-btn sm"
-          onClick={() => {
-            void loadFlows();
-            void loadStage();
-          }}
-        >
-          Muat ulang
-        </button>
-      </div>
-
       {error ? <p className="ep-error">{error}</p> : null}
 
       <DataTable
@@ -429,8 +400,41 @@ export function ProductionFlowApiPanel({
             onReset={resetFilters}
             showUrgent
             compact
+            className="ep-flow-toolbar"
             sourceMode="api"
             showDemoHint={false}
+            showApiHint={false}
+            leading={
+              <>
+                <select
+                  id="flow-po-filter"
+                  value={poFilterId}
+                  aria-label="PO (opsional)"
+                  title="PO (opsional)"
+                  onChange={(e) => {
+                    setPoFilterId(e.target.value);
+                    setPage(1);
+                  }}
+                >
+                  <option value="">Semua PO diterima</option>
+                  {flows.map((f) => (
+                    <option key={f.accurate_po_id} value={f.accurate_po_id}>
+                      {f.po_no}
+                    </option>
+                  ))}
+                </select>
+                <button
+                  type="button"
+                  className="ep-btn sm"
+                  onClick={() => {
+                    void loadFlows();
+                    void loadStage();
+                  }}
+                >
+                  Muat ulang
+                </button>
+              </>
+            }
             trailing={
               <>
                 <button
