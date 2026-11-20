@@ -3,9 +3,13 @@ import {
   confirmCoordination,
   confirmDelivered,
   confirmDeliveryFailed,
+  confirmLoadingMatch,
   deliveryEvidenceContentUrl,
   fetchDeliveryDetail,
+  fetchLoadingValidation,
+  rejectLoadingMismatch,
   type DeliveryDetail,
+  type LoadingValidation,
 } from "../api/delivery";
 import {
   confirmProductionQty,
@@ -46,6 +50,7 @@ import {
   filterTasksForActor,
   formatCountBadge,
   isCoordinationTask,
+  isLoadingSjTask,
   isSampleTask,
   isSchedulingTask,
   remainingQty,
@@ -118,6 +123,11 @@ export function TeamTaskApiPanel({ role, roleLabel }: Props) {
   const [deliveryDetailError, setDeliveryDetailError] = useState<string | null>(
     null,
   );
+  const [loadingValidation, setLoadingValidation] =
+    useState<LoadingValidation | null>(null);
+  const [loadingValidationError, setLoadingValidationError] = useState<
+    string | null
+  >(null);
   const [successOpen, setSuccessOpen] = useState(false);
   const [successMsg, setSuccessMsg] = useState("");
   const [evidencePreview, setEvidencePreview] = useState<{
@@ -279,6 +289,8 @@ export function TeamTaskApiPanel({ role, roleLabel }: Props) {
     setHistoryError(null);
     setDeliveryDetail(null);
     setDeliveryDetailError(null);
+    setLoadingValidation(null);
+    setLoadingValidationError(null);
     setPoDetail(null);
     setPoDetailError(null);
     try {
@@ -312,6 +324,22 @@ export function TeamTaskApiPanel({ role, roleLabel }: Props) {
           err instanceof Error
             ? err.message
             : "Detail pengiriman/bukti gagal dimuat.",
+        );
+      }
+    }
+    if (
+      isLoadingSjTask(task.task_type) &&
+      task.ref.accurate_delivery_note_id
+    ) {
+      try {
+        setLoadingValidation(
+          await fetchLoadingValidation(task.ref.accurate_delivery_note_id),
+        );
+      } catch (err) {
+        setLoadingValidationError(
+          err instanceof Error
+            ? err.message
+            : "Validasi Loading gagal dimuat.",
         );
       }
     }
@@ -658,6 +686,57 @@ export function TeamTaskApiPanel({ role, roleLabel }: Props) {
     } catch (err) {
       setActionError(
         err instanceof Error ? err.message : "Gagal menyimpan kegagalan.",
+      );
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function onLoadingMatch() {
+    if (!selected?.ref.accurate_delivery_note_id) return;
+    if (!canAct("loading-sj", "confirm") && !canAct(DRIVER_TASK, "confirm")) {
+      setActionError("Konfirmasi Loading tidak diizinkan.");
+      return;
+    }
+    setBusy(true);
+    setActionError(null);
+    try {
+      const res = await confirmLoadingMatch(
+        selected.ref.accurate_delivery_note_id,
+        newIdempotencyKey(`loading-match:${selected.task_key}`),
+      );
+      const msg = res.duplicate
+        ? "Loading sudah tercatat sebelumnya."
+        : "Loading Sesuai — Qty Packing dikunci untuk SJ ini.";
+      showSuccess(msg);
+      await reloadAfterAction(selected);
+    } catch (err) {
+      setActionError(
+        err instanceof Error ? err.message : "Konfirmasi Loading gagal.",
+      );
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function onLoadingMismatch() {
+    if (!selected?.ref.accurate_delivery_note_id) return;
+    if (!canAct("loading-sj", "confirm") && !canAct(DRIVER_TASK, "confirm")) {
+      setActionError("Menandai Tidak Sesuai tidak diizinkan.");
+      return;
+    }
+    setBusy(true);
+    setActionError(null);
+    try {
+      await rejectLoadingMismatch(
+        selected.ref.accurate_delivery_note_id,
+        "Petugas menandai Tidak Sesuai dari Tugas Tim.",
+      );
+      showSuccess("Tidak Sesuai — tugas koordinasi Kepala Produksi dibuat.");
+      await reloadAfterAction(selected);
+    } catch (err) {
+      setActionError(
+        err instanceof Error ? err.message : "Gagal menandai Tidak Sesuai.",
       );
     } finally {
       setBusy(false);
@@ -1436,6 +1515,84 @@ export function TeamTaskApiPanel({ role, roleLabel }: Props) {
                 )}
               </div>
 
+              {isLoadingSjTask(selected.task_type) ? (
+                <div className="ep-loading-sj" data-testid="loading-sj-block">
+                  <p className="ep-sectionlabel">Loading Surat Jalan</p>
+                  <p>
+                    SJ:{" "}
+                    <strong>
+                      {selected.ref.sj_no ||
+                        selected.ref.accurate_delivery_note_id ||
+                        "—"}
+                    </strong>
+                  </p>
+                  {loadingValidationError ? (
+                    <p className="ep-error">{loadingValidationError}</p>
+                  ) : null}
+                  {loadingValidation ? (
+                    <div className="ep-tblscroll ep-tblscroll-embed">
+                      <table className="ep-table">
+                        <thead>
+                          <tr>
+                            <th>Item Line</th>
+                            <th className="ep-num">Qty SJ</th>
+                            <th className="ep-num">Qty Packing tersedia</th>
+                            <th>Status</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {loadingValidation.items.map((it) => (
+                            <tr
+                              key={String(it.accurate_line_id)}
+                              className={
+                                it.matched ? undefined : "ep-row-danger"
+                              }
+                            >
+                              <td>{String(it.accurate_line_id)}</td>
+                              <td className="ep-num">
+                                {formatQty(Number(it.qty))}
+                              </td>
+                              <td className="ep-num">
+                                {formatQty(Number(it.qty_available))}
+                              </td>
+                              <td>
+                                {it.matched ? "Cocok" : it.reason || "Tidak cocok"}
+                              </td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  ) : null}
+                  <p className="ep-notice">
+                    Pilih Sesuai atau Tidak Sesuai — tanpa menginput ulang Qty SJ.
+                    Backend mengulang validasi authoritative.
+                  </p>
+                  {(canAct("loading-sj", "confirm") ||
+                    canAct(DRIVER_TASK, "confirm")) &&
+                  selected.status !== "selesai" ? (
+                    <div className="ep-btnrow">
+                      <button
+                        type="button"
+                        className="ep-btn primary"
+                        disabled={busy}
+                        onClick={() => void onLoadingMatch()}
+                      >
+                        {busy ? "Menyimpan…" : "Sesuai"}
+                      </button>
+                      <button
+                        type="button"
+                        className="ep-btn"
+                        disabled={busy}
+                        onClick={() => void onLoadingMismatch()}
+                      >
+                        Tidak Sesuai
+                      </button>
+                    </div>
+                  ) : null}
+                </div>
+              ) : null}
+
               {isCoordinationTask(selected.task_type) ? (
                 <div className="ep-coordination" data-testid="coordination-block">
                   <p className="ep-sectionlabel">
@@ -1650,6 +1807,7 @@ export function TeamTaskApiPanel({ role, roleLabel }: Props) {
               {selected.qty_target !== undefined &&
               selected.task_type !== DRIVER_TASK &&
               selected.task_type !== DESIGN_TASK &&
+              !isLoadingSjTask(selected.task_type) &&
               !isCoordinationTask(selected.task_type) &&
               !selectedIsSample &&
               !isSchedulingTask(selected.task_type) &&

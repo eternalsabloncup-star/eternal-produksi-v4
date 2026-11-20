@@ -20,9 +20,10 @@ from app.services.object_auth import (
     assert_branch_access,
     filter_delivery_notes_for_actor,
 )
-from app.services.task_engine import require_action
+from app.services.task_engine import TaskPermissionError, can_act, require_action
 
 LOADING_TASK = "qty-loading-sj-berbeda"
+LOADING_SJ_TASK = "loading-sj"
 DRIVER_TASK = "pengiriman"
 DELIVERY_FAILURE_TASK = "pengiriman-gagal-koordinasi"
 
@@ -137,9 +138,103 @@ def ingest_delivery_note(
             },
             session=session,
         )
-        return {**result, "delivery_note": updated, "revision_status": status}
+        loading_task = ensure_loading_sj_task(db, updated or note, session=session)
+        return {
+            **result,
+            "delivery_note": updated,
+            "revision_status": status,
+            "loading_task_key": (loading_task or {}).get("task_key"),
+        }
 
     return deliveries.run_delivery_mongo_txn(db, _operation)
+
+
+def _packing_available_for_line(
+    db: Database, *, accurate_po_id: str, accurate_line_id: str
+) -> tuple[float, dict[str, Any] | None]:
+    """qty_available = confirmed − consumed pada tugas qc-packing line."""
+    qc_task = tasks.get_task(
+        db, production.qc_task_key(accurate_po_id, accurate_line_id)
+    )
+    if qc_task is None:
+        return 0.0, None
+    packed = float(qc_task.get("qty_confirmed") or 0)
+    used = float(qc_task.get("qty_consumed") or 0)
+    return max(packed - used, 0.0), qc_task
+
+
+def _non_cetak_loading_check(
+    db: Database,
+    *,
+    accurate_po_id: str,
+    line_id: str,
+    sj_qty: float,
+    item: dict[str, Any],
+) -> dict[str, Any]:
+    """Validasi Non-Cetak: ledger Packing bila enforced; legacy self-compare bila OFF."""
+    from app.config import get_settings
+
+    enforced = bool(get_settings().loading_packing_ledger_enforced)
+    available, qc_task = _packing_available_for_line(
+        db, accurate_po_id=accurate_po_id, accurate_line_id=line_id
+    )
+    if enforced:
+        if qc_task is None:
+            return {
+                **item,
+                "process_kind": "Non-Cetak",
+                "qty_available": 0.0,
+                "matched": False,
+                "ledger_mode": "packing_required",
+                "reason": (
+                    "Ledger Packing Non-Cetak belum ada — Loading jalur baru "
+                    "fail-closed (bukan menganggap qty tersedia)."
+                ),
+            }
+        matched = available >= sj_qty > 0
+        return {
+            **item,
+            "process_kind": "Non-Cetak",
+            "qty_available": available,
+            "matched": matched,
+            "ledger_mode": "packing",
+            "reason": (
+                None
+                if matched
+                else (
+                    f"Qty Packing Non-Cetak tersedia {available:g}, "
+                    f"Qty SJ {sj_qty:g}."
+                )
+            ),
+        }
+
+    # Legacy (flag OFF): self-compare SJ — tidak memperketat data historis.
+    # Jika ledger Packing sudah ada, pakai ledger (lebih ketat hanya bila data siap).
+    if qc_task is not None:
+        matched = available >= sj_qty > 0
+        return {
+            **item,
+            "process_kind": "Non-Cetak",
+            "qty_available": available,
+            "matched": matched,
+            "ledger_mode": "packing_optional",
+            "reason": (
+                None
+                if matched
+                else (
+                    f"Qty Packing Non-Cetak tersedia {available:g}, "
+                    f"Qty SJ {sj_qty:g}."
+                )
+            ),
+        }
+    return {
+        **item,
+        "process_kind": "Non-Cetak",
+        "qty_available": sj_qty,
+        "matched": sj_qty > 0,
+        "ledger_mode": "legacy_sj_self",
+        "reason": None if sj_qty > 0 else "Qty SJ tidak valid.",
+    }
 
 
 def validate_loading(
@@ -147,7 +242,11 @@ def validate_loading(
     accurate_sj_id: str,
     user: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """Cek setiap item SJ terhadap Qty QC (Cetak) atau SJ itu sendiri (Non-Cetak)."""
+    """Cek setiap item SJ terhadap Qty Packing tersedia (Cetak + Non-Cetak).
+
+    Non-Cetak: ledger Packing bila ``V4_LOADING_PACKING_LEDGER_ENFORCED`` atau
+    task packing sudah ada; legacy self-compare hanya saat flag OFF + tanpa ledger.
+    """
     note = deliveries.get_delivery_note(db, accurate_sj_id)
     if note is None:
         raise LookupError(f"Surat Jalan tidak ditemukan: {accurate_sj_id}")
@@ -163,6 +262,7 @@ def validate_loading(
     if po_doc is None:
         raise LookupError(f"PO Accurate tidak ditemukan: {note['accurate_po_id']}")
     lines = _po_line_index(po_doc)
+    accurate_po_id = str(note["accurate_po_id"])
 
     checks: list[dict[str, Any]] = []
     for item in note["items"]:
@@ -183,41 +283,52 @@ def validate_loading(
             continue
 
         process_kind = str(po_line.get("process_kind") or "")
+        sj_qty = float(item["qty"])
         if process_kind == "Cetak":
-            qc_task = (
-                tasks.get_task(
-                    db,
-                    production.qc_task_key(str(note["accurate_po_id"]), line_id),
-                )
-                or {}
+            available, _qc = _packing_available_for_line(
+                db, accurate_po_id=accurate_po_id, accurate_line_id=line_id
             )
-            packed = float(qc_task.get("qty_confirmed") or 0)
-            used = float(qc_task.get("qty_consumed") or 0)
-            available = max(packed - used, 0)
-            matched = available >= float(item["qty"]) > 0
+            matched = available >= sj_qty > 0
             reason = (
                 None
                 if matched
                 else (
                     f"Qty QC & Packing tersedia {available:g}, "
-                    f"Qty SJ {float(item['qty']):g}."
+                    f"Qty SJ {sj_qty:g}."
+                )
+            )
+            checks.append(
+                {
+                    **item,
+                    "process_kind": process_kind,
+                    "qty_available": available,
+                    "matched": matched,
+                    "ledger_mode": "packing",
+                    "reason": reason,
+                }
+            )
+        elif process_kind == "Non-Cetak":
+            checks.append(
+                _non_cetak_loading_check(
+                    db,
+                    accurate_po_id=accurate_po_id,
+                    line_id=line_id,
+                    sj_qty=sj_qty,
+                    item=item,
                 )
             )
         else:
-            # Non-Cetak mengikuti SJ Accurate tanpa ledger produksi.
-            available = float(item["qty"])
-            matched = float(item["qty"]) > 0
-            reason = None if matched else "Qty SJ tidak valid."
-
-        checks.append(
-            {
-                **item,
-                "process_kind": process_kind,
-                "qty_available": available,
-                "matched": matched,
-                "reason": reason,
-            }
-        )
+            checks.append(
+                {
+                    **item,
+                    "process_kind": process_kind or None,
+                    "qty_available": 0.0,
+                    "matched": False,
+                    "reason": (
+                        f"process_kind tidak dikenali untuk line {line_id} — fail-closed."
+                    ),
+                }
+            )
 
     active_loading = deliveries.get_loading_event(db, accurate_sj_id)
     revision_status = note.get("revision_status") or deliveries.REVISION_ACTIVE
@@ -248,6 +359,211 @@ def _prepare_delivery_txn(db: Database) -> str:
     return master.require_task_type_assigned_role(db, DRIVER_TASK)
 
 
+def loading_sj_task_key(accurate_sj_id: str) -> str:
+    return build_task_key(
+        LOADING_SJ_TASK,
+        "delivery_note",
+        TaskRef(accurate_delivery_note_id=str(accurate_sj_id)),
+    )
+
+
+def _require_loading_permission(db: Database, user: dict[str, Any], *, action: str) -> None:
+    """Prefer loading-sj.*; transitional fallback pengiriman.* sampai Master dimigrasi."""
+    if can_act(db, user, task_type=LOADING_SJ_TASK, action=action):
+        return
+    if can_act(db, user, task_type=DRIVER_TASK, action=action):
+        return
+    raise TaskPermissionError(
+        f"Akses ditolak untuk aksi '{action}' pada pekerjaan Loading "
+        f"('{LOADING_SJ_TASK}' / '{DRIVER_TASK}')."
+    )
+
+
+def _assert_loading_assignee(db: Database, user: dict[str, Any], accurate_sj_id: str) -> None:
+    """Jika tugas loading-sj punya assignee, hanya assignee (atau ops.full/SA) yang confirm."""
+    from app.auth.permissions import PERM_OPERATIONS_FULL, has_permission
+    from app.auth.roles import is_super_admin
+    from app.config import get_settings
+
+    if not get_settings().loading_sj_task_enabled:
+        return
+    task = tasks.get_task(db, loading_sj_task_key(accurate_sj_id))
+    if task is None:
+        return
+    assigned = str((task.get("context") or {}).get("assigned_user_email") or "").strip().lower()
+    if not assigned:
+        return
+    if is_super_admin(user.get("role")) or has_permission(user, PERM_OPERATIONS_FULL):
+        return
+    actor = (actor_email(user) or str(user.get("email_normalized") or "")).strip().lower()
+    if actor != assigned:
+        raise TaskPermissionError(
+            "Hanya petugas yang ditugaskan pada Loading SJ ini yang boleh konfirmasi."
+        )
+
+
+def ensure_loading_sj_task(
+    db: Database,
+    note: dict[str, Any],
+    *,
+    assigned_user_email: str | None = None,
+    session: Any | None = None,
+) -> dict[str, Any] | None:
+    """Idempotent: satu tugas loading-sj per SJ bila flag aktif + Master siap."""
+    from app.config import get_settings
+
+    if not get_settings().loading_sj_task_enabled:
+        return None
+    try:
+        role = master.require_task_type_assigned_role(db, LOADING_SJ_TASK)
+    except LookupError:
+        return None
+    ctx: dict[str, Any] = {
+        "sj_no": note.get("sj_no"),
+        "sj_version": note.get("sj_version"),
+        "item_count": len(note.get("items") or []),
+    }
+    if assigned_user_email:
+        ctx["assigned_user_email"] = assigned_user_email.strip().lower()
+    return tasks.upsert_task(
+        db,
+        task_type=LOADING_SJ_TASK,
+        scope="delivery_note",
+        assigned_role=role,
+        ref=_sj_ref(note),
+        label="Loading Surat Jalan",
+        context=ctx,
+        session=session,
+    )
+
+
+def assign_loading_sj_task(
+    db: Database,
+    user: dict[str, Any],
+    *,
+    accurate_sj_id: str,
+    assigned_user_email: str,
+) -> dict[str, Any]:
+    """KP/Admin (edit) menugaskan satu user Helper/Driver ke Loading SJ."""
+    _require_loading_permission(db, user, action="edit")
+    note = deliveries.get_delivery_note(db, accurate_sj_id)
+    if note is None:
+        raise LookupError(f"Surat Jalan tidak ditemukan: {accurate_sj_id}")
+    assert_branch_access(user, scope_object=note)
+    email = assigned_user_email.strip().lower()
+    if not email or "@" not in email:
+        raise ValueError("assigned_user_email wajib email valid.")
+    task = ensure_loading_sj_task(db, note, assigned_user_email=email)
+    if task is None:
+        raise LookupError(
+            "Tugas Loading SJ belum aktif — set V4_LOADING_SJ_TASK_ENABLED dan "
+            "bootstrap Master task_type=loading-sj."
+        )
+    from pymongo import ReturnDocument
+
+    updated = tasks.tasks_collection(db).find_one_and_update(
+        {"task_key": task["task_key"]},
+        {"$set": {"context.assigned_user_email": email}},
+        return_document=ReturnDocument.AFTER,
+        projection={"_id": 0},
+    )
+    append_audit_event(
+        db,
+        action="delivery.loading.assign",
+        actor_email=str(user.get("email_normalized") or ""),
+        target_email=email,
+        detail={"accurate_sj_id": accurate_sj_id, "task_key": task["task_key"]},
+    )
+    return updated or task
+
+
+def confirm_loading_match(
+    db: Database,
+    user: dict[str, Any],
+    *,
+    accurate_sj_id: str,
+    idempotency_key: str,
+) -> dict[str, Any]:
+    """Aksi Sesuai: validasi ulang + confirm_loading + selesaikan tugas loading-sj."""
+    result = confirm_loading(
+        db, user, accurate_sj_id=accurate_sj_id, idempotency_key=idempotency_key
+    )
+    key = loading_sj_task_key(accurate_sj_id)
+    task = tasks.get_task(db, key)
+    if task is not None and task.get("status") != tasks.TASK_STATUS_DONE:
+        tasks.tasks_collection(db).update_one(
+            {"task_key": key},
+            {"$set": {"status": tasks.TASK_STATUS_DONE}},
+        )
+        result["loading_task_key"] = key
+    return result
+
+
+def reject_loading_mismatch(
+    db: Database,
+    user: dict[str, Any],
+    *,
+    accurate_sj_id: str,
+    reason: str | None = None,
+) -> dict[str, Any]:
+    """Aksi Tidak Sesuai: discrepancy KP (idempotent) — tidak membuka delivery."""
+    _require_loading_permission(db, user, action="confirm")
+    _assert_loading_assignee(db, user, accurate_sj_id)
+    assert_branch_access(
+        user, scope_object=deliveries.get_delivery_note(db, accurate_sj_id) or {}
+    )
+    # Paksa mismatch path: raise_quantity_discrepancy menolak jika all_matched.
+    # Jika validasi ternyata cocok, tetap buat catatan "Tidak Sesuai" via context.
+    validation = validate_loading(db, accurate_sj_id, user=user)
+    if validation.get("all_matched"):
+        # Owner: user menyatakan Tidak Sesuai — catat discrepancy dengan alasan manual.
+        note = deliveries.get_delivery_note(db, accurate_sj_id)
+        from app.services.index_preflight import require_delivery_txn_indexes
+
+        require_delivery_txn_indexes(db)
+        assigned_role = master.require_task_type_assigned_role(db, LOADING_TASK)
+        actor = str(user.get("email_normalized") or "")
+        context = {
+            "message": DISCREPANCY_MESSAGE,
+            "sj_no": (note or {}).get("sj_no"),
+            "manual_mismatch": True,
+            "reason": (reason or "").strip() or "Petugas menandai Tidak Sesuai.",
+            "mismatched_items": [],
+        }
+
+        def _operation(session: Any) -> dict[str, Any]:
+            task = tasks.upsert_task(
+                db,
+                task_type=LOADING_TASK,
+                scope="delivery_note",
+                assigned_role=assigned_role,
+                ref=_sj_ref(note or {}),
+                label="Qty Loading dan SJ Berbeda",
+                coordination=True,
+                context=context,
+                session=session,
+            )
+            append_audit_event(
+                db,
+                action="delivery.loading.mismatch_declared",
+                actor_email=actor,
+                target_email=None,
+                detail={
+                    "accurate_sj_id": accurate_sj_id,
+                    "task_key": task["task_key"],
+                    "reason": context["reason"],
+                },
+                session=session,
+            )
+            return task
+
+        disc = tasks.run_in_transaction(db, _operation)
+        return {"discrepancy_task": disc, "validation": validation, "duplicate": False}
+
+    disc = raise_quantity_discrepancy(db, user, accurate_sj_id=accurate_sj_id)
+    return {"discrepancy_task": disc, "validation": validation, "duplicate": False}
+
+
 def confirm_loading(
     db: Database,
     user: dict[str, Any],
@@ -256,14 +572,15 @@ def confirm_loading(
     idempotency_key: str,
     assigned_driver_email: str | None = None,
 ) -> dict[str, Any]:
-    """Satu aksi Loading untuk seluruh item SJ — Qty QC + Loading + audit atomik.
+    """Satu aksi Loading untuk seluruh item SJ — Qty Packing + Loading + audit atomik.
 
     Owner: Loading actor is NOT the courier. Do not stamp driver assignment.
     ``assigned_driver_email`` is accepted for API compatibility but ignored
     (no mandatory courier selection).
     """
     _ = assigned_driver_email
-    require_action(db, user, task_type=DRIVER_TASK, action="confirm")
+    _require_loading_permission(db, user, action="confirm")
+    _assert_loading_assignee(db, user, accurate_sj_id)
     assigned_role = _prepare_delivery_txn(db)
 
     existing = deliveries.get_loading_event(db, accurate_sj_id)
@@ -310,22 +627,29 @@ def confirm_loading(
         if raced is not None:
             return {"loading": raced, "driver_task": None, "duplicate": True}
 
+        consumed_lines: set[str] = set()
         for check in validation["items"]:
-            if check["process_kind"] != "Cetak":
+            ledger_mode = str(check.get("ledger_mode") or "")
+            uses_packing = check["process_kind"] == "Cetak" or ledger_mode.startswith(
+                "packing"
+            )
+            if not uses_packing:
                 continue
+            line_id = str(check["accurate_line_id"])
             reserved = tasks.reserve_quota(
                 db,
                 task_key=production.qc_task_key(
-                    str(note["accurate_po_id"]), str(check["accurate_line_id"])
+                    str(note["accurate_po_id"]), line_id
                 ),
                 qty=float(check["qty"]),
                 session=session,
             )
             if not reserved:
                 raise LoadingValidationError(
-                    f"Qty QC & Packing untuk item line {check['accurate_line_id']} "
+                    f"Qty Packing untuk item line {line_id} "
                     "tidak lagi mencukupi."
                 )
+            consumed_lines.add(line_id)
         loading = deliveries.insert_loading_event(
             db,
             accurate_sj_id=str(note["accurate_sj_id"]),
@@ -339,6 +663,7 @@ def confirm_loading(
                     "qty": c["qty"],
                     "unit": c["unit"],
                     "process_kind": c["process_kind"],
+                    "packing_consumed": str(c["accurate_line_id"]) in consumed_lines,
                 }
                 for c in validation["items"]
             ],
@@ -511,7 +836,7 @@ def cancel_loading(
     reason: str,
 ) -> dict[str, Any]:
     """Batalkan Loading aktif; reversal Qty + Driver + audit dalam satu transaksi."""
-    require_action(db, user, task_type=DRIVER_TASK, action="cancel")
+    _require_loading_permission(db, user, action="cancel")
     if not reason.strip():
         raise ValueError("Alasan pembatalan Loading wajib diisi.")
     _prepare_delivery_txn(db)
@@ -557,9 +882,13 @@ def cancel_loading(
 
         reverted_items: list[dict[str, Any]] = []
         qty_reverted_total = 0.0
-        # Reversal memakai Qty yang benar-benar dikonsumsi Loading tersebut.
+        # Reversal hanya untuk item yang benar-benar mengonsumsi ledger Packing.
         for item in cancelled.get("items") or []:
-            if item.get("process_kind") != "Cetak":
+            packing_consumed = item.get("packing_consumed")
+            if packing_consumed is None:
+                # Dokumen Loading lama: Cetak diasumsikan consumed; Non-Cetak tidak.
+                packing_consumed = item.get("process_kind") == "Cetak"
+            if not packing_consumed:
                 continue
             qty = float(item["qty"])
             tasks.tasks_collection(db).update_one(

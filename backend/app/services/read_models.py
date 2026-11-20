@@ -44,6 +44,14 @@ def _print_lines(po_doc: dict[str, Any]) -> list[dict[str, Any]]:
     ]
 
 
+def _non_print_lines(po_doc: dict[str, Any]) -> list[dict[str, Any]]:
+    return [
+        i
+        for i in (_header(po_doc).get("items") or [])
+        if isinstance(i, dict) and i.get("process_kind") == "Non-Cetak"
+    ]
+
+
 def is_buffer_po(po_doc: dict[str, Any]) -> bool:
     """Atribut Buffer dari Accurate (charField5 / searchCharField5)."""
     label = str(_header(po_doc).get("buffer_label") or "").strip().lower()
@@ -308,14 +316,21 @@ def _line_print_active_stages(
 ) -> set[str]:
     """Membership per item Cetak setelah penjadwalan — union di level PO."""
     active: set[str] = set()
-    if not line_allocs:
+    line_id = str(line.get("accurate_line_id") or "")
+    line_qty = float(line.get("qty") or 0)
+    active_allocs = [
+        a
+        for a in line_allocs
+        if str(a.get("status") or "") != schedules.STATUS_RELEASED
+    ]
+    allocated_qty = sum(float(a.get("qty") or 0) for a in active_allocs)
+    # Penjadwalan selesai hanya jika seluruh qty line dialokasikan (aktif).
+    if not active_allocs or (line_qty > 0 and allocated_qty + 1e-9 < line_qty):
         active.add("flow-penjadwalan")
         return active
 
-    line_id = str(line.get("accurate_line_id") or "")
-    line_qty = float(line.get("qty") or 0)
-    screened = [a for a in line_allocs if production.screen_confirmed_qty(db, a) > 0]
-    all_screened = bool(line_allocs) and len(screened) == len(line_allocs)
+    screened = [a for a in active_allocs if production.screen_confirmed_qty(db, a) > 0]
+    all_screened = bool(active_allocs) and len(screened) == len(active_allocs)
 
     prep = tasks.get_task(db, production.prep_task_key(accurate_po_id, line_id)) or {}
     prep_qty = float(prep.get("qty_confirmed") or 0)
@@ -329,14 +344,25 @@ def _line_print_active_stages(
     if not all_screened or not prep_done:
         return active
 
+    # Sampel ditolak (terbaru) tanpa approved → kembali ke Operator.
+    for a in active_allocs:
+        latest = samples.latest_sample(db, a["allocation_id"])
+        if (
+            latest
+            and latest.get("status") == samples.STATUS_REJECTED
+            and samples.approved_sample(db, a["allocation_id"]) is None
+        ):
+            active.add("flow-operator")
+            return active
+
     uploaded = sum(
-        1 for a in line_allocs if samples.latest_sample(db, a["allocation_id"])
+        1 for a in active_allocs if samples.latest_sample(db, a["allocation_id"])
     )
     approved = sum(
-        1 for a in line_allocs if samples.approved_sample(db, a["allocation_id"])
+        1 for a in active_allocs if samples.approved_sample(db, a["allocation_id"])
     )
-    all_uploaded = uploaded == len(line_allocs)
-    all_approved = approved == len(line_allocs)
+    all_uploaded = uploaded == len(active_allocs)
+    all_approved = approved == len(active_allocs)
     if not all_uploaded:
         active.add("flow-operator")
         return active
@@ -347,15 +373,14 @@ def _line_print_active_stages(
     printed = production.printed_total_for_line(
         db, accurate_po_id=accurate_po_id, accurate_line_id=line_id
     )
-    if not line_qty or printed < line_qty:
-        active.add("flow-cetak")
-        return active
-
     qc = tasks.get_task(db, production.qc_task_key(accurate_po_id, line_id)) or {}
     packed = float(qc.get("qty_confirmed") or 0)
-    if packed < printed:
+
+    # Cetak || Packing paralel (partial print + partial packing).
+    if not line_qty or printed + 1e-9 < line_qty:
+        active.add("flow-cetak")
+    if printed > 0 and packed + 1e-9 < printed:
         active.add("flow-packing")
-        return active
     return active
 
 
@@ -367,10 +392,19 @@ def active_stage_membership_from_facts(
     accurate_po_id: str,
     print_lines: list[dict[str, Any]],
     allocations_by_line: dict[str, list[dict[str, Any]]],
+    non_print_lines: list[dict[str, Any]] | None = None,
+    po_doc: dict[str, Any] | None = None,
 ) -> list[str]:
     """Membership tahap aktif dari fakta operasional (+ progres per line)."""
     if not statuses:
         return []
+
+    # T5: checker ketat mengalahkan “semua node hijau” palsu.
+    if po_doc is not None:
+        from app.services.po_completion import is_po_fulfillment_complete
+
+        if is_po_fulfillment_complete(db, po_doc):
+            return [FLOW_SELESAI_ID]
 
     if all(_status_passed(statuses.get(nid, NODE_WAITING)) for nid, _ in PRODUCTION_FLOW_NODES):
         return [FLOW_SELESAI_ID]
@@ -387,7 +421,22 @@ def active_stage_membership_from_facts(
     if not (design_done and payment_done):
         return _stable_stage_list(active)
 
+    # Non-Cetak packing (eligible task exists + remaining).
+    for line in non_print_lines or []:
+        line_id = str(line.get("accurate_line_id") or "")
+        if not line_id:
+            continue
+        qc = tasks.get_task(db, production.qc_task_key(accurate_po_id, line_id))
+        if qc is None:
+            continue
+        target = float(qc.get("qty_target") or line.get("qty") or 0)
+        confirmed = float(qc.get("qty_confirmed") or 0)
+        if target <= 0 or confirmed + 1e-9 < target:
+            active.add("flow-packing")
+
     if not has_print:
+        if "flow-packing" in active:
+            return _stable_stage_list(active)
         for nid in ("flow-surat-jalan", "flow-loading", "flow-pengiriman"):
             st = statuses.get(nid, NODE_WAITING)
             if st in (NODE_RUNNING, NODE_WAITING):
@@ -395,14 +444,10 @@ def active_stage_membership_from_facts(
                 break
         return _stable_stage_list(active)
 
-    # Penjadwalan + union tahap produksi per line
-    any_unscheduled = False
+    # Penjadwalan + union tahap produksi per line Cetak
     for line in print_lines:
         line_id = str(line.get("accurate_line_id") or "")
         line_allocs = allocations_by_line.get(line_id) or []
-        if not line_allocs:
-            any_unscheduled = True
-            continue
         active.update(
             _line_print_active_stages(
                 db,
@@ -411,10 +456,9 @@ def active_stage_membership_from_facts(
                 line_allocs=line_allocs,
             )
         )
-    if any_unscheduled:
-        active.add("flow-penjadwalan")
 
     # Fulfillment PO-level setelah seluruh line cetak selesai packing
+    # (+ packing Non-Cetak bila masih sisa).
     print_work_pending = bool(
         active
         & {
@@ -532,6 +576,7 @@ def production_flow_state(db: Database, po_doc: dict[str, Any]) -> dict[str, Any
     """Status 15 node dari fakta operasional, bukan posisi visual."""
     accurate_po_id = str(po_doc.get("accurate_id") or "")
     print_lines = _print_lines(po_doc)
+    non_print_lines = _non_print_lines(po_doc)
     has_print = bool(print_lines)
     gate = gates.get_gates(db, accurate_po_id)
 
@@ -593,6 +638,17 @@ def production_flow_state(db: Database, po_doc: dict[str, Any]) -> dict[str, Any
     ]
 
     qty_target = sum(float(i.get("qty") or 0) for i in print_lines)
+    nc_packed = 0.0
+    nc_target = 0.0
+    nc_packing_tasks = 0
+    for line in non_print_lines:
+        line_id = str(line.get("accurate_line_id") or "")
+        qc = tasks.get_task(db, production.qc_task_key(accurate_po_id, line_id))
+        if qc is None:
+            continue
+        nc_packing_tasks += 1
+        nc_packed += float(qc.get("qty_confirmed") or 0)
+        nc_target += float(qc.get("qty_target") or line.get("qty") or 0)
     na = "Item Non-Cetak tidak melewati tahap ini."
 
     nodes = [
@@ -714,14 +770,35 @@ def production_flow_state(db: Database, po_doc: dict[str, Any]) -> dict[str, Any
         _node(
             "flow-packing",
             "Packing",
-            NODE_NOT_APPLICABLE
-            if not has_print
-            else NODE_DONE
-            if printed_total and packed_total >= printed_total
-            else NODE_RUNNING
-            if packed_total
-            else NODE_WAITING,
-            na if not has_print else f"QC & Packing {packed_total:g} dari {printed_total:g}.",
+            (
+                NODE_NOT_APPLICABLE
+                if not has_print and nc_packing_tasks == 0
+                else NODE_DONE
+                if (
+                    (not has_print or (printed_total and packed_total >= printed_total))
+                    and (
+                        nc_packing_tasks == 0
+                        or (nc_target > 0 and nc_packed + 1e-9 >= nc_target)
+                    )
+                )
+                else NODE_RUNNING
+                if (packed_total or nc_packed)
+                else NODE_WAITING
+            ),
+            (
+                na
+                if not has_print and nc_packing_tasks == 0
+                else (
+                    f"Packing Cetak {packed_total:g}/{printed_total:g}"
+                    + (
+                        f"; Non-Cetak {nc_packed:g}/{nc_target:g}"
+                        if nc_packing_tasks
+                        else ""
+                    )
+                    if has_print
+                    else f"Packing Non-Cetak {nc_packed:g} dari {nc_target:g}."
+                )
+            ),
         ),
         _node(
             "flow-surat-jalan",
@@ -760,6 +837,8 @@ def production_flow_state(db: Database, po_doc: dict[str, Any]) -> dict[str, Any
         accurate_po_id=accurate_po_id,
         print_lines=print_lines,
         allocations_by_line=allocations_by_line,
+        non_print_lines=non_print_lines,
+        po_doc=po_doc,
     )
     flow = {
         "accurate_po_id": accurate_po_id,

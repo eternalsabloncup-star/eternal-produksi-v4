@@ -97,6 +97,34 @@ class Settings(BaseSettings):
             "NON_CETAK_PACKING_ACTIVATED_AT",
         ),
     )
+    # T2+: Loading membandingkan item Non-Cetak ke ledger Packing (bukan SJ↔SJ).
+    # Default OFF = jalur legacy self-compare tetap (aman deploy tanpa migrasi).
+    # ON = fail-closed bila ledger Packing Non-Cetak tidak ada / qty kurang.
+    loading_packing_ledger_enforced: bool = Field(
+        default=False,
+        validation_alias=AliasChoices(
+            "V4_LOADING_PACKING_LEDGER_ENFORCED",
+            "LOADING_PACKING_LEDGER_ENFORCED",
+        ),
+    )
+    # T3+: derive tugas loading-sj per SJ + gate assignee.
+    # Default OFF = Loading API lama tetap (pengiriman.confirm) tanpa task Loading baru.
+    loading_sj_task_enabled: bool = Field(
+        default=False,
+        validation_alias=AliasChoices(
+            "V4_LOADING_SJ_TASK_ENABLED",
+            "LOADING_SJ_TASK_ENABLED",
+        ),
+    )
+    # T5+: Selesai monitoring memakai checker fulfillment ketat.
+    # Default OFF = membership Selesai mengikuti node status existing.
+    strict_po_completion_enabled: bool = Field(
+        default=False,
+        validation_alias=AliasChoices(
+            "V4_STRICT_PO_COMPLETION_ENABLED",
+            "STRICT_PO_COMPLETION_ENABLED",
+        ),
+    )
     # Auto-sync Accurate — semua default OFF; worker one-shot terpisah dari FastAPI.
     po_auto_sync_enabled: bool = Field(
         default=False,
@@ -216,6 +244,11 @@ class Settings(BaseSettings):
             "non_cetak_packing_activated": bool(
                 str(self.non_cetak_packing_activated_at or "").strip()
             ),
+            "loading_packing_ledger_enforced": bool(
+                self.loading_packing_ledger_enforced
+            ),
+            "loading_sj_task_enabled": bool(self.loading_sj_task_enabled),
+            "strict_po_completion_enabled": bool(self.strict_po_completion_enabled),
             "po_auto_sync_enabled": bool(self.po_auto_sync_enabled),
             "receipt_auto_sync_enabled": bool(self.receipt_auto_sync_enabled),
             "invoice_auto_sync_enabled": bool(self.invoice_auto_sync_enabled),

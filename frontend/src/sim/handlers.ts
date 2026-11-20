@@ -7,6 +7,7 @@ import {
   LINE_CETAK,
   PO_ID,
   PO_NO,
+  SJ_ID,
   SIM_ACTOR,
   SIM_BUFFER,
   SIM_CAPABILITIES,
@@ -697,9 +698,9 @@ export function handleSimRequest(
       revision_status: "current",
       needs_reloading: false,
       delivered: false,
-      active_loading_id: "load-1",
+      active_loading_id: null,
       all_matched: true,
-      already_loaded: true,
+      already_loaded: false,
       items: [
         {
           sj_line_id: "sjl-1",
@@ -712,7 +713,56 @@ export function handleSimRequest(
           matched: true,
           reason: null,
         },
+        {
+          sj_line_id: "sjl-2",
+          accurate_line_id: "L-301",
+          item_code: "LID-16",
+          qty: 1000,
+          unit: "PCS",
+          process_kind: "Non-Cetak",
+          qty_available: 3000,
+          matched: true,
+          reason: null,
+        },
       ],
+    });
+  }
+  if (path.endsWith("/loading/match") && method === "POST") {
+    const loadingTask = simTasks.find((t) => t.task_type === "loading-sj");
+    if (loadingTask) {
+      loadingTask.status = "selesai";
+      loadingTask.qty_confirmed = 1;
+    }
+    return json({ duplicate: false, simulation: true, loading: { status: "active" } });
+  }
+  if (path.endsWith("/loading/mismatch") && method === "POST") {
+    const exists = simTasks.some((t) => t.task_type === "qty-loading-sj-berbeda");
+    if (!exists) {
+      simTasks.push({
+        task_key: `sj:${SJ_ID}:qty-loading-sj-berbeda`,
+        task_type: "qty-loading-sj-berbeda",
+        label: "Qty Loading dan SJ Berbeda",
+        scope: "delivery_note",
+        assigned_role: "production-head",
+        status: "belum_dikerjakan",
+        qty_confirmed: 0,
+        ref: {
+          accurate_po_id: PO_ID,
+          accurate_delivery_note_id: SJ_ID,
+          sj_no: "SJ-2026/11/88",
+        },
+        context: {
+          message:
+            "Mohon konfirmasi ke administrasi karena qty loading dan SJ berbeda",
+        },
+      });
+    }
+    return json({
+      discrepancy_task: {
+        task_key: `sj:${SJ_ID}:qty-loading-sj-berbeda`,
+        task_type: "qty-loading-sj-berbeda",
+      },
+      simulation: true,
     });
   }
   if (

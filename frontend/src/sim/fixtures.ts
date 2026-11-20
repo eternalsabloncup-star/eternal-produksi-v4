@@ -256,6 +256,21 @@ export let simTasks: OperationalTask[] = [
     context: { process_kind: "Non-Cetak", packing_kind: "non-cetak" },
   }),
   task({
+    task_key: `sj:${SJ_ID}:loading-sj`,
+    task_type: "loading-sj",
+    label: "Loading Surat Jalan",
+    scope: "delivery_note",
+    assigned_role: "helper",
+    status: "belum_dikerjakan",
+    ref: {
+      accurate_po_id: PO_ID,
+      po_no: PO_NO,
+      accurate_delivery_note_id: SJ_ID,
+      sj_no: "SJ-2026/11/88",
+    },
+    context: { assigned_user_email: SIM_ACTOR },
+  }),
+  task({
     task_key: `sj:${SJ_ID}:pengiriman`,
     task_type: "pengiriman",
     label: "Pengiriman",
@@ -423,6 +438,16 @@ export const SIM_TASK_TYPES = {
       actions: ["view", "input", "confirm"] as const,
       coordination: false,
       partial_qty: true,
+      is_default_mapping: true,
+    },
+    {
+      task_type: "loading-sj",
+      label: "Loading Surat Jalan",
+      scope: "delivery_note",
+      assigned_role: "helper" as OperationalRole,
+      actions: ["view", "confirm", "edit"] as const,
+      coordination: false,
+      partial_qty: false,
       is_default_mapping: true,
     },
     {

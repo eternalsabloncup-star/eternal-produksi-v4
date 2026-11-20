@@ -172,6 +172,38 @@ export async function confirmLoading(
   });
 }
 
+/** Sesuai — validasi + confirm Loading (T3). */
+export async function confirmLoadingMatch(
+  sjId: string,
+  idempotencyKey: string,
+): Promise<{ duplicate: boolean }> {
+  return request(`/api/delivery/${encodeURIComponent(sjId)}/loading/match`, {
+    method: "POST",
+    body: JSON.stringify({ idempotency_key: idempotencyKey }),
+  });
+}
+
+/** Tidak Sesuai — discrepancy KP (T3). */
+export async function rejectLoadingMismatch(
+  sjId: string,
+  reason?: string,
+): Promise<{ discrepancy_task?: { task_key: string } }> {
+  return request(`/api/delivery/${encodeURIComponent(sjId)}/loading/mismatch`, {
+    method: "POST",
+    body: JSON.stringify({ reason: reason || null }),
+  });
+}
+
+export async function assignLoadingTask(
+  sjId: string,
+  assignedUserEmail: string,
+): Promise<{ task_key?: string }> {
+  return request(`/api/delivery/${encodeURIComponent(sjId)}/loading/assign`, {
+    method: "POST",
+    body: JSON.stringify({ assigned_user_email: assignedUserEmail }),
+  });
+}
+
 export type LoadingEvent = {
   loading_id: string;
   sequence: number;
