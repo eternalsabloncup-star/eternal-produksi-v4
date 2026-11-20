@@ -1,6 +1,10 @@
 import { describe, expect, it } from "vitest";
 import type { TrackingMilestone } from "../../api/tracking";
-import { OWNER_SNAKE_STAGES, buildSnakeStages } from "./snakeMapping";
+import {
+  OWNER_DOC_SLOTS,
+  OWNER_SNAKE_STAGES,
+  buildSnakeStages,
+} from "./snakeMapping";
 
 function m(
   partial: Partial<TrackingMilestone> & Pick<TrackingMilestone, "id" | "state">,
@@ -55,5 +59,22 @@ describe("snake display mapping", () => {
       m({ id: "delivered", state: "completed", seq: 14 }),
     ]);
     expect(stages[14].visual).toBe("done");
+  });
+
+  it("keeps five owner document cards in Design→Payment→Invoice→SJ→Ship order", () => {
+    expect(OWNER_DOC_SLOTS.map((s) => s.key)).toEqual([
+      "design",
+      "payment",
+      "invoice",
+      "sj",
+      "ship",
+    ]);
+    expect(OWNER_DOC_SLOTS.map((s) => s.title)).toEqual([
+      "Design",
+      "Pembayaran",
+      "Faktur Penjualan",
+      "Surat Jalan",
+      "Pengiriman",
+    ]);
   });
 });

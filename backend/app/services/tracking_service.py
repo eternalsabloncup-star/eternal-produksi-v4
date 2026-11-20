@@ -216,6 +216,311 @@ def _customer_safe_header(header: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _invoice_belongs_only_to_po(inv: dict[str, Any], po_id: str) -> bool:
+    """Invoice boleh dibuka penuh hanya bila relasi single-PO terbukti.
+
+    Fail-closed pada review_required, multi-PO, primary ambigu, atau line
+    ``sales_order_id`` yang tidak seluruhnya milik PO ini.
+    """
+    target = str(po_id or "").strip()
+    if not target:
+        return False
+    if inv.get("review_required") is True:
+        return False
+    po_ids = sorted(
+        {str(x).strip() for x in (inv.get("accurate_po_ids") or []) if str(x).strip()}
+    )
+    primary = str(inv.get("primary_accurate_po_id") or "").strip()
+    if len(po_ids) != 1 or po_ids[0] != target:
+        return False
+    if primary and primary != target:
+        return False
+    if not primary:
+        # Kontrak normalized: single-PO wajib mengisi primary = po_ids[0].
+        return False
+    line_so_ids = [
+        str(line.get("sales_order_id") or "").strip()
+        for line in (inv.get("lines") or [])
+        if isinstance(line, dict)
+    ]
+    # Tanpa line SO → mapping tidak cukup membuktikan detail milik PO ini.
+    if not line_so_ids:
+        return False
+    if any(not sid or sid != target for sid in line_so_ids):
+        return False
+    return True
+
+
+def _link_is_expired(link: dict[str, Any], *, now: datetime) -> bool:
+    expires_at = link.get("expires_at")
+    if expires_at is None:
+        return False
+    if isinstance(expires_at, datetime):
+        exp = expires_at if expires_at.tzinfo else expires_at.replace(tzinfo=timezone.utc)
+        return exp < now
+    return False
+
+
+def _customer_visible_design_versions(
+    workflow: dict[str, Any],
+) -> list[dict[str, Any]]:
+    """Versi desain dengan izin customer terbukti — bukan sekadar approved.
+
+    - Link aktif (belum revoke, belum expired) → preview metadata diizinkan.
+    - Link used / sudah approved → riwayat diizinkan (customer pernah akses).
+    - Hanya revoked/expired tanpa used/approval → tampil sebagai ditahan.
+    File biner tidak pernah dilayani lewat Live Tracking.
+    """
+    links = workflow.get("design_approval_links") or []
+    if not links:
+        return []
+    now = datetime.now(timezone.utc)
+    subs_by_ver = {
+        int(s.get("version") or 0): s for s in (workflow.get("design_submissions") or [])
+    }
+    approvals_by_ver = {
+        int(a.get("design_version") or 0): a
+        for a in (workflow.get("design_approvals") or [])
+    }
+    by_ver: dict[int, list[dict[str, Any]]] = {}
+    for link in links:
+        ver = int(link.get("design_version") or 0)
+        if ver <= 0:
+            continue
+        by_ver.setdefault(ver, []).append(link)
+
+    out: list[dict[str, Any]] = []
+    for ver in sorted(by_ver):
+        ver_links = by_ver[ver]
+        sub = subs_by_ver.get(ver) or {}
+        appr = approvals_by_ver.get(ver)
+        has_active = False
+        has_used = False
+        has_revoked = False
+        has_expired = False
+        for link in ver_links:
+            revoked = link.get("revoked_at") is not None
+            expired = _link_is_expired(link, now=now)
+            used = link.get("used_at") is not None
+            if revoked:
+                has_revoked = True
+            if expired:
+                has_expired = True
+            if used:
+                has_used = True
+            if not revoked and not expired:
+                has_active = True
+
+        # Izin terbukti: link masih aktif, atau customer pernah memakai / approve.
+        permission_proven = has_active or has_used or appr is not None
+        if has_active:
+            link_status = "active_share"
+        elif has_used or appr is not None:
+            link_status = "historical_share"
+        elif has_revoked:
+            link_status = "revoked"
+        elif has_expired:
+            link_status = "expired"
+        else:
+            link_status = "unavailable"
+
+        out.append(
+            {
+                "id": f"design-v{ver}",
+                "number": f"Desain v{ver}",
+                "date": _ts(
+                    sub.get("confirmed_at")
+                    or sub.get("submitted_at")
+                    or ver_links[-1].get("created_at")
+                ),
+                "version": ver,
+                "filename": sub.get("filename") if permission_proven else None,
+                "status": link_status,
+                "approval_status": "approved" if appr else "not_approved",
+                "approved_at": _ts((appr or {}).get("approved_at")),
+                "preview_allowed": permission_proven,
+                "download_allowed": False,
+                "file_available": False,
+                "note": (
+                    "File desain tidak dilayani lewat Live Tracking."
+                    if permission_proven
+                    else "Izin customer untuk versi ini tidak berlaku atau sudah dicabut."
+                ),
+            }
+        )
+    return out
+
+
+def _build_invoice_items(
+    *,
+    po_id: str,
+    invoices: list[dict[str, Any]],
+    view: ViewMode,
+) -> tuple[list[dict[str, Any]], str | None]:
+    items: list[dict[str, Any]] = []
+    restricted = 0
+    for inv in invoices:
+        inv_id = str(inv.get("accurate_invoice_id") or "")
+        if not inv_id:
+            continue
+        status_raw = str(inv.get("status") or "").lower()
+        if status_raw in {"void", "batal", "cancelled", "canceled"}:
+            continue
+        if _invoice_belongs_only_to_po(inv, po_id):
+            items.append(
+                {
+                    "id": inv_id,
+                    "number": inv.get("invoice_no") or inv_id,
+                    "date": inv.get("trans_date"),
+                    "status": inv.get("status") or "recorded",
+                    "amount": inv.get("total_amount"),
+                    "preview_allowed": True,
+                    "download_allowed": view == "internal",
+                    "file_available": False,
+                    "summary": {
+                        "line_count": len(inv.get("lines") or []),
+                        "single_po": True,
+                    },
+                }
+            )
+        else:
+            restricted += 1
+            # Jangan ekspos amount/lines — termasuk review_required single-PO.
+            reason = "Faktur ditahan — relasi PO tidak terverifikasi penuh."
+            if inv.get("review_required"):
+                reason = str(
+                    inv.get("review_reason")
+                    or "Faktur berstatus REVIEW — detail tidak ditampilkan."
+                )
+            elif len([x for x in (inv.get("accurate_po_ids") or []) if str(x).strip()]) > 1:
+                reason = (
+                    "Faktur terkait lebih dari satu Sales Order — "
+                    "detail tidak ditampilkan di Live Tracking."
+                )
+            items.append(
+                {
+                    "id": inv_id,
+                    "number": inv.get("invoice_no") or inv_id,
+                    "date": inv.get("trans_date"),
+                    "status": "restricted",
+                    "amount": None,
+                    "preview_allowed": False,
+                    "download_allowed": False,
+                    "file_available": False,
+                    "reason": reason,
+                }
+            )
+    note = None
+    if restricted:
+        note = f"{restricted} faktur ditahan (tanpa nominal/item)."
+    return items, note
+
+
+def _receipt_flag(
+    raw: dict[str, Any], key: str, *, default_false_when_missing: bool
+) -> tuple[bool, bool]:
+    """Parse flag Accurate. Returns ``(value, ambiguous)``.
+
+    ``ambiguous=True`` → caller wajib REVIEW/fail-closed.
+    """
+    from app.integrations.accurate.normalize_invoice_receipt import parse_accurate_bool
+
+    parsed, err = parse_accurate_bool(raw.get(key))
+    if err:
+        return True, True
+    if parsed is None:
+        return (False if default_false_when_missing else True), False
+    return parsed, False
+
+
+def _build_payment_items(
+    *,
+    payments: list[dict[str, Any]],
+    po_id: str,
+) -> list[dict[str, Any]]:
+    items: list[dict[str, Any]] = []
+    target = str(po_id or "").strip()
+    for i, p in enumerate(payments):
+        mapped_po = str(p.get("accurate_po_id") or "").strip()
+        if mapped_po != target or mapped_po in {"", "UNMAPPED"}:
+            continue
+        raw = p.get("raw_ref") if isinstance(p.get("raw_ref"), dict) else {}
+        voided, void_ambiguous = _receipt_flag(
+            raw, "void_cheq", default_false_when_missing=True
+        )
+        review_flag, review_ambiguous = _receipt_flag(
+            raw, "review_required", default_false_when_missing=True
+        )
+        invoice_ids = [
+            str(x).strip()
+            for x in (raw.get("invoice_ids") or [])
+            if str(x).strip()
+        ]
+        # Multi-faktur / alokasi ambigu → REVIEW; jangan verified.
+        multi_invoice = len(invoice_ids) > 1
+        amount = p.get("amount")
+        amount_invalid = amount is None or (
+            isinstance(amount, (int, float)) and float(amount) < 0
+        )
+        review = (
+            review_flag
+            or void_ambiguous
+            or review_ambiguous
+            or multi_invoice
+            or amount_invalid
+        )
+        # Void/reversal tidak pernah "verified".
+        if voided or void_ambiguous:
+            status = "void" if voided and not void_ambiguous else "review"
+            preview_allowed = False
+            show_amount = False
+            note = (
+                "Penerimaan dibatalkan/void."
+                if status == "void"
+                else "Status void/reversal ambigu — ditahan untuk review."
+            )
+        elif review:
+            status = "review"
+            preview_allowed = True
+            show_amount = False
+            note = str(
+                raw.get("review_reason")
+                or (
+                    "Alokasi multi-faktur — ditahan."
+                    if multi_invoice
+                    else "Menunggu review rekonsiliasi."
+                )
+            )
+        else:
+            status = "verified"
+            preview_allowed = True
+            show_amount = True
+            note = (
+                "Penerimaan terverifikasi dari Accurate "
+                "(file bukti asli tidak tersedia di Live Tracking)."
+            )
+        receipt_no = (
+            raw.get("receipt_no")
+            or p.get("receipt_no")
+            or p.get("accurate_receipt_id")
+        )
+        items.append(
+            {
+                "id": str(p.get("accurate_receipt_id") or i),
+                "number": receipt_no,
+                "date": p.get("receipt_date"),
+                "amount": amount if show_amount else None,
+                "invoice_no": p.get("invoice_no") if not multi_invoice else None,
+                "status": status,
+                "preview_allowed": preview_allowed,
+                "download_allowed": False,
+                "file_available": False,
+                "note": note,
+            }
+        )
+    return items
+
+
 def _build_documents(
     *,
     po_doc: dict[str, Any],
@@ -223,12 +528,17 @@ def _build_documents(
     scopes: list[str],
     view: ViewMode,
 ) -> list[dict[str, Any]]:
-    has_financial = "financial" in scopes or view == "internal"
+    # Owner M4: invoice + receipt Accurate pesanan boleh di Live Tracking customer.
+    # Scope financial internal tetap untuk field sensitif lain; bukan gate kartu ini.
+    _ = scopes
     header = _header(po_doc)
+    po_id = str(po_doc.get("accurate_id") or "")
     notes = [
         n
         for n in (workflow.get("delivery_notes") or [])
         if not n.get("superseded_by")
+        and n.get("soft_deleted") is not True
+        and n.get("deleted_at") is None
     ]
     evidence = workflow.get("delivery_evidence") or []
     success_events = [
@@ -237,7 +547,14 @@ def _build_documents(
         if e.get("status") == "berhasil"
     ]
     payments = workflow.get("payments") or []
+    invoices = workflow.get("invoices") or []
     avail = workflow.get("availability") or {}
+    design_items = _customer_visible_design_versions(workflow)
+    invoice_items, invoice_note = _build_invoice_items(
+        po_id=po_id, invoices=invoices, view=view
+    )
+    payment_items = _build_payment_items(payments=payments, po_id=po_id)
+    viewable_invoices = [it for it in invoice_items if it.get("preview_allowed")]
 
     docs: list[dict[str, Any]] = [
         {
@@ -260,29 +577,34 @@ def _build_documents(
             ],
         },
         {
+            "category": "design",
+            "label": "Design",
+            "status": "available" if design_items else "waiting",
+            "items": design_items,
+            "note": None
+            if design_items or not avail.get("design")
+            else "Belum ada versi desain yang dikirim ke customer.",
+        },
+        {
             "category": "sales_invoice",
             "label": "Faktur Penjualan",
-            "status": "locked" if not has_financial else "waiting",
-            "items": [],
-            "reason": (
-                None
-                if has_financial
-                else "Faktur memerlukan otorisasi keuangan / sesi internal."
+            "status": (
+                "available"
+                if viewable_invoices
+                else ("waiting" if avail.get("invoices") else "waiting")
             ),
-            "note": (
-                "Sumber faktur Accurate belum terhubung ke Live Tracking."
-                if has_financial
-                else None
+            "items": invoice_items,
+            "note": invoice_note
+            or (
+                None
+                if invoice_items or avail.get("invoices")
+                else "Belum ada faktur Accurate untuk pesanan ini."
             ),
         },
         {
             "category": "delivery_note",
             "label": "Surat Jalan",
-            "status": (
-                "available"
-                if notes
-                else ("waiting" if avail.get("delivery_notes") else "waiting")
-            ),
+            "status": "available" if notes else "waiting",
             "items": [
                 {
                     "id": str(n.get("accurate_sj_id") or n.get("sj_no") or i),
@@ -294,35 +616,22 @@ def _build_documents(
                     "status": n.get("revision_status") or "recorded",
                     "preview_allowed": True,
                     "download_allowed": view == "internal",
+                    "file_available": False,
                 }
                 for i, n in enumerate(notes)
             ],
             "note": None
             if notes or avail.get("delivery_notes")
-            else "Modul surat jalan belum tersedia di backend saat ini.",
+            else "Surat Jalan Accurate belum tersinkronisasi.",
         },
         {
             "category": "sales_receipt",
             "label": "Penerimaan Penjualan",
-            "status": "locked" if not has_financial else ("available" if payments else "waiting"),
-            "items": [
-                {
-                    "id": str(p.get("id") or i),
-                    "number": p.get("receipt_no") or p.get("id"),
-                    "date": p.get("receipt_date"),
-                    "amount": p.get("amount") if has_financial else None,
-                    "preview_allowed": has_financial,
-                    "download_allowed": False,
-                }
-                for i, p in enumerate(payments)
-            ]
-            if has_financial
-            else [],
-            "reason": (
-                None
-                if has_financial
-                else "Penerimaan penjualan tidak dibuka lewat tracking link publik."
-            ),
+            "status": "available" if payment_items else "waiting",
+            "items": payment_items,
+            "note": None
+            if payment_items or avail.get("payments")
+            else "Belum ada bukti penerimaan Accurate untuk pesanan ini.",
         },
         {
             "category": "delivery_proof",
@@ -332,18 +641,21 @@ def _build_documents(
                 {
                     "id": str(e.get("delivery_event_id") or e.get("id") or i),
                     "number": e.get("accurate_sj_id"),
-                    "confirmed_at": e.get("created_at"),
-                    "recipient_name": e.get("recipient_name") if view == "internal" else None,
+                    "confirmed_at": _ts(e.get("created_at")),
+                    # Nama penerima: Owner setuju bukti pengiriman untuk customer.
+                    "recipient_name": e.get("recipient_name"),
                     "has_photo": bool(e.get("photo_evidence_ids")),
                     "has_signature": bool(e.get("signature_evidence_id")),
                     "preview_allowed": True,
                     "download_allowed": view == "internal",
+                    "file_available": bool(e.get("photo_evidence_ids"))
+                    or bool(e.get("signature_evidence_id")),
                 }
                 for i, e in enumerate(success_events)
             ],
             "note": None
             if success_events or avail.get("delivery_events") or evidence
-            else "Bukti pengiriman belum tersedia di backend saat ini.",
+            else "Bukti pengiriman belum tersedia.",
         },
     ]
     return docs

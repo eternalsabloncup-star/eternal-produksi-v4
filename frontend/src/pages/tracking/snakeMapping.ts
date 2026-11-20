@@ -239,8 +239,7 @@ export const OWNER_DOC_SLOTS: OwnerDocSlot[] = [
   {
     key: "design",
     title: "Design",
-    apiCategories: [],
-    gap: "Dokumen desain belum ada di kontrak dokumen tracking publik.",
+    apiCategories: ["design"],
   },
   {
     key: "payment",

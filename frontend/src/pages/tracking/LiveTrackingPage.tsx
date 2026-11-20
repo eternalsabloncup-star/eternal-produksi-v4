@@ -516,14 +516,38 @@ export function LiveTrackingPage() {
                   </p>
                 ) : (
                   <ul className="elt-item-list">
-                    {activeDocResolved.items.map((it, idx) => (
-                      <li key={String(it.id || idx)}>
-                        <strong>{String(it.number || it.id || "Dokumen")}</strong>
-                        <span>{String(it.date || it.confirmed_at || "")}</span>
-                      </li>
-                    ))}
+                    {activeDocResolved.items
+                      .filter((it) => it.preview_allowed === true)
+                      .map((it, idx) => (
+                        <li key={String(it.id || idx)}>
+                          <strong>{String(it.number || it.id || "Dokumen")}</strong>
+                          <span>
+                            {[
+                              it.date || it.confirmed_at || "",
+                              it.status ? `status: ${String(it.status)}` : "",
+                              it.qty != null ? `qty: ${String(it.qty)}` : "",
+                              it.amount != null ? `nominal: ${String(it.amount)}` : "",
+                              it.invoice_no ? `faktur: ${String(it.invoice_no)}` : "",
+                              it.recipient_name
+                                ? `penerima: ${String(it.recipient_name)}`
+                                : "",
+                              it.has_photo === true ? "foto ✓" : "",
+                              it.has_signature === true ? "ttd ✓" : "",
+                              it.note ? String(it.note) : "",
+                            ]
+                              .filter(Boolean)
+                              .map(String)
+                              .join(" · ")}
+                          </span>
+                        </li>
+                      ))}
                   </ul>
                 )}
+                {activeDocResolved.items.some((it) => it.preview_allowed === false) ? (
+                  <p className="elt-note">
+                    Sebagian dokumen terkait ditahan (multi-SO / belum diizinkan).
+                  </p>
+                ) : null}
               </>
             ) : null}
           </div>
