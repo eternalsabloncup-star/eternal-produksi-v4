@@ -111,6 +111,8 @@ class DocUniverse:
                     if isinstance(line.get("salesOrder"), dict):
                         line["salesOrder"]["id"] = po_id
                         line["salesOrder"]["number"] = f"PO/{po_id}"
+            if not p.get("transDate"):
+                p["transDate"] = "20/11/2026"
             self.sj[i] = p
             self.lu_sj[i] = self._tick()
 
@@ -124,9 +126,35 @@ class DocUniverse:
             ordered = sorted(ordered)
         elif "lastUpdate" in sort:
             ordered = sorted(ordered, key=lambda i: lu.get(i, ""), reverse=True)
+        # Date floor BETWEEN — detail store per jenis dokumen.
+        if params.get("filter.transDate.op") == "BETWEEN":
+            from app.services.accurate_auto_sync.date_floor import (
+                parse_accurate_trans_date,
+            )
+
+            lo = parse_accurate_trans_date(params.get("filter.transDate.val[0]"))
+            hi = parse_accurate_trans_date(params.get("filter.transDate.val[1]"))
+            store = {**self.inv, **self.rcpt, **self.sj}
+            if lo and hi:
+                kept = []
+                for i in ordered:
+                    td = parse_accurate_trans_date(
+                        (store.get(i) or {}).get("transDate") or "20/11/2026"
+                    )
+                    if td is not None and lo <= td <= hi:
+                        kept.append(i)
+                ordered = kept
         start = (page - 1) * size
         chunk = ordered[start : start + size]
-        return [{"id": i, "lastUpdate": lu.get(i)} for i in chunk]
+        store = {**self.inv, **self.rcpt, **self.sj}
+        return [
+            {
+                "id": i,
+                "lastUpdate": lu.get(i),
+                "transDate": (store.get(i) or {}).get("transDate") or "20/11/2026",
+            }
+            for i in chunk
+        ]
 
     def fetch_sales_invoice_list(self, *, params=None):
         return self._page(list(self.inv), params, self.lu_inv)

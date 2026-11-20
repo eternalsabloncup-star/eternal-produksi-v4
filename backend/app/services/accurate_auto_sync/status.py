@@ -67,6 +67,7 @@ def _empty_counters() -> dict[str, int]:
         "unchanged": 0,
         "skipped": 0,
         "review_required": 0,
+        "excluded": 0,
         "failed": 0,
     }
 

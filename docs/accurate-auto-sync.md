@@ -16,8 +16,21 @@
 | `V4_RECEIPT_AUTO_SYNC_ENABLED` | `false` |
 | `V4_SJ_SYNC_ENABLED` | `false` |
 | `V4_ACCURATE_AUTO_SYNC_INTERVAL_SECONDS` | `60` |
+| `ACCURATE_SYNC_START_DATE` | `2026-11-01` (Asia/Jakarta, tanggal transaksi) |
 
 Saat OFF: **zero** request Accurate, **zero** write Mongo (tanpa lock/status mutation).
+
+### Date floor (Owner 2026-11-20)
+
+- Berlaku PO / SJ / Invoice / Receipt.
+- Tanggal transaksi `< 2026-11-01` dikecualikan dari auto-sync reguler.
+- `01/11/2026` inklusif; tanpa end-date tetap.
+- Kontrak list live: `filter.transDate.op=BETWEEN` + `val[0]`/`val[1]` (dd/MM/yyyy).  
+  `GREATER_EQUAL` + `val` tunggal → Accurate `s:false` (UNSUPPORTED).
+- Backend memvalidasi `transDate` detail (defense in depth).
+- Checkpoint v3 menyimpan `date_floor` / `date_floor_scope`; scope lama tidak dipakai ulang.
+- Dokumen historis yang sudah di Mongo **tidak dihapus**.
+- Dependensi historis di luar floor: REVIEW/PENDING fail-closed — tidak auto-fetch histori, tidak auto-buka gate.
 
 ## Kontrak Accurate (terverifikasi live read-only)
 

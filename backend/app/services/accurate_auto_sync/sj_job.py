@@ -53,6 +53,11 @@ def sync_one_sj(
     require_owns_job_lock(db, job="sj", owner_token=owner_token)
     detail = client.fetch_delivery_order_detail(accurate_id)
     require_owns_job_lock(db, job="sj", owner_token=owner_token)
+    from app.services.accurate_auto_sync.date_floor import detail_scope_outcome
+
+    gated = detail_scope_outcome(detail, accurate_id=str(accurate_id))
+    if gated is not None:
+        return gated
     return sync_delivery_order_payload(
         db,
         _SYSTEM_USER,
@@ -94,6 +99,7 @@ def run_sj_auto_sync(
         "unchanged": 0,
         "skipped": 0,
         "review_required": 0,
+        "excluded": 0,
         "failed": 0,
     }
     failures: list[dict[str, Any]] = []

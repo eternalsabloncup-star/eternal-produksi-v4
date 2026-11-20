@@ -37,6 +37,11 @@ from app.services.accurate_auto_sync.checkpoint import (
     load_job_checkpoint,
     save_job_checkpoint,
 )
+from app.services.accurate_auto_sync.date_floor import (
+    accurate_trans_date_filter_params,
+    classify_trans_date,
+    configured_date_floor,
+)
 from app.services.accurate_auto_sync.locks import AutoSyncLockError, refresh_job_lock
 
 ListFetcher = Callable[[dict[str, Any]], list[dict[str, Any]]]
@@ -44,12 +49,15 @@ SyncOne = Callable[[str], dict[str, Any]]
 
 
 def list_page_params(page: int, page_size: int, *, sort: str) -> dict[str, Any]:
-    # fields=id,lastUpdate: live Accurate returns lastUpdate only when requested.
+    # fields=id,lastUpdate,transDate: lastUpdate butuh projection; transDate untuk
+    # guard list-side. Filter BETWEEN terbukti live (bukan GREATER_EQUAL tunggal).
+    floor = configured_date_floor()
     return {
         "sp.page": page,
         "sp.pageSize": page_size,
         "sp.sort": sort,
-        "fields": "id,lastUpdate",
+        "fields": "id,lastUpdate,transDate",
+        **accurate_trans_date_filter_params(floor),
     }
 
 
@@ -161,6 +169,16 @@ def run_discovery_cycle(
                 last_id = None
             if so_id in synced_ids:
                 continue
+            # Guard list-side: jika projection menyertakan transDate di luar floor,
+            # jangan fetch detail / jangan tulis (bukan failure halaman).
+            if "excluded" in counters and "transDate" in row:
+                status, _ = classify_trans_date(
+                    row.get("transDate"), start=configured_date_floor()
+                )
+                if status == "out_of_scope":
+                    counters["excluded"] += 1
+                    synced_ids.add(so_id)
+                    continue
             try:
                 if not refresh_job_lock(db, job=job, owner_token=owner_token):
                     raise AutoSyncLockError("Lease hilang mid-run.")
