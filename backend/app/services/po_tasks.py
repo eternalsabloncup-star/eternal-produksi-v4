@@ -97,70 +97,87 @@ def _derive_tasks_under_writer_lease(
     writer_fence: WriterFence,
 ) -> dict[str, Any]:
     from app.services.po_acceptance import is_po_accepted, require_po_accepted
+    from app.services.po_repair_maintenance import mutate_under_writer_fence
 
-    writer_fence.assert_valid(db, session=session)
-    accurate_po_id = str(po_doc.get("accurate_id") or "")
-    if not accurate_po_id:
-        raise ValueError("PO wajib memiliki accurate_id.")
     if require_accepted:
         require_po_accepted(po_doc)
-    header = _header(po_doc)
-    po_no = str(po_doc.get("po_no") or header.get("po_no") or "")
-    created: list[str] = []
-    skipped: list[str] = []
 
-    lines = print_lines(po_doc)
-    if lines:
-        design = tasks.upsert_task(
-            db,
-            task_type="design",
-            scope="po",
-            assigned_role=_assigned_role(
-                db, "design", "designer", session=session
-            ),
-            ref=TaskRef(accurate_po_id=accurate_po_id, po_no=po_no),
-            label="Design",
-            context={"print_line_count": len(lines), "customer": header.get("customer")},
-            session=session,
-        )
-        created.append(design["task_key"])
-    else:
-        skipped.append("design:semua-item-non-cetak")
-        # Di dalam transaksi: tunda set_gate (preflight indeks) ke pemanggil.
-        if session is None and is_po_accepted(po_doc):
-            sync_design_gate_for_non_print_po(db, po_doc)
+    def _body(sess: Any | None) -> dict[str, Any]:
+        if sess is not None:
+            writer_fence.assert_valid(db, session=sess)
+        accurate_po_id = str(po_doc.get("accurate_id") or "")
+        if not accurate_po_id:
+            raise ValueError("PO wajib memiliki accurate_id.")
+        header = _header(po_doc)
+        po_no = str(po_doc.get("po_no") or header.get("po_no") or "")
+        created: list[str] = []
+        skipped: list[str] = []
 
-    scheduling_open = gates.both_gates_open(db, accurate_po_id)
-    for line in lines:
-        ref = TaskRef(
-            accurate_po_id=accurate_po_id,
-            po_no=po_no,
-            accurate_line_id=str(line.get("accurate_line_id") or ""),
-            item_code=str(line.get("item_code") or ""),
-            process_kind=PRINT_KIND,
-        )
-        if not scheduling_open:
-            skipped.append(f"penjadwalan:{ref.accurate_line_id}:gate-belum-terpenuhi")
-            continue
-        task = tasks.upsert_task(
-            db,
-            task_type="penjadwalan",
-            scope="po_line",
-            assigned_role=_assigned_role(
-                db, "penjadwalan", "production-head", session=session
-            ),
-            ref=ref,
-            qty_target=float(line.get("qty") or 0),
-            label="Penjadwalan",
-            context={"item_name": line.get("item_name"), "unit": line.get("unit")},
-            session=session,
-        )
-        created.append(task["task_key"])
+        lines = print_lines(po_doc)
+        if lines:
+            design = tasks.upsert_task(
+                db,
+                task_type="design",
+                scope="po",
+                assigned_role=_assigned_role(
+                    db, "design", "designer", session=sess
+                ),
+                ref=TaskRef(accurate_po_id=accurate_po_id, po_no=po_no),
+                label="Design",
+                context={
+                    "print_line_count": len(lines),
+                    "customer": header.get("customer"),
+                },
+                session=sess,
+            )
+            created.append(design["task_key"])
+        else:
+            skipped.append("design:semua-item-non-cetak")
+            if sess is None and is_po_accepted(po_doc):
+                sync_design_gate_for_non_print_po(db, po_doc)
 
-    return {
-        "accurate_po_id": accurate_po_id,
-        "created_task_keys": created,
-        "skipped": skipped,
-        "scheduling_unlocked": scheduling_open,
-        "gates": gates.get_gates(db, accurate_po_id),
-    }
+        scheduling_open = gates.both_gates_open(db, accurate_po_id)
+        for line in lines:
+            ref = TaskRef(
+                accurate_po_id=accurate_po_id,
+                po_no=po_no,
+                accurate_line_id=str(line.get("accurate_line_id") or ""),
+                item_code=str(line.get("item_code") or ""),
+                process_kind=PRINT_KIND,
+            )
+            if not scheduling_open:
+                skipped.append(
+                    f"penjadwalan:{ref.accurate_line_id}:gate-belum-terpenuhi"
+                )
+                continue
+            task = tasks.upsert_task(
+                db,
+                task_type="penjadwalan",
+                scope="po_line",
+                assigned_role=_assigned_role(
+                    db, "penjadwalan", "production-head", session=sess
+                ),
+                ref=ref,
+                qty_target=float(line.get("qty") or 0),
+                label="Penjadwalan",
+                context={
+                    "item_name": line.get("item_name"),
+                    "unit": line.get("unit"),
+                },
+                session=sess,
+            )
+            created.append(task["task_key"])
+
+        return {
+            "accurate_po_id": accurate_po_id,
+            "created_task_keys": created,
+            "skipped": skipped,
+            "scheduling_unlocked": scheduling_open,
+            "gates": gates.get_gates(db, accurate_po_id),
+        }
+
+    # Sudah di dalam txn pemanggil (accept): renew di session yang sama.
+    if session is not None:
+        return _body(session)
+    # Standalone: commit boundary = renew + upsert dalam satu txn.
+    return mutate_under_writer_fence(db, writer_fence, _body)

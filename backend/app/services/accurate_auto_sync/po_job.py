@@ -41,6 +41,20 @@ DEFAULT_MAX_PAGES = 5
 DEFAULT_MAX_ROWS = 100
 DEFAULT_TIMEOUT_SECONDS = 50.0
 
+
+def _fenced_collection_write(db: Database, write_fn: Any) -> Any:
+    """Bila writer fence aktif: renew + write dalam satu txn (commit boundary)."""
+    from app.services.po_repair_maintenance import (
+        active_writer_fence,
+        mutate_under_writer_fence,
+    )
+
+    fence = active_writer_fence()
+    if fence is None:
+        return write_fn(None)
+    return mutate_under_writer_fence(db, fence, write_fn)
+
+
 # Metadata aman pada PO accepted. Bukan customer/alamat/items/operasional.
 _SAFE_ACCEPTED_HEADER_KEYS = (
     "ship_zone",
@@ -143,11 +157,15 @@ def _mark_material_review(
     before_header = before.get("header") if isinstance(before.get("header"), dict) else {}
     set_fields.update(_safe_header_patch(before_header, po))
 
-    updated = po_collection(db).find_one_and_update(
-        _accepted_filter(accurate_id),
-        {"$set": set_fields},
-        return_document=ReturnDocument.AFTER,
-    )
+    def _write(session: Any) -> dict[str, Any] | None:
+        return po_collection(db).find_one_and_update(
+            _accepted_filter(accurate_id),
+            {"$set": set_fields},
+            return_document=ReturnDocument.AFTER,
+            session=session,
+        )
+
+    updated = _fenced_collection_write(db, _write)
     if updated is None:
         # Race: acceptance berubah — jangan tulis review pada PO belum diterima.
         return {"outcome": "skipped", "reason": "acceptance_race", "accurate_id": accurate_id}
@@ -196,8 +214,8 @@ def _upsert_unaccepted(
     }
     if set_branch_on_insert and branch_id:
         set_on_insert["branch_id"] = branch_id
-    try:
-        result = po_collection(db).find_one_and_update(
+    def _write(session: Any) -> dict[str, Any] | None:
+        return po_collection(db).find_one_and_update(
             _not_accepted_filter(accurate_id),
             {
                 "$set": set_fields,
@@ -205,7 +223,11 @@ def _upsert_unaccepted(
             },
             upsert=True,
             return_document=ReturnDocument.AFTER,
+            session=session,
         )
+
+    try:
+        result = _fenced_collection_write(db, _write)
     except DuplicateKeyError:
         # Race: dokumen accepted sudah ada (unique accurate_id).
         return {"outcome": "skipped", "reason": "acceptance_race", "accurate_id": accurate_id}
@@ -237,11 +259,15 @@ def _apply_safe_accepted_metadata(
         return {"outcome": "unchanged", "accurate_id": accurate_id}
     now = _now()
     patch.update({"updated_at": now, "source_synced_at": now})
-    updated = po_collection(db).find_one_and_update(
-        _accepted_filter(accurate_id),
-        {"$set": patch},
-        return_document=ReturnDocument.AFTER,
-    )
+    def _write(session: Any) -> dict[str, Any] | None:
+        return po_collection(db).find_one_and_update(
+            _accepted_filter(accurate_id),
+            {"$set": patch},
+            return_document=ReturnDocument.AFTER,
+            session=session,
+        )
+
+    updated = _fenced_collection_write(db, _write)
     if updated is None:
         return {"outcome": "skipped", "reason": "acceptance_race", "accurate_id": accurate_id}
     return {"outcome": "updated", "accurate_id": accurate_id}

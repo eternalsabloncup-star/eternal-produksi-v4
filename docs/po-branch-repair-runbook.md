@@ -12,7 +12,7 @@ Mengisi `branch_id` kanonis (`50` / `150`) hanya untuk kandidat sealed yang suda
 4. `APP_ENV=production`, DB `eternal_v4`, Mongo **27018** saja (27017 ditolak).
 5. Kill-switch `V4_PO_AUTO_SYNC_ENABLED=0`.
 6. **Operator lock JSON** (`workers_cleared=true`, `po_auto_sync=false`, token ≥16, usia ≤4 jam) — attestasi saja.
-7. **Isolasi Mongo wajib**: writer lease + epoch fence; `assert_valid`/renew sebelum mutasi (termasuk dalam txn accept). Maintenance bump epoch lalu bersihkan orphan — TTL habis ≠ izin commit. Apply drain unexpired writers + maintenance lease + job lock PO/SJ. Audit per progres; gagal persist → STOP; partial ⇒ `ok=false`.
+7. **Isolasi Mongo wajib**: mutasi writer lewat `mutate_under_writer_fence` (renew lease + cek maintenance **dalam transaksi yang sama** dengan write). Maintenance bump epoch lalu bersihkan orphan — TTL habis ≠ izin commit stale. Apply: `require_maintenance_owner` per CAS + job lock PO/SJ. Audit per progres; gagal persist → STOP; partial ⇒ `ok=false`.
 8. **Backup meta** baru: `archive_path` **wajib ada sebagai file**, `archive_sha256` cocok, DB `eternal_v4`, port 27018, usia ≤24 jam.
 9. Manifest **sealed** (`sealed=true`, `manifest_sha256`, count).
 10. Snapshot **wajib**: `--expect-total-po` dan `--expect-missing-po` harus cocok; setiap kandidat masih tanpa `branch_id`.

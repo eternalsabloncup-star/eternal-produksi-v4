@@ -7,6 +7,7 @@ import json
 import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from typing import Any
 
 import pytest
 from pymongo.database import Database
@@ -566,6 +567,171 @@ def test_concurrent_writer_and_maintenance_only_one_wins(ingest_db: Database) ->
         raise AssertionError("both held — exclusivity broken")
 
 
+def test_stale_writer_mutate_cannot_commit_after_maintenance(
+    ingest_db: Database,
+) -> None:
+    """T2 assert PASS → T3 TTL expire → T4 maint → T7 mutate wajib gagal + DB bersih."""
+    import threading
+
+    from app.services.po_repair_maintenance import (
+        WRITER_ID_PREFIX,
+        WriterFenceLostError,
+        acquire_po_repair_maintenance,
+        enter_po_repair_writer_section,
+        exit_po_repair_writer_section,
+        mutate_under_writer_fence,
+        release_po_repair_maintenance,
+    )
+
+    barrier = threading.Barrier(2)
+    outcomes: dict[str, Any] = {}
+    marker = "stale_writer_marker_991"
+
+    fence = enter_po_repair_writer_section(ingest_db, ttl_seconds=120)
+    try:
+        fence.assert_valid(ingest_db)  # T2
+        # T3: lease expired sementara proses writer masih hidup.
+        past = datetime.now(timezone.utc) - timedelta(seconds=5)
+        ingest_db["sync_locks"].update_one(
+            {"_id": f"{WRITER_ID_PREFIX}{fence.token}"},
+            {"$set": {"expires_at": past}},
+        )
+
+        def writer() -> None:
+            barrier.wait(timeout=5)
+            try:
+
+                def _write(session: Any) -> None:
+                    ingest_db["accurate_sales_orders"].insert_one(
+                        {
+                            "accurate_id": marker,
+                            "branch_id": "50",
+                            "po_no": "STALE",
+                        },
+                        session=session,
+                    )
+
+                mutate_under_writer_fence(ingest_db, fence, _write)
+                outcomes["writer"] = "committed"
+            except WriterFenceLostError:
+                outcomes["writer"] = "fence_lost"
+            except Exception as exc:  # noqa: BLE001
+                outcomes["writer"] = type(exc).__name__
+
+        def maint() -> None:
+            barrier.wait(timeout=5)
+            handle = acquire_po_repair_maintenance(ingest_db, ttl_seconds=60)
+            outcomes["maint"] = "held"
+            ingest_db["accurate_sales_orders"].insert_one(
+                {
+                    "accurate_id": "repair_ok_1",
+                    "branch_id": "150",
+                    "po_no": "REPAIR",
+                }
+            )
+            release_po_repair_maintenance(
+                ingest_db,
+                owner_token=handle["owner_token"],
+                job_tokens=handle.get("job_tokens"),
+            )
+
+        tw = threading.Thread(target=writer)
+        tm = threading.Thread(target=maint)
+        tw.start()
+        tm.start()
+        tw.join(timeout=10)
+        tm.join(timeout=10)
+
+        assert outcomes.get("maint") == "held"
+        assert outcomes.get("writer") != "committed"
+        assert ingest_db["accurate_sales_orders"].find_one({"accurate_id": marker}) is None
+        assert (
+            ingest_db["accurate_sales_orders"].find_one({"accurate_id": "repair_ok_1"})
+            is not None
+        )
+    finally:
+        exit_po_repair_writer_section(ingest_db, fence)
+
+
+def test_ttl_expired_then_maint_blocks_stale_resume(ingest_db: Database) -> None:
+    """TTL habis + maint acquire → resume mutate gagal; DB tanpa write stale."""
+    from app.services.po_repair_maintenance import (
+        WRITER_ID_PREFIX,
+        WriterFenceLostError,
+        acquire_po_repair_maintenance,
+        enter_po_repair_writer_section,
+        exit_po_repair_writer_section,
+        mutate_under_writer_fence,
+        release_po_repair_maintenance,
+    )
+
+    fence = enter_po_repair_writer_section(ingest_db, ttl_seconds=60)
+    past = datetime.now(timezone.utc) - timedelta(seconds=5)
+    ingest_db["sync_locks"].update_one(
+        {"_id": f"{WRITER_ID_PREFIX}{fence.token}"},
+        {"$set": {"expires_at": past}},
+    )
+    handle = acquire_po_repair_maintenance(ingest_db, ttl_seconds=60)
+    try:
+
+        def _write(session: Any) -> None:
+            ingest_db["accurate_sales_orders"].insert_one(
+                {"accurate_id": "ttl_stale_x", "branch_id": "50"},
+                session=session,
+            )
+
+        with pytest.raises(WriterFenceLostError):
+            mutate_under_writer_fence(ingest_db, fence, _write)
+        assert (
+            ingest_db["accurate_sales_orders"].find_one({"accurate_id": "ttl_stale_x"})
+            is None
+        )
+    finally:
+        release_po_repair_maintenance(
+            ingest_db,
+            owner_token=handle["owner_token"],
+            job_tokens=handle.get("job_tokens"),
+        )
+        exit_po_repair_writer_section(ingest_db, fence)
+
+
+def test_dual_maintenance_only_one_wins(ingest_db: Database) -> None:
+    import threading
+
+    from app.services.accurate_auto_sync.locks import AutoSyncLockError
+    from app.services.po_repair_maintenance import (
+        PoRepairMaintenanceError,
+        acquire_po_repair_maintenance,
+        release_po_repair_maintenance,
+    )
+
+    barrier = threading.Barrier(2)
+    wins: list[str] = []
+    lock = threading.Lock()
+
+    def worker(name: str) -> None:
+        barrier.wait(timeout=5)
+        try:
+            handle = acquire_po_repair_maintenance(ingest_db, ttl_seconds=60)
+            with lock:
+                wins.append(name)
+            release_po_repair_maintenance(
+                ingest_db,
+                owner_token=handle["owner_token"],
+                job_tokens=handle.get("job_tokens"),
+            )
+        except (PoRepairMaintenanceError, AutoSyncLockError):
+            pass
+
+    t1 = threading.Thread(target=worker, args=("a",))
+    t2 = threading.Thread(target=worker, args=("b",))
+    t1.start()
+    t2.start()
+    t1.join(timeout=5)
+    t2.join(timeout=5)
+    assert len(wins) == 1
+
+
 def test_orphan_expired_lease_cleaned_after_epoch_bump(ingest_db: Database) -> None:
     """Crash writer: lease orphan expired → maintenance bump epoch + hapus aman."""
     from app.services.po_repair_maintenance import (
@@ -638,6 +804,7 @@ def test_apply_loop_lease_loss_and_partial_audit(tmp_path: Path, ingest_db: Data
         refresh_fn=refresh,
         maint_handle={"owner_token": "t", "job_tokens": {}},
         refresh_every=1,
+        verify_maintenance_owner=False,
     )
     assert report["ok"] is False
     assert report["stop_reason"] == "maintenance_lease_lost"

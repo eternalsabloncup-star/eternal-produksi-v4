@@ -58,6 +58,7 @@ def run_cas_apply_loop(
     refresh_fn: RefreshFn | None,
     maint_handle: dict[str, Any] | None,
     refresh_every: int = 25,
+    verify_maintenance_owner: bool = True,
 ) -> dict[str, Any]:
     """Jalankan CAS per kandidat; persist audit tiap progres; fail-closed partial."""
     approved_ids = {it["accurate_id"] for it in items}
@@ -185,6 +186,30 @@ def run_cas_apply_loop(
                 stop_reason = block
                 checkpoint()
                 break
+
+            if maint_handle is not None and verify_maintenance_owner:
+                try:
+                    from app.services.po_repair_maintenance import (
+                        require_maintenance_owner,
+                    )
+
+                    require_maintenance_owner(
+                        db, owner_token=str(maint_handle["owner_token"])
+                    )
+                except Exception as exc:  # noqa: BLE001
+                    failed += 1
+                    audit.append(
+                        {
+                            "accurate_id": aid,
+                            "status": "maintenance_lost",
+                            "error": type(exc).__name__,
+                            "msg": str(exc)[:200],
+                        }
+                    )
+                    stopped = True
+                    stop_reason = "maintenance_lease_lost"
+                    checkpoint()
+                    break
 
             try:
                 filled_doc = set_branch_fn(db, aid, it["expected_branch_id"])
