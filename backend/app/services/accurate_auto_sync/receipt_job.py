@@ -24,7 +24,7 @@ from app.integrations.accurate.normalize_invoice_receipt import (
 from app.repositories import invoice_repository as invoices
 from app.repositories import payment_repository as payments
 from app.repositories.po_repository import get_by_accurate_id
-from app.services.accurate_auto_sync.checkpoint import CONTRACT_OTHER
+from app.services.accurate_auto_sync.checkpoint import CONTRACT_SR
 from app.services.accurate_auto_sync.discovery import run_discovery_cycle
 from app.services.accurate_auto_sync.locks import (
     AutoSyncLockError,
@@ -40,11 +40,10 @@ from app.services.accurate_auto_sync.status import (
 )
 from app.services import payment_service
 
-# Path/shape verified live earlier; sort params pending Owner live confirm.
-# Keep "verified" prefix so existing kill-switch/contract-ready checks stay green.
-RECEIPT_CONTRACT_STATUS = "verified_live_read_only_path;sort_pending_live"
+# Live GET 2026-11-20: id|asc multipage + lastUpdate|desc (with fields=id,lastUpdate).
+RECEIPT_CONTRACT_STATUS = "verified_live_read_only_sort"
 RECEIPT_CONTRACT_BLOCKER = ""
-RECEIPT_SORT_CONTRACT = CONTRACT_OTHER
+RECEIPT_SORT_CONTRACT = CONTRACT_SR
 
 DEFAULT_PAGE_SIZE = 20
 DEFAULT_MAX_PAGES = 5
@@ -437,9 +436,14 @@ def run_receipt_auto_sync(
                     "next_page": checkpoint.get("next_page"),
                     "backfill_complete": checkpoint.get("backfill_complete"),
                     "incremental_next_page": checkpoint.get("incremental_next_page"),
+                    "incremental_cycles_completed": checkpoint.get(
+                        "incremental_cycles_completed"
+                    ),
+                    "incremental_crawl_complete": disc.get("incremental_crawl_complete"),
                     "sort_backfill": SORT_BACKFILL,
                     "sort_incremental": SORT_INCREMENTAL,
                 },
+                "incremental_pending": disc.get("incremental_pending"),
                 "discovery_complete": complete,
                 "payment_threshold_changed": False,
             },

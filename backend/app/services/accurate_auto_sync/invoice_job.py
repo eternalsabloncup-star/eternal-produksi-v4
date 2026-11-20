@@ -14,7 +14,7 @@ from app.integrations.accurate.normalize_invoice_receipt import (
     normalize_sales_invoice,
 )
 from app.repositories import invoice_repository as invoices
-from app.services.accurate_auto_sync.checkpoint import CONTRACT_OTHER
+from app.services.accurate_auto_sync.checkpoint import CONTRACT_SI
 from app.services.accurate_auto_sync.discovery import run_discovery_cycle
 from app.services.accurate_auto_sync.locks import (
     AutoSyncLockError,
@@ -34,7 +34,7 @@ DEFAULT_MAX_PAGES = 5
 DEFAULT_MAX_ROWS = 100
 DEFAULT_TIMEOUT_SECONDS = 50.0
 
-INVOICE_CONTRACT_STATUS = CONTRACT_OTHER
+INVOICE_CONTRACT_STATUS = CONTRACT_SI
 
 
 def is_invoice_auto_sync_enabled() -> bool:
@@ -167,13 +167,23 @@ def run_invoice_auto_sync(
                     "next_page": checkpoint.get("next_page"),
                     "backfill_complete": checkpoint.get("backfill_complete"),
                     "incremental_next_page": checkpoint.get("incremental_next_page"),
+                    "incremental_cycles_completed": checkpoint.get(
+                        "incremental_cycles_completed"
+                    ),
+                    "incremental_crawl_complete": disc.get("incremental_crawl_complete"),
                     "sort_backfill": SORT_BACKFILL,
                     "sort_incremental": SORT_INCREMENTAL,
                 },
+                "incremental_pending": disc.get("incremental_pending"),
                 "discovery_complete": complete,
                 "note": (
-                    "Sort contract for sales-invoice pending Owner live confirm; "
-                    "runtime monotonicity guard active on id|asc pages."
+                    None
+                    if complete
+                    else (
+                        "incremental_pending"
+                        if disc.get("incremental_pending")
+                        else "backfill_incomplete"
+                    )
                 ),
             },
         )

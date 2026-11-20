@@ -462,9 +462,11 @@ def run_po_auto_sync(
                     "incremental_cycles_completed": checkpoint.get(
                         "incremental_cycles_completed"
                     ),
+                    "incremental_crawl_complete": disc.get("incremental_crawl_complete"),
                     "sort_backfill": SORT_BACKFILL,
                     "sort_incremental": SORT_INCREMENTAL,
                 },
+                "incremental_pending": disc.get("incremental_pending"),
                 "discovery_complete": complete,
                 "note": (
                     None
@@ -472,7 +474,11 @@ def run_po_auto_sync(
                     else (
                         "Backfill id|asc belum selesai — checkpoint next_page dipertahankan."
                         if not disc["backfill_done"]
-                        else None
+                        else (
+                            "incremental_pending — crawl lastUpdate belum selesai."
+                            if disc.get("incremental_pending")
+                            else None
+                        )
                     )
                 ),
             },

@@ -129,12 +129,18 @@ def test_250_po_discovered_across_cycles_cap_100(
         assert r["complete"] is False
     assert len(seen) == 250
     assert load_po_checkpoint(pdb)["backfill_complete"] is True
-    final = po_job.run_po_auto_sync(
-        pdb, client=client, page_size=20, max_pages=5, max_rows=100, timeout_seconds=50
-    )
+    final = None
+    for _ in range(8):
+        final = po_job.run_po_auto_sync(
+            pdb, client=client, page_size=20, max_pages=5, max_rows=100, timeout_seconds=50
+        )
+        if final.get("complete"):
+            break
+    assert final is not None
     assert final["complete"] is True
     assert final["partial"] is False
     assert final["status"]["health"] == "HEALTHY"
+    assert final.get("checkpoint", {}).get("incremental_crawl_complete") is True
 
 
 def test_new_po_during_pagination_and_old_mutation(
@@ -259,6 +265,37 @@ def test_empty_universe_completes(
     )
     assert r["complete"] is True
     assert load_po_checkpoint(pdb)["backfill_complete"] is True
+
+
+def test_backfill_done_incremental_pending_not_complete(
+    pdb: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """COMPLETE tidak diklaim saat crawl lastUpdate masih pending."""
+    _enable(monkeypatch)
+    client = UniverseClient()
+    client.seed(40)
+    for _ in range(5):
+        r = po_job.run_po_auto_sync(
+            pdb, client=client, page_size=5, max_pages=4, max_rows=100, timeout_seconds=50
+        )
+        if load_po_checkpoint(pdb).get("backfill_complete"):
+            break
+    assert load_po_checkpoint(pdb)["backfill_complete"] is True
+    # Batasi halaman agar crawl incremental tidak selesai dalam 1 siklus.
+    mid = po_job.run_po_auto_sync(
+        pdb, client=client, page_size=5, max_pages=2, max_rows=100, timeout_seconds=50
+    )
+    cp = load_po_checkpoint(pdb)
+    if mid.get("complete"):
+        # Dataset kecil: incremental boleh selesai cepat — masih valid.
+        assert cp.get("incremental_crawl_complete") is True
+    else:
+        assert mid["partial"] is True
+        assert mid["complete"] is False
+        assert (
+            int(cp.get("incremental_next_page") or 1) > 1
+            or not cp.get("incremental_crawl_complete")
+        )
 
 
 def test_timeout_keeps_checkpoint(

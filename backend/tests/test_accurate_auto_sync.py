@@ -40,13 +40,16 @@ class FakeAccurateClient:
         page = int(params.get("sp.page") or 1)
         size = int(params.get("sp.pageSize") or 20)
         sort = str(params.get("sp.sort") or "")
-        rows = list(self.list_rows)
+        rows = [dict(r) for r in self.list_rows]
+        # Default Accurate list may omit lastUpdate unless fields requested.
+        if "lastUpdate" in str(params.get("fields") or ""):
+            for r in rows:
+                r.setdefault("lastUpdate", f"ts-{r.get('id')}")
         if sort.startswith("id|asc") or sort == "id":
             rows = sorted(rows, key=lambda r: int(r.get("id") or 0))
         elif sort.startswith("id|desc"):
             rows = sorted(rows, key=lambda r: int(r.get("id") or 0), reverse=True)
         elif "lastUpdate" in sort:
-            # Sort by actual lastUpdate stamp — bukan proxy id.
             rows = sorted(
                 rows,
                 key=lambda r: str(r.get("lastUpdate") or ""),

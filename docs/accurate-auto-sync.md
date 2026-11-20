@@ -36,28 +36,33 @@ Relasi:
 
 ### Shared list discovery (PO / SJ / Invoice / Receipt)
 
-| Endpoint | Path verified live | Sort `id\|asc` / `lastUpdate\|desc` |
+Live GET 2026-11-20 (VPS read-only; ids/`lastUpdate` only):
+
+| Endpoint | `id\|asc` multipage | `lastUpdate\|desc` |
 | --- | --- | --- |
-| Sales Order | yes | **verified live** |
-| Delivery Order | yes (path/shape) | pending Owner live confirm |
-| Sales Invoice | yes (path/shape) | pending Owner live confirm |
-| Sales Receipt | yes (path/shape) | pending Owner live confirm |
+| Sales Order | verified (prior) | verified (prior) |
+| Delivery Order | **PASS** contiguous | **PASS** with `fields=id,lastUpdate` |
+| Sales Invoice | **PASS** contiguous | **PASS** with `fields=id,lastUpdate` |
+| Sales Receipt | **PASS** contiguous | **PASS** with `fields=id,lastUpdate` |
+
+Default list rows may return only `id`; request `fields=id,lastUpdate` for timestamps. Sort differs from `id|desc`.
 
 Shared engine (`discovery.py` + `checkpoint.py`):
 
 | Param | Behavior |
 | --- | --- |
 | `sp.page` + `sp.pageSize` | Contiguous pages |
-| `sp.sort=id\|asc` | Backfill; runtime monotonicity guard |
-| `sp.sort=lastUpdate\|desc` | Incremental crawl + page-1 hot refresh |
+| `sp.sort=id\|asc` | Backfill; fail-closed if not monotonic |
+| `sp.sort=lastUpdate\|desc` | Incremental crawl + page-1 hot refresh; fail-closed if timestamps not desc |
+| `fields=id,lastUpdate` | Required for lastUpdate visibility |
 | `filter.id.op=GREATER_*` | Do not use (SO live: silently ignored) |
 
-Per-job checkpoint on `accurate_auto_sync_status.checkpoint` (`po` / `sj` / `invoice` / `receipt`):
+Per-job checkpoint (`po` / `sj` / `invoice` / `receipt`):
 
-- `next_page`, `backfill_complete`, `incremental_next_page`, `incremental_cycles_completed`, sorts, `contract_status`
+- `backfill_complete`, `incremental_crawl_complete`, `incremental_next_page`, `incremental_cycles_completed`
+- `incremental_pending` = backfill done but crawl unfinished / never completed one pass
+- result `complete` = backfill + ≥1 incremental pass + zero failures (**not** “all Accurate data current this cycle” if pending)
 - Advance only after full page success; mid-page failure keeps the page
-- COMPLETE only when `backfill_complete` and zero failures
-- Incremental: every cycle refreshes `lastUpdate\|desc` page 1, then continues crawl — no fixed 3-page starvation
 - Same-cycle ID dedupe; no FastAPI background loop
 
 ## Index (manual maintenance)

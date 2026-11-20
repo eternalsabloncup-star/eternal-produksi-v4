@@ -221,13 +221,14 @@ def test_invoice_mid_fail_retry_and_independent_checkpoint(
     assert load_job_checkpoint(ddb, "po").get("next_page") == 1
     assert load_job_checkpoint(ddb, "po").get("backfill_complete") is False
     client.fail_inv.clear()
-    for _ in range(4):
+    for _ in range(8):
         r = invoice_job.run_invoice_auto_sync(
             ddb, client=client, page_size=5, max_pages=3, max_rows=100, timeout_seconds=50
         )
         if r.get("complete"):
             break
     assert ddb[invoices.INVOICES_COLLECTION].count_documents({}) == 30
+    assert load_job_checkpoint(ddb, "invoice")["backfill_complete"] is True
 
 
 def test_receipt_backfill_after_invoices(
@@ -247,7 +248,7 @@ def test_receipt_backfill_after_invoices(
         )
         if load_job_checkpoint(ddb, "invoice").get("backfill_complete"):
             break
-    for _ in range(3):
+    for _ in range(6):
         r = receipt_job.run_receipt_auto_sync(
             ddb, client=client, page_size=20, max_pages=5, max_rows=100, timeout_seconds=50
         )
@@ -255,6 +256,7 @@ def test_receipt_backfill_after_invoices(
             break
     assert ddb[payments.RECEIPTS_COLLECTION].count_documents({}) == 40
     assert load_job_checkpoint(ddb, "receipt")["backfill_complete"] is True
+    assert r.get("complete") is True
 
 
 def test_sj_discovery_checkpoint_guard_test(
@@ -266,7 +268,7 @@ def test_sj_discovery_checkpoint_guard_test(
     upsert_sales_order(ddb, normalize_sales_order(so))
     client = DocUniverse()
     client.seed_sj(25, po_id=95106)
-    for _ in range(3):
+    for _ in range(6):
         r = sj_job.run_sj_auto_sync(
             ddb, client=client, page_size=10, max_pages=3, max_rows=100, timeout_seconds=50
         )
@@ -274,6 +276,7 @@ def test_sj_discovery_checkpoint_guard_test(
         if r.get("complete"):
             break
     assert load_job_checkpoint(ddb, "sj")["backfill_complete"] is True
+    assert r.get("complete") is True
     from app.repositories.delivery_repository import DELIVERY_NOTES_COLLECTION
 
     assert ddb[DELIVERY_NOTES_COLLECTION].count_documents({}) == 25

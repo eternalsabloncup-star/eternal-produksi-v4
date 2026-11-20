@@ -9,7 +9,7 @@ from pymongo.database import Database
 
 from app.config import get_settings
 from app.integrations.accurate.client import AccurateReadClient
-from app.services.accurate_auto_sync.checkpoint import CONTRACT_OTHER
+from app.services.accurate_auto_sync.checkpoint import CONTRACT_DO
 from app.services.accurate_auto_sync.discovery import run_discovery_cycle
 from app.services.accurate_auto_sync.locks import (
     AutoSyncLockError,
@@ -29,7 +29,7 @@ from app.services.delivery_sync import (
     sync_delivery_order_payload,
 )
 
-SJ_CONTRACT_STATUS = CONTRACT_OTHER
+SJ_CONTRACT_STATUS = CONTRACT_DO
 
 _SYSTEM_USER = {
     "email_normalized": "system:accurate-auto-sync",
@@ -155,17 +155,21 @@ def run_sj_auto_sync(
                 "sort_warnings": disc.get("sort_warnings") or [],
                 "note": (
                     "Auto SJ memakai guard test existing; aktivasi production "
-                    "memerlukan keputusan CEO + jalur guard terpisah. "
-                    "Sort contract pending Owner live confirm."
+                    "memerlukan keputusan CEO + jalur guard terpisah."
                 ),
                 "failures": failures[:20],
                 "checkpoint": {
                     "next_page": checkpoint.get("next_page"),
                     "backfill_complete": checkpoint.get("backfill_complete"),
                     "incremental_next_page": checkpoint.get("incremental_next_page"),
+                    "incremental_cycles_completed": checkpoint.get(
+                        "incremental_cycles_completed"
+                    ),
+                    "incremental_crawl_complete": disc.get("incremental_crawl_complete"),
                     "sort_backfill": SORT_BACKFILL,
                     "sort_incremental": SORT_INCREMENTAL,
                 },
+                "incremental_pending": disc.get("incremental_pending"),
                 "discovery_complete": complete,
             },
         )

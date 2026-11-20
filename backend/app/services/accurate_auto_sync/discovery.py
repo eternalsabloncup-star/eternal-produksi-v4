@@ -6,12 +6,19 @@ Guarantees (within bounded cycle budgets):
 - After backfill: crawl ``lastUpdate|desc`` via ``incremental_next_page``;
   each cycle also refreshes page 1 (hot window) so new/recent changes are not
   starved by a fixed 3-page window.
-- COMPLETE requires ``backfill_complete`` and zero failures.
+
+Status semantics (explicit):
+- ``backfill_complete`` — histori id|asc selesai
+- ``incremental_crawl_complete`` — ≥1 full pass lastUpdate|desc selesai
+- ``incremental_pending`` — backfill done tapi crawl incremental belum selesai
+  (cursor mid-pass ATAU belum pernah satu full pass)
+- result ``complete`` — backfill + ≥1 incremental pass + zero failures;
+  **bukan** klaim “semua data Accurate mutakhir di siklus ini” bila crawl
+  masih pending
 
 Page-number checkpoints under mutating ``lastUpdate`` order are not a perfect
 snapshot; page-1 hot refresh + full incremental crawl + same-cycle dedupe are
-the tested mitigations. Id-filter cursors are not used (Accurate ignores them
-on SO; unproven elsewhere).
+the tested mitigations. Id-filter cursors are not used (Accurate ignores them).
 """
 
 from __future__ import annotations
@@ -31,14 +38,19 @@ from app.services.accurate_auto_sync.checkpoint import (
     save_job_checkpoint,
 )
 from app.services.accurate_auto_sync.locks import AutoSyncLockError, refresh_job_lock
-from app.services.accurate_auto_sync.status import INCOMPLETE_STOP_REASONS
 
 ListFetcher = Callable[[dict[str, Any]], list[dict[str, Any]]]
 SyncOne = Callable[[str], dict[str, Any]]
 
 
 def list_page_params(page: int, page_size: int, *, sort: str) -> dict[str, Any]:
-    return {"sp.page": page, "sp.pageSize": page_size, "sp.sort": sort}
+    # fields=id,lastUpdate: live Accurate returns lastUpdate only when requested.
+    return {
+        "sp.page": page,
+        "sp.pageSize": page_size,
+        "sp.sort": sort,
+        "fields": "id,lastUpdate",
+    }
 
 
 def _ids_monotonic_asc(rows: list[dict[str, Any]]) -> bool:
@@ -278,12 +290,23 @@ def run_discovery_cycle(
             order = _last_update_desc_ok(rows)
             if order is False:
                 sort_warnings.append("incremental_lastUpdate_not_desc")
-                # Soft warning — continue; do not invent alternate cursor.
+                stopped_reason = "sort_unstable"
+                counters["failed"] += 1
+                failures.append(
+                    {
+                        "stage": "list_sort_guard",
+                        "page": page,
+                        "sort": SORT_INCREMENTAL,
+                        "code": "sort_unstable",
+                    }
+                )
+                return False
             if not rows:
                 checkpoint["incremental_next_page"] = 1
                 checkpoint["incremental_cycles_completed"] = (
                     int(checkpoint.get("incremental_cycles_completed") or 0) + 1
                 )
+                checkpoint["incremental_crawl_complete"] = True
                 return False
             outcome = _sync_rows(rows, page=page, sort=SORT_INCREMENTAL)
             if outcome.get("stopped"):
@@ -297,6 +320,7 @@ def run_discovery_cycle(
                 checkpoint["incremental_cycles_completed"] = (
                     int(checkpoint.get("incremental_cycles_completed") or 0) + 1
                 )
+                checkpoint["incremental_crawl_complete"] = True
                 return False
             return True
 
@@ -329,20 +353,33 @@ def run_discovery_cycle(
     has_failures = counters["failed"] > 0 or bool(failures)
     list_failed = stopped_reason == "list_failed"
     backfill_done = bool(checkpoint.get("backfill_complete"))
-    incomplete = not backfill_done
-    if backfill_done and stopped_reason in INCOMPLETE_STOP_REASONS:
-        incomplete = False
+    crawl_done = bool(checkpoint.get("incremental_crawl_complete")) or (
+        int(checkpoint.get("incremental_cycles_completed") or 0) > 0
+    )
+    # Mid-pass cursor OR never finished one full lastUpdate pass after backfill.
+    incremental_pending = bool(backfill_done) and (
+        int(checkpoint.get("incremental_next_page") or 1) > 1 or not crawl_done
+    )
+    incomplete = (not backfill_done) or incremental_pending
     if stopped_reason == "page_failed":
-        incomplete = not backfill_done
+        incomplete = True
     if stopped_reason == "sort_unstable":
         incomplete = True
-    complete = backfill_done and not has_failures and not list_failed
-    if stopped_reason == "sort_unstable":
-        complete = False
+    # complete = histori backfill + ≥1 full incremental pass + no failures.
+    # Bukan klaim “semua mutasi Accurate sudah terlihat di siklus ini” bila pending.
+    complete = (
+        backfill_done
+        and crawl_done
+        and not incremental_pending
+        and not has_failures
+        and not list_failed
+        and stopped_reason != "sort_unstable"
+    )
     ok = (not list_failed) and (not has_failures) and stopped_reason != "sort_unstable"
     partial = (not complete) and (not list_failed) and (
         incomplete
-        or stopped_reason in {"page_failed", "timeout", "max_pages", "max_rows", "sort_unstable"}
+        or stopped_reason
+        in {"page_failed", "timeout", "max_pages", "max_rows", "sort_unstable"}
     )
     if complete:
         partial = False
@@ -359,4 +396,6 @@ def run_discovery_cycle(
         "has_failures": has_failures,
         "list_failed": list_failed,
         "backfill_done": backfill_done,
+        "incremental_crawl_complete": crawl_done,
+        "incremental_pending": incremental_pending,
     }

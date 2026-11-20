@@ -21,9 +21,13 @@ SORT_INCREMENTAL = "lastUpdate|desc"
 
 CHECKPOINT_VERSION = 2
 
-# SO sort proven live. DO/SI/SR list paths proven; sort params pending live confirm.
+# Live GET 2026-11-20: SO/DO/SI/SR all accept id|asc (contiguous) + lastUpdate|desc
+# (timestamps require fields=id,lastUpdate on list rows).
 CONTRACT_SO = "verified_live_read_only_sort"
-CONTRACT_OTHER = "list_path_verified_sort_pending_live"
+CONTRACT_DO = "verified_live_read_only_sort"
+CONTRACT_SI = "verified_live_read_only_sort"
+CONTRACT_SR = "verified_live_read_only_sort"
+CONTRACT_OTHER = CONTRACT_SI  # compat alias
 
 
 def default_checkpoint(*, contract_status: str = CONTRACT_OTHER) -> dict[str, Any]:
@@ -37,6 +41,8 @@ def default_checkpoint(*, contract_status: str = CONTRACT_OTHER) -> dict[str, An
         "last_completed_page": 0,
         "incremental_next_page": 1,
         "incremental_cycles_completed": 0,
+        # True after ≥1 full lastUpdate|desc pass (short/empty page reset).
+        "incremental_crawl_complete": False,
         "phase": "backfill",
         "contract_status": contract_status,
         "updated_at": None,
@@ -61,6 +67,9 @@ def load_job_checkpoint(
         0, int(base.get("incremental_cycles_completed") or 0)
     )
     base["backfill_complete"] = bool(base.get("backfill_complete"))
+    base["incremental_crawl_complete"] = bool(
+        base.get("incremental_crawl_complete")
+    ) or base["incremental_cycles_completed"] > 0
     base["phase"] = "incremental" if base["backfill_complete"] else "backfill"
     base["sort_backfill"] = SORT_BACKFILL
     base["sort_incremental"] = SORT_INCREMENTAL
