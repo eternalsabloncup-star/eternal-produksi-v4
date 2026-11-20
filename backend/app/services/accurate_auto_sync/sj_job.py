@@ -52,24 +52,26 @@ def sync_one_sj(
     mongo_guard: str | None = None,
 ) -> dict[str, Any]:
     require_owns_job_lock(db, job="sj", owner_token=owner_token)
-    from app.services.po_repair_maintenance import refuse_if_po_repair_maintenance
+    from app.services.po_repair_maintenance import po_repair_writer_section
 
-    refuse_if_po_repair_maintenance(db)
-    detail = client.fetch_delivery_order_detail(accurate_id)
-    require_owns_job_lock(db, job="sj", owner_token=owner_token)
-    from app.services.accurate_auto_sync.date_floor import detail_scope_outcome
+    with po_repair_writer_section(db) as fence:
+        fence.assert_valid(db)
+        detail = client.fetch_delivery_order_detail(accurate_id)
+        fence.assert_valid(db)
+        require_owns_job_lock(db, job="sj", owner_token=owner_token)
+        from app.services.accurate_auto_sync.date_floor import detail_scope_outcome
 
-    gated = detail_scope_outcome(detail, accurate_id=str(accurate_id))
-    if gated is not None:
-        return gated
-    guard = mongo_guard or resolve_sj_mongo_guard()
-    return sync_delivery_order_payload(
-        db,
-        _SYSTEM_USER,
-        detail,
-        mongo_guard=guard,  # type: ignore[arg-type]
-        require_registered_po=True,
-    )
+        gated = detail_scope_outcome(detail, accurate_id=str(accurate_id))
+        if gated is not None:
+            return gated
+        guard = mongo_guard or resolve_sj_mongo_guard()
+        return sync_delivery_order_payload(
+            db,
+            _SYSTEM_USER,
+            detail,
+            mongo_guard=guard,  # type: ignore[arg-type]
+            require_registered_po=True,
+        )
 
 
 def run_sj_auto_sync(

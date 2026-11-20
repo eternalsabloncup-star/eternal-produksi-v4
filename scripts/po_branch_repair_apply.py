@@ -7,7 +7,7 @@ Wajib untuk production write:
   sealed manifest + checksum + count
   --backup-meta (archive file ADA + SHA256 cocok + eternal_v4@27018)
   --expect-total-po + --expect-missing-po (wajib, cocok snapshot)
-  Mongo maintenance gate (tahan job lock PO/SJ + refuse writer API)
+  Mongo maintenance gate (drain writer lease + tahan job lock PO/SJ)
 
 JSON --maintenance-lock hanya attestasi operator; isolasi nyata = Mongo gate.
 """
@@ -28,6 +28,11 @@ for p in (_BACKEND, _SCRIPTS):
     if str(p) not in sys.path:
         sys.path.insert(0, str(p))
 
+from lib.po_branch_repair_apply_loop import (  # noqa: E402
+    AuditPersistError,
+    persist_audit,
+    run_cas_apply_loop,
+)
 from lib.po_branch_repair_safety import (  # noqa: E402
     DEFAULT_LIVE_REPO,
     assert_no_po_sync_worker,
@@ -40,11 +45,6 @@ from lib.po_branch_repair_safety import (  # noqa: E402
     require_snapshot_args,
     resolve_live_sha,
 )
-
-
-def _persist_audit(path: Path, report: dict[str, Any]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(report, indent=2, default=str))
 
 
 def main() -> int:
@@ -110,7 +110,7 @@ def main() -> int:
                 "hint": "Butuh --execute dan --i-understand-this-writes-production",
             }
         )
-        _persist_audit(audit_path, base_report)
+        persist_audit(audit_path, base_report)
         print(json.dumps(base_report))
         return 2
 
@@ -133,7 +133,7 @@ def main() -> int:
         )
     except ValueError as exc:
         base_report.update({"refused": True, "reason": str(exc)})
-        _persist_audit(audit_path, base_report)
+        persist_audit(audit_path, base_report)
         print(json.dumps(base_report))
         return 3
 
@@ -159,20 +159,20 @@ def main() -> int:
         )
     except ValueError as exc:
         base_report.update({"refused": True, "reason": str(exc)})
-        _persist_audit(audit_path, base_report)
+        persist_audit(audit_path, base_report)
         print(json.dumps(base_report))
         return 4
 
     if getattr(settings, "v4_po_auto_sync_enabled", False):
         base_report.update({"refused": True, "reason": "po_auto_sync_must_be_off"})
-        _persist_audit(audit_path, base_report)
+        persist_audit(audit_path, base_report)
         print(json.dumps(base_report))
         return 5
 
     db = get_db(settings)
     if db.name != "eternal_v4":
         base_report.update({"refused": True, "reason": f"db_handle_mismatch:{db.name}"})
-        _persist_audit(audit_path, base_report)
+        persist_audit(audit_path, base_report)
         print(json.dumps(base_report))
         return 4
 
@@ -185,7 +185,7 @@ def main() -> int:
         )
     except ValueError as exc:
         base_report.update({"refused": True, "reason": str(exc)})
-        _persist_audit(audit_path, base_report)
+        persist_audit(audit_path, base_report)
         print(json.dumps(base_report))
         return 6
 
@@ -198,13 +198,13 @@ def main() -> int:
             {
                 "refused": True,
                 "reason": f"maintenance_acquire_failed:{exc}",
-                "blocker": "PO/SJ sync lease aktif atau maintenance lain — STOP tanpa write",
+                "blocker": "Writer in-flight atau sync lease aktif — STOP tanpa write",
             }
         )
-        _persist_audit(audit_path, base_report)
+        persist_audit(audit_path, base_report)
         print(json.dumps(base_report))
         return 7
-    except Exception as exc:  # noqa: BLE001 — AutoSyncLockError dll
+    except Exception as exc:  # noqa: BLE001
         base_report.update(
             {
                 "refused": True,
@@ -212,155 +212,12 @@ def main() -> int:
                 "blocker": "Tidak dapat membuktikan isolasi writer — STOP tanpa write",
             }
         )
-        _persist_audit(audit_path, base_report)
+        persist_audit(audit_path, base_report)
         print(json.dumps(base_report))
         return 7
 
-    approved_ids = {it["accurate_id"] for it in items}
-    audit: list[dict[str, Any]] = []
-    filled = blocked = already = skipped = failed = 0
-    stopped = False
-    stop_reason = None
-    wrote_any = False
-
-    try:
-        for idx, it in enumerate(items):
-            if idx and idx % 25 == 0:
-                if not refresh_po_repair_maintenance(
-                    db,
-                    owner_token=maint_handle["owner_token"],
-                    job_tokens=maint_handle.get("job_tokens"),
-                ):
-                    stopped = True
-                    stop_reason = "maintenance_lease_lost"
-                    failed += 1
-                    audit.append({"accurate_id": it["accurate_id"], "status": "lease_lost"})
-                    break
-
-            aid = it["accurate_id"]
-            if aid not in approved_ids:
-                failed += 1
-                audit.append({"accurate_id": aid, "status": "foreign_id_rejected"})
-                stopped = True
-                stop_reason = "foreign_id"
-                break
-
-            block = prewrite_block_reason(
-                db,
-                accurate_id=aid,
-                expected_branch_id=it["expected_branch_id"],
-                expected_po_no=it.get("po_no"),
-                expected_trans_date=it.get("accurate_trans_date"),
-            )
-            if block == "already_has_branch":
-                # Drift setelah gate snapshot → fail-closed (set kandidat berubah).
-                blocked += 1
-                audit.append(
-                    {
-                        "accurate_id": aid,
-                        "status": "blocked",
-                        "reason": "candidate_branched_after_snapshot",
-                    }
-                )
-                stopped = True
-                stop_reason = "manifest_drift_mid_apply"
-                break
-            if block is not None:
-                blocked += 1
-                audit.append(
-                    {
-                        "accurate_id": aid,
-                        "status": "blocked",
-                        "reason": block,
-                        "expected": it["expected_branch_id"],
-                    }
-                )
-                stopped = True
-                stop_reason = block
-                break
-
-            try:
-                filled_doc = set_branch_id_if_empty_and_unaccepted(
-                    db, aid, it["expected_branch_id"]
-                )
-            except Exception as exc:  # noqa: BLE001
-                failed += 1
-                audit.append(
-                    {
-                        "accurate_id": aid,
-                        "status": "write_error",
-                        "error": type(exc).__name__,
-                        "msg": str(exc)[:200],
-                    }
-                )
-                stopped = True
-                stop_reason = "write_error"
-                break
-
-            if filled_doc is None:
-                blocked += 1
-                race = prewrite_block_reason(
-                    db,
-                    accurate_id=aid,
-                    expected_branch_id=it["expected_branch_id"],
-                    expected_po_no=it.get("po_no"),
-                    expected_trans_date=it.get("accurate_trans_date"),
-                )
-                audit.append(
-                    {
-                        "accurate_id": aid,
-                        "status": "cas_miss_or_blocked",
-                        "reason": race or "cas_miss",
-                        "expected": it["expected_branch_id"],
-                    }
-                )
-                stopped = True
-                stop_reason = race or "cas_miss"
-                break
-
-            wrote_any = True
-            filled += 1
-            audit.append(
-                {
-                    "accurate_id": aid,
-                    "status": "filled",
-                    "branch_id": filled_doc.get("branch_id"),
-                    "expected": it["expected_branch_id"],
-                }
-            )
-
-        remaining = len(items) - len(audit)
-        if stopped and remaining > 0:
-            for it in items[len(audit) :]:
-                skipped += 1
-                audit.append(
-                    {
-                        "accurate_id": it["accurate_id"],
-                        "status": "skipped_after_stop",
-                        "stop_reason": stop_reason,
-                    }
-                )
-    finally:
-        if maint_handle is not None:
-            release_po_repair_maintenance(
-                db,
-                owner_token=maint_handle["owner_token"],
-                job_tokens=maint_handle.get("job_tokens"),
-            )
-
-    ok = (
-        not stopped
-        and failed == 0
-        and blocked == 0
-        and filled + already == len(items)
-        and skipped == 0
-    )
-    report = {
+    enriched_base = {
         **base_report,
-        "ok": ok,
-        "wrote_mongo": wrote_any,
-        "stopped": stopped,
-        "stop_reason": stop_reason,
         "live_sha": live_sha,
         "db_gate": db_gate,
         "backup_sha256": backup.get("archive_sha256"),
@@ -370,39 +227,57 @@ def main() -> int:
         "manifest_sha256": args.expect_manifest_sha256,
         "candidate_count": len(items),
         "snapshot": snap,
-        "filled": filled,
-        "blocked": blocked,
-        "already": already,
-        "skipped": skipped,
-        "failed": failed,
-        "items": audit,
-        "generated_at": datetime.now(timezone.utc).isoformat(),
         "notes": [
-            "Isolasi: Mongo maintenance gate + job lock PO/SJ; writer API refuse.",
+            "Isolasi: writer lease drain + job lock PO/SJ.",
             "Bukan transaksi multi-dokumen. Partial apply ⇒ ok=false.",
             "Backup archive file wajib ada dan SHA256 cocok.",
         ],
     }
-    _persist_audit(audit_path, report)
+
+    try:
+        report = run_cas_apply_loop(
+            db,
+            items,
+            audit_path=audit_path,
+            base_report=enriched_base,
+            set_branch_fn=set_branch_id_if_empty_and_unaccepted,
+            prewrite_fn=prewrite_block_reason,
+            refresh_fn=refresh_po_repair_maintenance,
+            maint_handle=maint_handle,
+        )
+    finally:
+        if maint_handle is not None:
+            release_po_repair_maintenance(
+                db,
+                owner_token=maint_handle["owner_token"],
+                job_tokens=maint_handle.get("job_tokens"),
+            )
+
     print(
         json.dumps(
             {
-                "ok": report["ok"],
+                "ok": report.get("ok"),
                 "audit_out": str(audit_path),
-                "filled": filled,
-                "blocked": blocked,
-                "already": already,
-                "skipped": skipped,
-                "failed": failed,
-                "stopped": stopped,
-                "wrote_mongo": wrote_any,
+                "filled": report.get("filled"),
+                "blocked": report.get("blocked"),
+                "already": report.get("already"),
+                "skipped": report.get("skipped"),
+                "failed": report.get("failed"),
+                "stopped": report.get("stopped"),
+                "wrote_mongo": report.get("wrote_mongo"),
+                "stop_reason": report.get("stop_reason"),
             }
         )
     )
     close_client()
     clear_settings_cache()
-    return 0 if ok else 1
+    if report.get("audit_persist_error") and not Path(audit_path).is_file():
+        return 8
+    return 0 if report.get("ok") else 1
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    try:
+        raise SystemExit(main())
+    except AuditPersistError:
+        raise SystemExit(8)

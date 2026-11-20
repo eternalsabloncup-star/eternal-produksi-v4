@@ -89,9 +89,24 @@ def accept_po(
     accurate_po_id: str,
 ) -> dict[str, Any]:
     """Terima PO → aktifkan derive tasks. Idempotent & fail-closed."""
-    from app.services.po_repair_maintenance import refuse_if_po_repair_maintenance
+    from app.services.po_repair_maintenance import (
+        enter_po_repair_writer_section,
+        exit_po_repair_writer_section,
+    )
 
-    refuse_if_po_repair_maintenance(db)
+    writer_token = enter_po_repair_writer_section(db)
+    try:
+        return _accept_po_under_writer_lease(db, user, accurate_po_id=accurate_po_id)
+    finally:
+        exit_po_repair_writer_section(db, writer_token)
+
+
+def _accept_po_under_writer_lease(
+    db: Database,
+    user: dict[str, Any],
+    *,
+    accurate_po_id: str,
+) -> dict[str, Any]:
     require_accept_permission(user)
     po_id = str(accurate_po_id).strip()
     if not po_id:

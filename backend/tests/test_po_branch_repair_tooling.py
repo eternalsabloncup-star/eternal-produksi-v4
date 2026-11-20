@@ -388,3 +388,184 @@ def test_checkpoint_bound_to_delta_and_freshness(tmp_path: Path) -> None:
     )
     done = mod._load_checkpoint(cp, delta_sha256=delta_sha)
     assert set(done) == {"1"}
+
+
+def test_inflight_writer_blocks_maintenance_acquire(ingest_db: Database) -> None:
+    """Writer sudah melewati gate (pegang lease) → repair tidak boleh acquire."""
+    from app.services.po_repair_maintenance import (
+        PoRepairMaintenanceError,
+        acquire_po_repair_maintenance,
+        enter_po_repair_writer_section,
+        exit_po_repair_writer_section,
+    )
+
+    token = enter_po_repair_writer_section(ingest_db)
+    try:
+        with pytest.raises(PoRepairMaintenanceError, match="writers_in_flight"):
+            acquire_po_repair_maintenance(ingest_db, ttl_seconds=60)
+    finally:
+        exit_po_repair_writer_section(ingest_db, token)
+    # Setelah writer keluar, acquire boleh.
+    handle = acquire_po_repair_maintenance(ingest_db, ttl_seconds=60)
+    release = __import__(
+        "app.services.po_repair_maintenance", fromlist=["release_po_repair_maintenance"]
+    ).release_po_repair_maintenance
+    release(
+        ingest_db,
+        owner_token=handle["owner_token"],
+        job_tokens=handle.get("job_tokens"),
+    )
+
+
+def test_maintenance_then_writer_enter_refused(ingest_db: Database) -> None:
+    from app.services.po_repair_maintenance import (
+        PoRepairMaintenanceError,
+        acquire_po_repair_maintenance,
+        enter_po_repair_writer_section,
+        release_po_repair_maintenance,
+    )
+
+    handle = acquire_po_repair_maintenance(ingest_db, ttl_seconds=60)
+    try:
+        with pytest.raises(PoRepairMaintenanceError):
+            enter_po_repair_writer_section(ingest_db)
+    finally:
+        release_po_repair_maintenance(
+            ingest_db,
+            owner_token=handle["owner_token"],
+            job_tokens=handle.get("job_tokens"),
+        )
+
+
+def test_apply_loop_lease_loss_and_partial_audit(tmp_path: Path, ingest_db: Database) -> None:
+    loop = _load(ROOT / "scripts" / "lib" / "po_branch_repair_apply_loop.py")
+    items = [
+        {"accurate_id": "a1", "expected_branch_id": "50", "po_no": "P1"},
+        {"accurate_id": "a2", "expected_branch_id": "50", "po_no": "P2"},
+        {"accurate_id": "a3", "expected_branch_id": "150", "po_no": "P3"},
+    ]
+    for it in items:
+        ingest_db["accurate_sales_orders"].insert_one(
+            {"accurate_id": it["accurate_id"], "po_no": it["po_no"]}
+        )
+
+    filled_ids: list[str] = []
+
+    def set_branch(db, aid, branch):
+        filled_ids.append(aid)
+        db["accurate_sales_orders"].update_one(
+            {"accurate_id": aid}, {"$set": {"branch_id": branch}}
+        )
+        return {"accurate_id": aid, "branch_id": branch}
+
+    def prewrite(db, **kwargs):
+        return None
+
+    refreshes = {"n": 0}
+
+    def refresh(db, **kwargs):
+        refreshes["n"] += 1
+        return False  # lease lost on first refresh
+
+    audit_path = tmp_path / "audit.json"
+    report = loop.run_cas_apply_loop(
+        ingest_db,
+        items,
+        audit_path=audit_path,
+        base_report={"mode": "test"},
+        set_branch_fn=set_branch,
+        prewrite_fn=prewrite,
+        refresh_fn=refresh,
+        maint_handle={"owner_token": "t", "job_tokens": {}},
+        refresh_every=1,
+    )
+    assert report["ok"] is False
+    assert report["stop_reason"] == "maintenance_lease_lost"
+    assert report["filled"] == 1
+    assert report["skipped"] >= 1
+    saved = json.loads(audit_path.read_text())
+    assert saved["filled"] == 1
+    assert any(i.get("status") == "filled" for i in saved["items"])
+    assert any(i.get("status") == "skipped_after_stop" for i in saved["items"])
+
+
+def test_apply_loop_exception_keeps_filled_count(
+    tmp_path: Path, ingest_db: Database
+) -> None:
+    loop = _load(ROOT / "scripts" / "lib" / "po_branch_repair_apply_loop.py")
+    items = [
+        {"accurate_id": "b1", "expected_branch_id": "50"},
+        {"accurate_id": "b2", "expected_branch_id": "50"},
+    ]
+
+    def set_branch(db, aid, branch):
+        if aid == "b2":
+            raise RuntimeError("boom")
+        return {"accurate_id": aid, "branch_id": branch}
+
+    def prewrite(db, **kwargs):
+        return None
+
+    audit_path = tmp_path / "audit_exc.json"
+    report = loop.run_cas_apply_loop(
+        ingest_db,
+        items,
+        audit_path=audit_path,
+        base_report={"mode": "test"},
+        set_branch_fn=set_branch,
+        prewrite_fn=prewrite,
+        refresh_fn=None,
+        maint_handle=None,
+    )
+    assert report["ok"] is False
+    assert report["filled"] == 1
+    assert report["stop_reason"] == "write_error"
+    saved = json.loads(audit_path.read_text())
+    assert saved["filled"] == 1
+    assert saved["items"][0]["status"] == "filled"
+    assert saved["items"][1]["status"] == "write_error"
+
+
+def test_apply_loop_stops_on_audit_persist_failure(
+    tmp_path: Path, ingest_db: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    loop = _load(ROOT / "scripts" / "lib" / "po_branch_repair_apply_loop.py")
+    items = [
+        {"accurate_id": "c1", "expected_branch_id": "50"},
+        {"accurate_id": "c2", "expected_branch_id": "50"},
+        {"accurate_id": "c3", "expected_branch_id": "50"},
+    ]
+    calls = {"n": 0}
+    real_persist = loop.persist_audit
+
+    def flaky(path, report):
+        calls["n"] += 1
+        # Gagal pada checkpoint setelah fill pertama (ada item filled).
+        if any(i.get("status") == "filled" for i in report.get("items") or []):
+            if report.get("stop_reason") != "audit_persist_failed":
+                raise loop.AuditPersistError("disk_full")
+        return real_persist(path, report)
+
+    monkeypatch.setattr(loop, "persist_audit", flaky)
+
+    def set_branch(db, aid, branch):
+        return {"accurate_id": aid, "branch_id": branch}
+
+    def prewrite(db, **kwargs):
+        return None
+
+    audit_path = tmp_path / "audit_disk.json"
+    report = loop.run_cas_apply_loop(
+        ingest_db,
+        items,
+        audit_path=audit_path,
+        base_report={"mode": "test"},
+        set_branch_fn=set_branch,
+        prewrite_fn=prewrite,
+        refresh_fn=None,
+        maint_handle=None,
+    )
+    assert report["ok"] is False
+    assert report["stop_reason"] == "audit_persist_failed"
+    assert report["filled"] == 1
+    assert report["skipped"] == 2
