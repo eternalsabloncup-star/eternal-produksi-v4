@@ -20,9 +20,13 @@ tanpa approval. Default kode tetap OFF.
 | Role | view | confirm | edit | cancel |
 | --- | --- | --- | --- | --- |
 | Helper | ALLOW | ALLOW | ALLOW | DENY |
-| Production Head | ALLOW | hanya jika grant existing sah (tidak di-expand otomatis) | ALLOW | ALLOW |
+| Production Head | ALLOW | ALLOW (wajib) | ALLOW | ALLOW |
 | Driver | tidak ada grant loading-sj otomatis | — | — | — |
 | Admin / Director / SA | pertahankan akses existing; tanpa grant tambahan M5 | — | — | — |
+
+Aksi Loading SJ hanya **Sesuai** / **Tidak Sesuai** (Qty SJ Accurate vs Qty Packing per item).
+Tidak ada input qty Loading manual. `Tidak Sesuai` (Helper atau KP) membuat/mempertahankan
+tugas selisih untuk KP — tidak auto-selesai, tidak membuka delivery sendiri.
 
 ## Dependency wajib
 

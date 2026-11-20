@@ -25,8 +25,8 @@ EXPECTED_ASSIGNED_ROLE = "helper"
 # Spec Master menyimpan cancel; grant Helper tidak mendapat cancel.
 EXPECTED_TASK_ACTIONS = ("view", "confirm", "edit", "cancel")
 HELPER_ACTIONS = ("view", "confirm", "edit")
-# KP: view/edit/cancel — confirm tidak di-expand otomatis.
-PRODUCTION_HEAD_ACTIONS = ("view", "edit", "cancel")
+# KP (Owner final): view/confirm/edit/cancel — confirm WAJIB, bukan wildcard lintas task.
+PRODUCTION_HEAD_ACTIONS = ("view", "confirm", "edit", "cancel")
 # Driver / Admin / Director: tidak ada grant otomatis loading-sj.
 FORBIDDEN_AUTO_GRANT_ROLES = frozenset({"driver", "admin", "director", "super_admin"})
 

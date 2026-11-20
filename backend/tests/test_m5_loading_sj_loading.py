@@ -220,6 +220,54 @@ def test_audit_history_on_confirm(
     assert len(tasks.list_tasks(db, task_type="loading-sj")) == 1
 
 
+def test_kp_sesuai_when_qty_matches(
+    db: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    note = _prepare(db, monkeypatch)
+    delivery.ensure_loading_sj_task(db, note)
+    # KP punya confirm (Owner final) — boleh Sesuai tanpa assignee Helper.
+    result = delivery.confirm_loading_match(
+        db, HEAD, accurate_sj_id=SJ_ID, idempotency_key="m5-kp-sesuai"
+    )
+    assert result["duplicate"] is False
+    task = tasks.get_task(db, delivery.loading_sj_task_key(SJ_ID))
+    assert task is not None
+    assert task.get("status") == tasks.TASK_STATUS_DONE
+
+
+def test_kp_tidak_sesuai_discrepancy_stays_pending(
+    db: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """KP menekan Tidak Sesuai → tugas selisih tetap PENDING (bukan auto-done)."""
+    note = _prepare(db, monkeypatch)
+    delivery.ensure_loading_sj_task(db, note)
+    # Paksa mismatch qty vs packing path / manual mismatch.
+    sj_bad = "SJ-M5-KP-MIS"
+    deliveries.upsert_delivery_note(
+        db, {**_sj(qty=99), "id": sj_bad, "number": "SJ/M5/KP"}
+    )
+    delivery.ensure_loading_sj_task(
+        db,
+        deliveries.get_delivery_note(db, sj_bad) or {},
+    )
+    res = delivery.reject_loading_mismatch(
+        db, HEAD, accurate_sj_id=sj_bad, reason="KP self Tidak Sesuai"
+    )
+    disc = res["discrepancy_task"]
+    assert disc["task_type"] == "qty-loading-sj-berbeda"
+    assert disc.get("status") != tasks.TASK_STATUS_DONE
+    # Tetap satu task; konfirmasi koordinasi berikutnya terpisah.
+    rows = tasks.list_tasks(db, task_type="qty-loading-sj-berbeda")
+    assert len(rows) == 1
+    assert rows[0].get("status") != tasks.TASK_STATUS_DONE
+    # Retry idempotent — tidak duplikasi.
+    res2 = delivery.reject_loading_mismatch(
+        db, HEAD, accurate_sj_id=sj_bad, reason="KP self Tidak Sesuai"
+    )
+    assert res2["discrepancy_task"]["task_key"] == disc["task_key"]
+    assert len(tasks.list_tasks(db, task_type="qty-loading-sj-berbeda")) == 1
+
+
 def test_sesuai_tidak_sesuai_paths(
     db: Database, monkeypatch: pytest.MonkeyPatch
 ) -> None:
