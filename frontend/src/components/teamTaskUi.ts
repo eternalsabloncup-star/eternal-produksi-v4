@@ -128,6 +128,46 @@ export function allowTaskAction(
   return actions.includes(opts.action);
 }
 
+const ALLOC_SCOPED = new Set([
+  "screen",
+  "konfirmasi-sample",
+  "cetak",
+]);
+
+/**
+ * Filter presentasional selaras backend object-scope (bukan sumber kebenaran).
+ * Backend tetap memfilter ulang.
+ */
+export function filterTasksForActor(
+  tasks: OperationalTask[],
+  opts: {
+    isSuperAdmin: boolean;
+    actorEmail: string | null | undefined;
+    operationalRole: string | null | undefined;
+  },
+): OperationalTask[] {
+  if (opts.isSuperAdmin) return tasks;
+  const actor = (opts.actorEmail || "").trim().toLowerCase();
+  if (!actor) return tasks;
+  const role = (opts.operationalRole || "").trim().toLowerCase();
+  return tasks.filter((t) => {
+    const ctx = t.context || {};
+    if (ALLOC_SCOPED.has(t.task_type) && role === "operator") {
+      const op = String(ctx.operator_email || "").trim().toLowerCase();
+      return !op || op === actor;
+    }
+    if (t.task_type === "pengiriman" && role === "driver") {
+      const drv = String(
+        ctx.assigned_driver_email || ctx.driver_email || "",
+      )
+        .trim()
+        .toLowerCase();
+      return !drv || drv === actor;
+    }
+    return true;
+  });
+}
+
 /** Eligibility tombol Ubah Qty — dari kontrak backend, bukan status tampilan. */
 export function allocationCanReviseQty(a: {
   status?: string;

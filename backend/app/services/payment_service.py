@@ -181,6 +181,17 @@ def bypass_payment_gate(
     if not reason.strip():
         raise ValueError("Alasan bypass wajib diisi.")
 
+    from app.repositories.po_repository import get_by_accurate_id
+    from app.services.po_acceptance import is_po_accepted
+
+    po_doc = get_by_accurate_id(db, str(accurate_po_id))
+    if po_doc is None:
+        raise LookupError(f"PO tidak ditemukan: {accurate_po_id}")
+    if not is_po_accepted(po_doc):
+        raise PaymentPermissionError(
+            "PO belum diterima Kepala Produksi — Bypass Payment ditolak."
+        )
+
     actor = str(user.get("email_normalized") or "")
     doc = gates.set_gate(
         db,

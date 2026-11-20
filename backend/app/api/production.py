@@ -22,6 +22,7 @@ from app.services.evidence_access import (
     assert_sample_evidence_access,
 )
 from app.services.index_preflight import MissingRequiredIndexError
+from app.services.object_auth import ObjectAuthError
 from app.services.task_engine import TaskPermissionError
 
 router = APIRouter(prefix="/api/production", tags=["production"])
@@ -51,6 +52,8 @@ def _po_or_404(accurate_po_id: str) -> dict[str, Any]:
 
 def _handle(exc: Exception) -> HTTPException:
     if isinstance(exc, TaskPermissionError):
+        return HTTPException(status.HTTP_403_FORBIDDEN, str(exc))
+    if isinstance(exc, (ObjectAuthError, EvidenceAccessDenied)):
         return HTTPException(status.HTTP_403_FORBIDDEN, str(exc))
     if isinstance(exc, master.MissingMasterConfigError):
         return HTTPException(

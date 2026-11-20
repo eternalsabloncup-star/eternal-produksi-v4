@@ -6,6 +6,7 @@ import {
   allocationReviseBounds,
   allowTaskAction,
   filterTasksByStatus,
+  filterTasksForActor,
   formatCountBadge,
   isSchedulingTask,
   latestDraftSample,
@@ -131,6 +132,54 @@ describe("allowTaskAction", () => {
         action: "confirm",
       }),
     ).toBe(false);
+  });
+});
+
+describe("filterTasksForActor", () => {
+  it("hides foreign operator allocations for operator role", () => {
+    const rows = [
+      task({
+        task_key: "t1",
+        task_type: "cetak",
+        status: "belum_dikerjakan",
+        context: { operator_email: "opa@eternal.local" },
+      }),
+      task({
+        task_key: "t2",
+        task_type: "cetak",
+        status: "belum_dikerjakan",
+        context: { operator_email: "opb@eternal.local" },
+      }),
+    ];
+    const filtered = filterTasksForActor(rows, {
+      isSuperAdmin: false,
+      actorEmail: "opa@eternal.local",
+      operationalRole: "operator",
+    });
+    expect(filtered.map((t) => t.task_key)).toEqual(["t1"]);
+  });
+
+  it("hides foreign driver tasks", () => {
+    const rows = [
+      task({
+        task_key: "d1",
+        task_type: "pengiriman",
+        status: "belum_dikerjakan",
+        context: { assigned_driver_email: "drva@eternal.local" },
+      }),
+      task({
+        task_key: "d2",
+        task_type: "pengiriman",
+        status: "belum_dikerjakan",
+        context: { assigned_driver_email: "drvb@eternal.local" },
+      }),
+    ];
+    const filtered = filterTasksForActor(rows, {
+      isSuperAdmin: false,
+      actorEmail: "drva@eternal.local",
+      operationalRole: "driver",
+    });
+    expect(filtered.map((t) => t.task_key)).toEqual(["d1"]);
   });
 });
 

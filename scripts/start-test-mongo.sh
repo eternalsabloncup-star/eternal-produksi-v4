@@ -3,8 +3,8 @@
 set -euo pipefail
 
 NAME="${TEST_MONGO_NAME:-eternal-v4-test-mongo}"
-# Default 27018 — hindari bentrok dengan docker-compose yang publish 27017.
-PORT="${TEST_MONGO_PORT:-27018}"
+# Default 27019 — test terisolasi (27018 = V4 production; 27017 = ERP/compose).
+PORT="${TEST_MONGO_PORT:-27019}"
 ROOT_USER="${MONGO_ROOT_USERNAME:-eternal}"
 ROOT_PASS="${MONGO_ROOT_PASSWORD:-eternal_dev_password}"
 ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"

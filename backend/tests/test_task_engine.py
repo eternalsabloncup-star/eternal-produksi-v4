@@ -198,6 +198,14 @@ def test_master_can_grant_action_to_another_role(db: Database) -> None:
 def test_master_role_reassignment_is_audited(db: Database) -> None:
     master.seed_master_defaults(db)
     owner = {"email_normalized": "owner@eternal.local", "role": "super_admin"}
+    # Grant kompatibel wajib sebelum pindah assigned_role (tidak auto-copy).
+    task_engine.set_role_actions(
+        db,
+        owner,
+        role="screener",
+        task_type="qc-packing",
+        actions=["view", "input", "confirm"],
+    )
     doc = task_engine.set_task_type_role(
         db, owner, task_type="qc-packing", role="screener"
     )
@@ -206,6 +214,17 @@ def test_master_role_reassignment_is_audited(db: Database) -> None:
     events = list(db["audit_logs"].find({"action": "master.task_type.assign_role"}))
     assert len(events) == 1
     assert events[0]["detail"]["task_type"] == "qc-packing"
+
+
+def test_master_role_reassignment_conflicts_without_grants(db: Database) -> None:
+    master.seed_master_defaults(db)
+    owner = {"email_normalized": "owner@eternal.local", "role": "super_admin"}
+    with pytest.raises(task_engine.MasterRoleConflictError) as exc:
+        task_engine.set_task_type_role(
+            db, owner, task_type="qc-packing", role="screener"
+        )
+    assert "belum memiliki grant" in str(exc.value)
+    assert master.require_task_type_assigned_role(db, "qc-packing") == "helper"
 
 
 def test_task_confirmation_writes_audit_trail(db: Database) -> None:

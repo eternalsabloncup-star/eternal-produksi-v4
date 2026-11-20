@@ -21,6 +21,7 @@ from app.repositories import task_repository as tasks
 from app.services import task_engine
 from app.services.audit_log import append_audit_event
 from app.services.index_preflight import MissingRequiredIndexError
+from app.services.object_auth import ObjectAuthError
 
 router = APIRouter(prefix="/api", tags=["operational"])
 
@@ -105,6 +106,11 @@ def put_task_type_role(
         mapped = _map_master_errors(exc)
         assert mapped is not None
         raise mapped from exc
+    except task_engine.MasterRoleConflictError as exc:
+        raise HTTPException(
+            status.HTTP_409_CONFLICT,
+            {"detail": str(exc), "conflicts": getattr(exc, "conflicts", {})},
+        ) from exc
     except ValueError as exc:
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, str(exc)) from exc
     except LookupError as exc:
@@ -218,16 +224,21 @@ def list_operational_tasks(
     limit: int = Query(default=200, ge=1, le=1000),
     auth: AuthContext = Depends(require_session),
 ) -> dict[str, Any]:
+    from app.services.object_auth import filter_tasks_for_actor
+
     db = get_db()
+    # Ambil lebih longgar lalu saring object-scope agar limit tetap bermakna.
+    fetch_limit = min(max(limit * 3, limit), 1000)
     items = tasks.list_tasks(
         db,
         assigned_role=role,
         task_type=task_type,
         done=done,
         accurate_po_id=accurate_po_id,
-        limit=limit,
+        limit=fetch_limit,
     )
-    return {"items": items, "total": len(items), "source": "mongodb"}
+    filtered = filter_tasks_for_actor(db, auth.user, items)[:limit]
+    return {"items": filtered, "total": len(filtered), "source": "mongodb"}
 
 
 @router.get("/tasks/{task_key:path}/confirmations")
@@ -266,6 +277,8 @@ def post_task_confirm(
         assert mapped is not None
         raise mapped from exc
     except task_engine.TaskPermissionError as exc:
+        raise HTTPException(status.HTTP_403_FORBIDDEN, str(exc)) from exc
+    except ObjectAuthError as exc:
         raise HTTPException(status.HTTP_403_FORBIDDEN, str(exc)) from exc
     except LookupError as exc:
         raise HTTPException(status.HTTP_404_NOT_FOUND, str(exc)) from exc

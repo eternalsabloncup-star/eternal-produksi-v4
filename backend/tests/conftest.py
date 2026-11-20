@@ -16,8 +16,8 @@ from pymongo.database import Database
 os.environ.setdefault("APP_ENV", "test")
 os.environ.setdefault(
     "MONGODB_URI",
-    # Port 27018 = scripts/start-test-mongo.sh (bukan compose :27017).
-    "mongodb://eternal:eternal_dev_password@127.0.0.1:27018/"
+    # Port 27019 = scripts/start-test-mongo.sh (27018 = V4 production, diblokir db_guard).
+    "mongodb://eternal:eternal_dev_password@127.0.0.1:27019/"
     "?authSource=admin&replicaSet=rs0&directConnection=true",
 )
 os.environ.setdefault("MONGODB_DB", "eternal_produksi_v4_test")

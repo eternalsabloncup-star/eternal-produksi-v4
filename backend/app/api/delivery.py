@@ -67,6 +67,12 @@ class EvidenceDeleteRequest(BaseModel):
 def _handle(exc: Exception) -> HTTPException:
     if isinstance(exc, TaskPermissionError):
         return HTTPException(status.HTTP_403_FORBIDDEN, str(exc))
+    if isinstance(exc, EvidenceAccessDenied):
+        return HTTPException(status.HTTP_403_FORBIDDEN, str(exc))
+    from app.services.object_auth import ObjectAuthError
+
+    if isinstance(exc, ObjectAuthError):
+        return HTTPException(status.HTTP_403_FORBIDDEN, str(exc))
     if isinstance(exc, delivery_sync.DeliverySyncInProgressError):
         return HTTPException(status.HTTP_409_CONFLICT, str(exc))
     if isinstance(exc, delivery_sync.DeliverySyncDisabledError):

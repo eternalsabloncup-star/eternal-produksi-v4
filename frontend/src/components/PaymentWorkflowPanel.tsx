@@ -23,8 +23,9 @@ function gateLabel(state: string | undefined): string {
 
 /** Panel Payment API: ingest receipt snapshot + bypass berizin. */
 export function PaymentWorkflowPanel({ accuratePoId, poNo, onChanged }: Props) {
-  const { capabilities } = useAuth();
-  const canBypass = Boolean(capabilities.payment_bypass);
+  const { capabilities, isSuperAdmin } = useAuth();
+  // Super Admin selalu berizin di backend via can_act; jaga parity UI.
+  const canBypass = Boolean(capabilities.payment_bypass) || isSuperAdmin;
   const [state, setState] = useState<PaymentStateResponse | null>(null);
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
