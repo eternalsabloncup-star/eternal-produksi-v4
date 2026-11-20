@@ -184,34 +184,68 @@ DELIVERY_SCOPED_TASKS: Final[frozenset[str]] = frozenset(
 )
 
 
+def loading_sj_visible_to_actor(user: dict[str, Any], task: dict[str, Any]) -> bool:
+    """Visibility Loading-SJ untuk worklist/badge — selaras filterTasksForActor FE.
+
+    Super Admin / operations.full: semua. Tanpa assignee: terlihat.
+    Dengan assignee: hanya email yang ditugaskan.
+    """
+    if str(task.get("task_type") or "") != "loading-sj":
+        return True
+    if is_super_admin(user.get("role")) or has_operations_full(user):
+        return True
+    ctx = task.get("context") if isinstance(task.get("context"), dict) else {}
+    assigned = str(ctx.get("assigned_user_email") or "").strip().lower()
+    if not assigned:
+        return True
+    return actor_email(user) == assigned
+
+
+def is_actionable_open_task(task: dict[str, Any] | None) -> bool:
+    """Actionable = belum selesai dan bukan Loading yang dibatalkan."""
+    from app.repositories.task_repository import TASK_STATUS_DONE
+
+    if not isinstance(task, dict):
+        return False
+    if str(task.get("status") or "") == TASK_STATUS_DONE:
+        return False
+    ctx = task.get("context") if isinstance(task.get("context"), dict) else {}
+    if ctx.get("loading_cancelled") is True:
+        return False
+    return True
+
+
 def filter_tasks_for_actor(
     db: Database,
     user: dict[str, Any],
     items: list[dict[str, Any]],
 ) -> list[dict[str, Any]]:
-    """Filter by branch only — assignment metadata does not hide permitted tasks."""
-    if is_super_admin(user.get("role")) or has_operations_full(user):
-        return items
+    """Filter cabang + visibility Loading-SJ assignee (selaras panel FE)."""
     from app.repositories import delivery_repository as deliveries
     from app.repositories.po_repository import get_by_accurate_id
 
+    elevated = is_super_admin(user.get("role")) or has_operations_full(user)
     out: list[dict[str, Any]] = []
     all_branches = bypasses_branch(user)
 
     for task in items:
-        if not all_branches:
-            ref = task.get("ref") if isinstance(task.get("ref"), dict) else {}
-            scope_obj: dict[str, Any] | None = None
-            sj_id = ref.get("accurate_delivery_note_id")
-            po_id = ref.get("accurate_po_id")
-            if sj_id:
-                scope_obj = deliveries.get_delivery_note(db, str(sj_id))
-            elif po_id:
-                scope_obj = get_by_accurate_id(db, str(po_id))
-            try:
-                assert_branch_access(user, scope_object=scope_obj)
-            except ObjectAuthError:
-                continue
+        if not loading_sj_visible_to_actor(user, task):
+            continue
+        if elevated or all_branches:
+            out.append(task)
+            continue
+        ref = task.get("ref") if isinstance(task.get("ref"), dict) else {}
+        scope_obj: dict[str, Any] | None = None
+        sj_id = ref.get("accurate_delivery_note_id")
+        po_id = ref.get("accurate_po_id")
+        if sj_id:
+            scope_obj = deliveries.get_delivery_note(db, str(sj_id))
+        elif po_id:
+            scope_obj = get_by_accurate_id(db, str(po_id))
+        try:
+            assert_branch_access(user, scope_object=scope_obj)
+        except ObjectAuthError:
+            continue
         out.append(task)
     return out
 

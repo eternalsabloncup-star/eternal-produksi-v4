@@ -185,8 +185,8 @@ export function allowTaskAction(
 }
 
 /**
- * Filter presentasional selaras backend (Owner: assignment bukan gate).
- * Backend tetap memfilter ulang by branch + Master action.
+ * Filter presentasional selaras backend ``filter_tasks_for_actor``:
+ * cabang di server; Loading-SJ dengan assignee hanya untuk email yang ditugaskan.
  * ``operationsFull`` / Super Admin melihat semua tugas yang sudah di-fetch.
  */
 export function filterTasksForActor(

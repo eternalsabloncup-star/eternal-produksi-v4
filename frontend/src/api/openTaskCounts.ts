@@ -1,25 +1,14 @@
 /**
  * Agregasi badge Tugas Tim dari task engine (mode API).
  *
- * Source of truth: per-role `GET /api/tasks?role=&done=false` (sama scope auth
- * branch seperti panel), lalu hitung actionable = Belum + Sebagian.
- * Satu fetch global tanpa role rentan terpotong limit lintas-role.
+ * Source of truth: `GET /api/tasks/open-counts` — total actionable authoritative
+ * (branch + Loading-SJ assignee + exclude selesai/cancelled), tanpa cap 1000.
  */
 
 import type { TeamTaskRoleId } from "../app/nav";
 import { TEAM_TASK_ROLES } from "../app/nav";
-import {
-  actionableOpenCount,
-  isActionableOpenTask,
-} from "../components/teamTaskUi";
-import {
-  fetchTasks,
-  type OperationalRole,
-  type OperationalTask,
-} from "./operational";
-
-/** Limit maksimum backend list_tasks. */
-export const OPEN_TASK_FETCH_LIMIT = 1000;
+import { isActionableOpenTask } from "../components/teamTaskUi";
+import type { OperationalRole, OperationalTask } from "./operational";
 
 export type OpenTaskCountsStatus = "loading" | "ready" | "error" | "truncated";
 
@@ -35,7 +24,7 @@ export function emptyOpenTaskCounts(): Record<TeamTaskRoleId, number> {
   return out;
 }
 
-/** Pure — dedupe task_key lalu hitung actionable per assigned_role. */
+/** Pure — dedupe task_key lalu hitung actionable per assigned_role (unit test). */
 export function aggregateOpenCountsByRole(
   items: OperationalTask[],
 ): Record<TeamTaskRoleId, number> {
@@ -57,36 +46,51 @@ export function aggregateOpenCountsByRole(
   return counts;
 }
 
+function normalizeCounts(
+  raw: Record<string, unknown> | null | undefined,
+): Record<TeamTaskRoleId, number> {
+  const counts = emptyOpenTaskCounts();
+  if (!raw || typeof raw !== "object") return counts;
+  for (const role of TEAM_TASK_ROLES) {
+    const n = Number(raw[role.id]);
+    counts[role.id] = Number.isFinite(n) && n > 0 ? Math.trunc(n) : 0;
+  }
+  return counts;
+}
+
 /**
- * Ambil tugas terbuka per role (done=false) lalu hitung Belum+Sebagian.
- * Truncated bila salah satu role mencapai limit baca.
+ * Ambil total actionable open per role dari endpoint count backend.
  */
 export async function fetchOpenTeamTaskCountsFromApi(): Promise<OpenTaskCountsResult> {
   try {
-    const results = await Promise.all(
-      TEAM_TASK_ROLES.map((role) =>
-        fetchTasks({
-          role: role.id as OperationalRole,
-          done: false,
-          limit: OPEN_TASK_FETCH_LIMIT,
-        }),
-      ),
-    );
-
-    const counts = emptyOpenTaskCounts();
-    let truncated = false;
-    for (let i = 0; i < TEAM_TASK_ROLES.length; i += 1) {
-      const role = TEAM_TASK_ROLES[i];
-      const res = results[i];
-      if (res.items.length >= OPEN_TASK_FETCH_LIMIT) truncated = true;
-      // done=false sudah exclude selesai; actionableOpenCount juga exclude cancelled.
-      counts[role.id] = actionableOpenCount(res.items);
+    let res: Response;
+    try {
+      res = await fetch("/api/tasks/open-counts", {
+        credentials: "include",
+      });
+    } catch (err) {
+      return {
+        status: "error",
+        counts: emptyOpenTaskCounts(),
+        error: err instanceof Error ? err.message : "Koneksi gagal memuat badge.",
+      };
     }
-
-    return {
-      status: truncated ? "truncated" : "ready",
-      counts,
+    if (!res.ok) {
+      return {
+        status: "error",
+        counts: emptyOpenTaskCounts(),
+        error: `Gagal memuat jumlah tugas (HTTP ${res.status}).`,
+      };
+    }
+    const body = (await res.json()) as {
+      counts?: Record<string, number>;
+      truncated?: boolean;
     };
+    const counts = normalizeCounts(body.counts);
+    if (body.truncated) {
+      return { status: "truncated", counts };
+    }
+    return { status: "ready", counts };
   } catch (err) {
     return {
       status: "error",
@@ -103,7 +107,6 @@ export function formatOpenTaskBadge(
   if (status === "loading") return "…";
   if (status === "error") return "?";
   if (count <= 0) return null;
-  // Truncated: per-role angka adalah batas bawah — selalu beri +.
   if (status === "truncated") {
     return `${count}+`;
   }

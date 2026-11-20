@@ -27,7 +27,7 @@ export function notifyTeamTasksChanged(): void {
 
 /**
  * Badge Tugas Tim: sumber sama dengan panel (`useProductionApiPanels`).
- * API atau simulasi DEV → task engine per-role done=false; DEMO → fixture lokal.
+ * API / simulasi DEV → `GET /api/tasks/open-counts`; DEMO → fixture lokal.
  */
 export function useOpenTeamTaskCounts(): UseOpenTeamTaskCountsResult {
   const apiMode = useProductionApiPanels();

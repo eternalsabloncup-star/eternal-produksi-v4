@@ -1,23 +1,10 @@
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import type { OperationalTask } from "./operational";
-
-vi.mock("./operational", async () => {
-  const actual = await vi.importActual<typeof import("./operational")>(
-    "./operational",
-  );
-  return {
-    ...actual,
-    fetchTasks: vi.fn(),
-  };
-});
-
-import { fetchTasks } from "./operational";
 import {
   aggregateOpenCountsByRole,
   emptyOpenTaskCounts,
   fetchOpenTeamTaskCountsFromApi,
   formatOpenTaskBadge,
-  OPEN_TASK_FETCH_LIMIT,
 } from "./openTaskCounts";
 import { actionableOpenCount } from "../components/teamTaskUi";
 
@@ -129,33 +116,61 @@ describe("actionableOpenCount / badge formula", () => {
 });
 
 describe("fetchOpenTeamTaskCountsFromApi", () => {
-  it("aggregates per-role done=false into sidebar counts", async () => {
-    vi.mocked(fetchTasks).mockImplementation(
-      async (params: { role?: string; done?: boolean }) => {
-        expect(params.done).toBe(false);
-        const items: OperationalTask[] = [];
-        if (params.role === "designer") {
-          items.push(
-            task("designer", "d1"),
-            task("designer", "d2"),
-            task("designer", "d3"),
-          );
-        }
-        if (params.role === "helper") {
-          items.push(task("helper", "h1", "sebagian"));
-        }
-        return { items, total: items.length, source: "test" };
-      },
-    );
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    vi.restoreAllMocks();
+  });
+
+  it("reads authoritative counts from /api/tasks/open-counts", async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        counts: {
+          designer: 3,
+          helper: 1,
+          operator: 0,
+          driver: 0,
+          screener: 0,
+          "production-head": 0,
+        },
+        truncated: false,
+        source: "mongodb",
+      }),
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
     const result = await fetchOpenTeamTaskCountsFromApi();
     expect(result.status).toBe("ready");
     expect(result.counts.designer).toBe(3);
     expect(result.counts.helper).toBe(1);
     expect(result.counts.operator).toBe(0);
-    expect(result.counts.driver).toBe(0);
-    expect(result.counts.screener).toBe(0);
-    expect(result.counts["production-head"]).toBe(0);
-    expect(fetchTasks).toHaveBeenCalledTimes(6);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(fetchMock.mock.calls[0][0]).toBe("/api/tasks/open-counts");
+  });
+
+  it("keeps accurate totals above the old list limit of 1000", async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        counts: { designer: 1500, helper: 0, operator: 0, driver: 0, screener: 0, "production-head": 0 },
+        truncated: false,
+      }),
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const result = await fetchOpenTeamTaskCountsFromApi();
+    expect(result.status).toBe("ready");
+    expect(result.counts.designer).toBe(1500);
+    expect(formatOpenTaskBadge(1500, result.status)).toBe("1500");
+  });
+
+  it("surfaces HTTP errors without fake zeros as ready", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue({ ok: false, status: 500, json: async () => ({}) }),
+    );
+    const result = await fetchOpenTeamTaskCountsFromApi();
+    expect(result.status).toBe("error");
+    expect(result.counts.designer).toBe(0);
   });
 });
 
@@ -166,10 +181,8 @@ describe("formatOpenTaskBadge", () => {
     expect(formatOpenTaskBadge(0, "ready")).toBeNull();
   });
 
-  it("marks truncated counts as lower bounds", () => {
-    expect(formatOpenTaskBadge(OPEN_TASK_FETCH_LIMIT, "truncated")).toBe(
-      `${OPEN_TASK_FETCH_LIMIT}+`,
-    );
+  it("marks truncated counts as lower bounds when backend signals truncation", () => {
+    expect(formatOpenTaskBadge(1000, "truncated")).toBe("1000+");
     expect(formatOpenTaskBadge(5, "truncated")).toBe("5+");
     expect(formatOpenTaskBadge(3, "ready")).toBe("3");
   });
