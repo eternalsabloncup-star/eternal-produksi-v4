@@ -421,6 +421,74 @@ def test_accepted_empty_branch_no_auto_fill(
     assert result["counters"]["review_required"] >= 1
 
 
+def test_accepted_empty_branch_review_marker_idempotent(
+    ingest_db: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Accepted + branch kosong: siklus kedua tidak menulis ulang branch_review."""
+    monkeypatch.setenv("V4_PO_AUTO_SYNC_ENABLED", "1")
+    from app.config import clear_settings_cache
+
+    clear_settings_cache()
+    token = locks.acquire_job_lock(ingest_db, job="po")
+    payload = _detail("88111", trans_date="05/11/2026", branch_id="50")
+    po = normalize_sales_order(payload)
+    po_job._upsert_unaccepted(
+        ingest_db,
+        po,
+        line_diff={
+            "added_line_ids": [],
+            "removed_line_ids": [],
+            "changed_line_ids": [],
+            "previous_line_count": 0,
+            "current_line_count": 2,
+        },
+        owner_token=token,
+        branch_id=None,
+        set_branch_on_insert=False,
+    )
+    ingest_db["accurate_sales_orders"].update_one(
+        {"accurate_id": "88111"},
+        {
+            "$unset": {"branch_id": ""},
+            "$set": {
+                "operational": {
+                    "acceptance": {
+                        "status": ACCEPTANCE_ACCEPTED,
+                        "accepted_by": "tester@example.com",
+                    },
+                    "inbox_status": "PO Diterima",
+                }
+            },
+        },
+    )
+    locks.release_job_lock(ingest_db, job="po", owner_token=token)
+
+    client = FakeAccurateClient(
+        list_rows=[{"id": 88111}],
+        details={"88111": payload},
+    )
+    first = po_job.run_po_auto_sync(
+        ingest_db, client=client, page_size=20, max_pages=1, max_rows=5
+    )
+    doc1 = get_by_accurate_id(ingest_db, "88111")
+    review1 = (doc1.get("operational") or {}).get("branch_review") or {}
+    assert review1.get("status") == "review_required"
+    assert first["counters"]["review_required"] >= 1
+    updated_at_1 = doc1.get("updated_at")
+
+    second = po_job.run_po_auto_sync(
+        ingest_db, client=client, page_size=20, max_pages=1, max_rows=5
+    )
+    doc2 = get_by_accurate_id(ingest_db, "88111")
+    review2 = (doc2.get("operational") or {}).get("branch_review") or {}
+    assert review2 == review1
+    assert doc2.get("updated_at") == updated_at_1
+    assert second["counters"]["review_required"] == 0
+    assert second["counters"]["unchanged"] >= 1
+    assert doc2.get("branch_id") in (None, "")
+    assert doc2["operational"]["acceptance"]["status"] == ACCEPTANCE_ACCEPTED
+
+
 def test_dependency_empty_branch_no_auto_fill(
     ingest_db: Database, monkeypatch: pytest.MonkeyPatch
 ) -> None:
