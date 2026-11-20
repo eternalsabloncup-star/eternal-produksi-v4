@@ -476,12 +476,15 @@ def activate_loading_sj_release(
     skip_bootstrap: bool = False,
     restart_callback: Callable[[], dict[str, Any]] | None = None,
     apply_environ_for_verify: bool = True,
+    restore_environ_after_verify: bool = False,
 ) -> dict[str, Any]:
     """Prosedur aktivasi penuh. HOLD → tidak set flag ON.
 
     Urutan: gates → bootstrap → verify master → set flag → verify efektif.
     """
     audit_log: list[dict[str, Any]] = []
+    _prev_flag = os.environ.get(FLAG_KEY)
+    _prev_alias = os.environ.get("LOADING_SJ_TASK_ENABLED")
 
     def _hold(gate: str, detail: str, **extra: Any) -> dict[str, Any]:
         payload = {
@@ -591,22 +594,34 @@ def activate_loading_sj_release(
         os.environ[FLAG_KEY] = "1"
         # Alias historis.
         os.environ["LOADING_SJ_TASK_ENABLED"] = "1"
-        eff = verify_effective_flag_on()
-        audit_log.append({"stage": "effective_flag", "result": eff.__dict__})
-        if not eff.ok:
-            # Jangan klaim ON palsu — file sudah ditulis; caller harus rollback manual.
-            return {
-                "ok": False,
-                "activated": False,
-                "hold": True,
-                "gate": "effective_flag",
-                "detail": eff.detail,
-                "flag_written": True,
-                "flag_result": flag_result,
-                "bootstrap": bootstrap_result,
-                "audit": audit_log,
-                "rollback_hint": f"Set {FLAG_KEY}=0 di {env_file} lalu restart.",
-            }
+        try:
+            eff = verify_effective_flag_on()
+            audit_log.append({"stage": "effective_flag", "result": eff.__dict__})
+            if not eff.ok:
+                # Jangan klaim ON palsu — file sudah ditulis; caller harus rollback manual.
+                return {
+                    "ok": False,
+                    "activated": False,
+                    "hold": True,
+                    "gate": "effective_flag",
+                    "detail": eff.detail,
+                    "flag_written": True,
+                    "flag_result": flag_result,
+                    "bootstrap": bootstrap_result,
+                    "audit": audit_log,
+                    "rollback_hint": f"Set {FLAG_KEY}=0 di {env_file} lalu restart.",
+                }
+        finally:
+            if restore_environ_after_verify:
+                if _prev_flag is None:
+                    os.environ.pop(FLAG_KEY, None)
+                else:
+                    os.environ[FLAG_KEY] = _prev_flag
+                if _prev_alias is None:
+                    os.environ.pop("LOADING_SJ_TASK_ENABLED", None)
+                else:
+                    os.environ["LOADING_SJ_TASK_ENABLED"] = _prev_alias
+                clear_settings_cache()
 
     return {
         "ok": True,

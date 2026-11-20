@@ -273,6 +273,7 @@ def test_activation_all_prereq_pass_sets_flag(
         guard_regression_ok=True,
         dry_run=False,
         apply_environ_for_verify=True,
+        restore_environ_after_verify=False,
     )
     assert result["ok"] is True
     assert result["activated"] is True
@@ -286,10 +287,14 @@ def test_activation_all_prereq_pass_sets_flag(
     from app.config import get_settings
 
     assert get_settings().loading_sj_task_enabled is True
+    # Jangan biarkan flag bocor ke test suite lain.
+    monkeypatch.setenv("V4_LOADING_SJ_TASK_ENABLED", "0")
+    monkeypatch.delenv("LOADING_SJ_TASK_ENABLED", raising=False)
+    clear_settings_cache()
 
 
 def test_activation_second_run_idempotent(
-    bare_db: Database, tmp_path: Path
+    bare_db: Database, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     repo = _repo_with_guard(tmp_path, with_guard=True)
     sha = _git_init(repo)
@@ -308,6 +313,7 @@ def test_activation_second_run_idempotent(
         guard_regression_ok=True,
         dry_run=False,
         apply_environ_for_verify=True,
+        restore_environ_after_verify=True,
     )
     first = act.activate_loading_sj_release(**kwargs)
     second = act.activate_loading_sj_release(**kwargs)
@@ -317,6 +323,9 @@ def test_activation_second_run_idempotent(
     assert act.read_env_flag(env_file) == "1"
     # Bootstrap kedua noop.
     assert second["bootstrap"]["noop"] is True
+    monkeypatch.setenv("V4_LOADING_SJ_TASK_ENABLED", "0")
+    monkeypatch.delenv("LOADING_SJ_TASK_ENABLED", raising=False)
+    clear_settings_cache()
 
 
 def test_dry_run_does_not_write_flag(
