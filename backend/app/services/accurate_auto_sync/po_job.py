@@ -11,9 +11,7 @@ from pymongo.database import Database
 from pymongo.errors import DuplicateKeyError
 
 from app.config import get_settings
-from app.integrations.accurate.auth import AccurateAuthError
 from app.integrations.accurate.client import AccurateReadClient
-from app.integrations.accurate.fields import as_text
 from app.integrations.accurate.normalize import normalize_sales_order
 from app.repositories.po_repository import (
     _to_document,
@@ -24,12 +22,13 @@ from app.repositories.po_repository import (
 from app.services.accurate_auto_sync.locks import (
     AutoSyncLockError,
     acquire_job_lock,
-    refresh_job_lock,
     release_job_lock,
     require_owns_job_lock,
 )
+from app.services.accurate_auto_sync.checkpoint import CONTRACT_SO
+from app.services.accurate_auto_sync.discovery import run_discovery_cycle
+from app.services.accurate_auto_sync.po_checkpoint import SORT_BACKFILL, SORT_INCREMENTAL
 from app.services.accurate_auto_sync.status import (
-    INCOMPLETE_STOP_REASONS,
     disabled_status_view,
     mark_running,
     record_job_result,
@@ -71,10 +70,6 @@ def require_po_auto_sync_enabled() -> None:
             "Auto-sync PO nonaktif (V4_PO_AUTO_SYNC_ENABLED). "
             "Zero Accurate request / zero write."
         )
-
-
-def _list_page_params(page: int, page_size: int) -> dict[str, Any]:
-    return {"sp.page": page, "sp.pageSize": page_size}
 
 
 def _now() -> datetime:
@@ -390,7 +385,6 @@ def run_po_auto_sync(
         "failed": 0,
     }
     failures: list[dict[str, Any]] = []
-    stopped_reason: str | None = None
     reader = client or AccurateReadClient.from_settings()
     accurate_requests = 0
 
@@ -399,95 +393,37 @@ def run_po_auto_sync(
         page_size = max(1, min(int(page_size), 100))
         max_pages = max(1, min(int(max_pages), 50))
         max_rows = max(1, min(int(max_rows), 500))
-        # Izinkan timeout kecil di test; produksi memakai DEFAULT_TIMEOUT_SECONDS.
         timeout_seconds = max(0.001, float(timeout_seconds))
 
-        for page in range(1, max_pages + 1):
-            if time.monotonic() - started > timeout_seconds:
-                stopped_reason = "timeout"
-                break
-            if counters["listed"] >= max_rows:
-                stopped_reason = "max_rows"
-                break
-            if not refresh_job_lock(db, job="po", owner_token=token):
-                raise AutoSyncLockError("Lease PO auto-sync hilang — abort tanpa commit baru.")
+        def _fetch_list(params: dict[str, Any]) -> list[dict[str, Any]]:
+            return reader.fetch_sales_order_list(params=params)
 
-            try:
-                rows = reader.fetch_sales_order_list(
-                    params=_list_page_params(page, page_size)
-                )
-                accurate_requests += 1
-            except (AccurateAuthError, TimeoutError, ConnectionError, RuntimeError) as exc:
-                stopped_reason = "list_failed"
-                counters["failed"] += 1
-                failures.append(
-                    {
-                        "stage": "list",
-                        "page": page,
-                        "error": type(exc).__name__,
-                        "code": getattr(exc, "code", "list_failed"),
-                    }
-                )
-                break
+        def _sync_one(accurate_id: str) -> dict[str, Any]:
+            return sync_one_listed_sales_order(
+                db, accurate_id, client=reader, owner_token=token
+            )
 
-            if not rows:
-                break
-
-            for row in rows:
-                if time.monotonic() - started > timeout_seconds:
-                    stopped_reason = "timeout"
-                    break
-                if counters["listed"] >= max_rows:
-                    stopped_reason = "max_rows"
-                    break
-                counters["listed"] += 1
-                so_id = as_text(row.get("id"))
-                if not so_id:
-                    counters["failed"] += 1
-                    failures.append({"stage": "list_row", "code": "missing_so_id"})
-                    continue
-                try:
-                    if not refresh_job_lock(db, job="po", owner_token=token):
-                        raise AutoSyncLockError("Lease hilang mid-run.")
-                    result = sync_one_listed_sales_order(
-                        db, so_id, client=reader, owner_token=token
-                    )
-                    accurate_requests += 1
-                    counters["fetched"] += 1
-                    key = str(result.get("outcome") or "failed")
-                    if key in counters:
-                        counters[key] += 1
-                    else:
-                        counters["failed"] += 1
-                except AutoSyncLockError:
-                    raise
-                except Exception as exc:  # noqa: BLE001 — isolasi partial
-                    counters["failed"] += 1
-                    failures.append(
-                        {
-                            "stage": "detail_or_upsert",
-                            "accurate_id": so_id,
-                            "error": type(exc).__name__,
-                            "code": getattr(exc, "code", "sync_failed"),
-                        }
-                    )
-
-            if stopped_reason:
-                break
-            if len(rows) < page_size:
-                break
-        else:
-            stopped_reason = "max_pages"
-
-        incomplete = stopped_reason in INCOMPLETE_STOP_REASONS
-        has_failures = counters["failed"] > 0 or bool(failures)
-        list_failed = stopped_reason == "list_failed"
-        complete = stopped_reason is None and not incomplete
-        # Sukses penuh hanya jika discovery selesai dan tanpa failure.
-        ok = (not list_failed) and (not has_failures) and (complete or incomplete)
-        # Partial incomplete tanpa failure tetap ok=True tapi partial=True → bukan HEALTHY.
-        if list_failed or has_failures:
-            ok = False
+        disc = run_discovery_cycle(
+            db,
+            job="po",
+            owner_token=token,
+            fetch_list=_fetch_list,
+            sync_one=_sync_one,
+            counters=counters,
+            failures=failures,
+            page_size=page_size,
+            max_pages=max_pages,
+            max_rows=max_rows,
+            timeout_seconds=timeout_seconds,
+            started=started,
+            contract_status=CONTRACT_SO,
+        )
+        accurate_requests = int(disc["accurate_requests"])
+        checkpoint = disc["checkpoint"]
+        stopped_reason = disc.get("stopped_reason")
+        ok = bool(disc["ok"])
+        partial = bool(disc["partial"])
+        complete = bool(disc["complete"])
 
         status = record_job_result(
             db,
@@ -500,24 +436,50 @@ def run_po_auto_sync(
                 if ok and complete
                 else (
                     stopped_reason
-                    or ("detail_failures" if has_failures else "incomplete")
+                    or ("detail_failures" if disc["has_failures"] else "incomplete")
                 )
             ),
-            error_code=stopped_reason or ("detail_failures" if has_failures else None),
+            error_code=stopped_reason or ("detail_failures" if disc["has_failures"] else None),
             duration_seconds=time.monotonic() - started,
-            partial=incomplete and not list_failed,
-            complete=complete and not has_failures,
+            partial=partial,
+            complete=complete,
             detail={
                 "stopped_reason": stopped_reason,
                 "failures": failures[:30],
                 "accurate_requests": accurate_requests,
                 "max_pages": max_pages,
                 "max_rows": max_rows,
+                "pages_this_cycle": disc["pages_this_cycle"],
+                "phase": checkpoint.get("phase"),
+                "contract_status": CONTRACT_SO,
+                "sort_warnings": disc.get("sort_warnings") or [],
+                "checkpoint": {
+                    "next_page": checkpoint.get("next_page"),
+                    "backfill_complete": checkpoint.get("backfill_complete"),
+                    "last_completed_id": checkpoint.get("last_completed_id"),
+                    "last_completed_page": checkpoint.get("last_completed_page"),
+                    "incremental_next_page": checkpoint.get("incremental_next_page"),
+                    "incremental_cycles_completed": checkpoint.get(
+                        "incremental_cycles_completed"
+                    ),
+                    "incremental_crawl_complete": disc.get("incremental_crawl_complete"),
+                    "sort_backfill": SORT_BACKFILL,
+                    "sort_incremental": SORT_INCREMENTAL,
+                },
+                "incremental_pending": disc.get("incremental_pending"),
                 "discovery_complete": complete,
                 "note": (
-                    "Partial list tidak menjamin tidak ada PO tambahan di Accurate."
-                    if incomplete
-                    else None
+                    None
+                    if complete
+                    else (
+                        "Backfill id|asc belum selesai — checkpoint next_page dipertahankan."
+                        if not disc["backfill_done"]
+                        else (
+                            "incremental_pending — crawl lastUpdate belum selesai."
+                            if disc.get("incremental_pending")
+                            else None
+                        )
+                    )
                 ),
             },
         )
@@ -525,13 +487,14 @@ def run_po_auto_sync(
             "ok": ok,
             "job": "po",
             "enabled": True,
-            "partial": incomplete and not list_failed,
-            "complete": complete and not has_failures,
+            "partial": partial,
+            "complete": complete,
             "accurate_requests": accurate_requests,
             "writes": counters["created"] + counters["updated"] + counters["review_required"],
             "counters": counters,
             "stopped_reason": stopped_reason,
             "failures": failures[:30],
+            "checkpoint": checkpoint,
             "status": status,
         }
     except AutoSyncLockError as exc:

@@ -92,21 +92,48 @@ def _receipt_payload(
     return doc
 
 
+def _page_rows(ids: list[int], params: dict | None, *, updates: dict[int, str] | None = None):
+    params = params or {}
+    page = int(params.get("sp.page") or 1)
+    size = int(params.get("sp.pageSize") or 20)
+    sort = str(params.get("sp.sort") or "")
+    ordered = list(ids)
+    if sort.startswith("id|asc") or sort == "id":
+        ordered = sorted(ordered)
+    elif sort.startswith("id|desc"):
+        ordered = sorted(ordered, reverse=True)
+    elif "lastUpdate" in sort:
+        ordered = sorted(
+            ordered, key=lambda i: (updates or {}).get(i, ""), reverse=True
+        )
+    start = (page - 1) * size
+    chunk = ordered[start : start + size]
+    return [
+        {"id": i, "lastUpdate": (updates or {}).get(i)} for i in chunk
+    ]
+
+
 class FakeClient:
     def __init__(self, invoices: dict[str, dict], receipts: dict[str, dict]):
         self.invoices = invoices
         self.receipts = receipts
         self.detail_calls = 0
+        self._inv_lu = {int(k): k for k in invoices}
+        self._rcpt_lu = {int(k): k for k in receipts}
 
     def fetch_sales_invoice_list(self, *, params=None):
-        return [{"id": int(k)} for k in self.invoices]
+        return _page_rows(
+            [int(k) for k in self.invoices], params, updates=self._inv_lu
+        )
 
     def fetch_sales_invoice_detail(self, accurate_id):
         self.detail_calls += 1
         return copy.deepcopy(self.invoices[str(accurate_id)])
 
     def fetch_sales_receipt_list(self, *, params=None):
-        return [{"id": int(k)} for k in self.receipts]
+        return _page_rows(
+            [int(k) for k in self.receipts], params, updates=self._rcpt_lu
+        )
 
     def fetch_sales_receipt_detail(self, accurate_id):
         self.detail_calls += 1
