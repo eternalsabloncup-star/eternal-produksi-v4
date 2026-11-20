@@ -71,7 +71,14 @@ class UniverseClient:
         page = int(params.get("sp.page") or 1)
         size = int(params.get("sp.pageSize") or 20)
         sort = str(params.get("sp.sort") or "")
-        self.list_calls.append({"page": page, "size": size, "sort": sort})
+        self.list_calls.append(
+            {
+                "page": page,
+                "size": size,
+                "sort": sort,
+                "filter_op": params.get("filter.transDate.op"),
+            }
+        )
         if sort.startswith("id|asc") or sort == "id":
             ordered = sorted(self.ids)
         elif "lastUpdate" in sort:
@@ -82,9 +89,33 @@ class UniverseClient:
             ordered = sorted(self.ids, reverse=True)
         else:
             ordered = list(self.ids)
+        # Hormati date floor filter seperti Accurate BETWEEN (uji fake).
+        if params.get("filter.transDate.op") == "BETWEEN":
+            from app.services.accurate_auto_sync.date_floor import (
+                parse_accurate_trans_date,
+            )
+
+            lo = parse_accurate_trans_date(params.get("filter.transDate.val[0]"))
+            hi = parse_accurate_trans_date(params.get("filter.transDate.val[1]"))
+            if lo and hi:
+                filtered: list[int] = []
+                for i in ordered:
+                    td = parse_accurate_trans_date(
+                        (self.details.get(str(i)) or {}).get("transDate")
+                    )
+                    if td is not None and lo <= td <= hi:
+                        filtered.append(i)
+                ordered = filtered
         start = (page - 1) * size
         chunk = ordered[start : start + size]
-        return [{"id": i, "lastUpdate": self.last_update.get(i)} for i in chunk]
+        return [
+            {
+                "id": i,
+                "lastUpdate": self.last_update.get(i),
+                "transDate": (self.details.get(str(i)) or {}).get("transDate"),
+            }
+            for i in chunk
+        ]
 
     def fetch_sales_order_detail(self, accurate_id: str | int) -> dict[str, Any]:
         self.detail_calls += 1

@@ -248,6 +248,11 @@ def sync_one_listed_sales_order(
     require_owns_job_lock(db, job="po", owner_token=owner_token)
     payload = client.fetch_sales_order_detail(accurate_id)
     require_owns_job_lock(db, job="po", owner_token=owner_token)
+    from app.services.accurate_auto_sync.date_floor import detail_scope_outcome
+
+    gated = detail_scope_outcome(payload, accurate_id=str(accurate_id))
+    if gated is not None:
+        return gated
     po = normalize_sales_order(payload)
     before = get_by_accurate_id(db, po.accurate_id or accurate_id)
     line_diff = diff_synced_lines(before, po)
@@ -382,6 +387,7 @@ def run_po_auto_sync(
         "unchanged": 0,
         "skipped": 0,
         "review_required": 0,
+        "excluded": 0,
         "failed": 0,
     }
     failures: list[dict[str, Any]] = []

@@ -113,6 +113,15 @@ class Settings(BaseSettings):
         ge=15,
         le=3600,
     )
+    # Date floor auto-sync Accurate (tanggal transaksi, Asia/Jakarta).
+    # Live kontrak: filter.transDate BETWEEN val[0]..val[1] (dd/MM/yyyy).
+    accurate_sync_start_date: str = Field(
+        default="2026-11-01",
+        validation_alias=AliasChoices(
+            "ACCURATE_SYNC_START_DATE",
+            "V4_ACCURATE_SYNC_START_DATE",
+        ),
+    )
 
     @field_validator("mongodb_uri")
     @classmethod
@@ -127,6 +136,15 @@ class Settings(BaseSettings):
         if not value or not value.strip():
             raise ValueError("DB_NAME or MONGODB_DB is required")
         return value.strip()
+
+    @field_validator("accurate_sync_start_date")
+    @classmethod
+    def accurate_sync_start_date_iso(cls, value: str) -> str:
+        text = (value or "").strip() or "2026-11-01"
+        # Validasi ketat lewat helper bersama (tolak suffix / format non-ISO).
+        from app.services.accurate_auto_sync.date_floor import parse_iso_date_floor
+
+        return parse_iso_date_floor(text).isoformat()
 
     @model_validator(mode="after")
     def derive_cookie_secure(self) -> Settings:
@@ -213,3 +231,9 @@ def get_settings() -> Settings:
 
 def clear_settings_cache() -> None:
     get_settings.cache_clear()
+    try:
+        from app.services.accurate_auto_sync.date_floor import clear_date_floor_cache
+
+        clear_date_floor_cache()
+    except Exception:  # noqa: BLE001 — cache helper opsional saat import parsial
+        pass

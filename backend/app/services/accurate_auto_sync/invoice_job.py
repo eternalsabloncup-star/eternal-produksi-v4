@@ -51,6 +51,11 @@ def sync_one_invoice(
     require_owns_job_lock(db, job="invoice", owner_token=owner_token)
     payload = client.fetch_sales_invoice_detail(accurate_id)
     require_owns_job_lock(db, job="invoice", owner_token=owner_token)
+    from app.services.accurate_auto_sync.date_floor import detail_scope_outcome
+
+    gated = detail_scope_outcome(payload, accurate_id=str(accurate_id))
+    if gated is not None:
+        return gated
     normalized = normalize_sales_invoice(payload)
     before = invoices.get_invoice(db, normalized["accurate_invoice_id"])
     if invoice_material_equal(before, normalized):
@@ -105,6 +110,7 @@ def run_invoice_auto_sync(
         "unchanged": 0,
         "skipped": 0,
         "review_required": 0,
+        "excluded": 0,
         "failed": 0,
     }
     failures: list[dict[str, Any]] = []

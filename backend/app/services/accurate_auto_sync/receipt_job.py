@@ -197,6 +197,11 @@ def sync_one_receipt(
     require_owns_job_lock(db, job="receipt", owner_token=owner_token)
     payload = client.fetch_sales_receipt_detail(accurate_id)
     require_owns_job_lock(db, job="receipt", owner_token=owner_token)
+    from app.services.accurate_auto_sync.date_floor import detail_scope_outcome
+
+    gated = detail_scope_outcome(payload, accurate_id=str(accurate_id))
+    if gated is not None:
+        return gated
     normalized = normalize_sales_receipt(payload)
     mapping = _resolve_po_for_receipt(db, normalized)
 
@@ -363,6 +368,7 @@ def run_receipt_auto_sync(
         "unchanged": 0,
         "skipped": 0,
         "review_required": 0,
+        "excluded": 0,
         "failed": 0,
     }
     failures: list[dict[str, Any]] = []
