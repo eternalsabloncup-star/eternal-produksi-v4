@@ -23,6 +23,9 @@ export function taskDisplayLabel(
   if (task.task_type === "pengiriman-gagal-koordinasi") {
     return "Koordinasi Pengiriman Gagal";
   }
+  if (task.task_type === "loading-sj") {
+    return task.label || "Loading Surat Jalan";
+  }
   if (task.task_type === "qty-loading-sj-berbeda") {
     return task.label || "Koordinasi Loading–SJ";
   }
@@ -56,9 +59,15 @@ export function statusBadgeClass(status: OperationalTask["status"]): string {
 }
 
 /** Label shortfall Qty per jenis pekerjaan (Owner). */
-export function shortfallLabel(taskType: string): string {
+export function shortfallLabel(
+  taskType: string,
+  processKind?: string | null,
+): string {
   if (taskType === "persiapan-cup") return "Belum Disiapkan";
-  if (taskType === "qc-packing") return "Belum Di-QC & Packing";
+  if (taskType === "qc-packing") {
+    if (processKind === "Non-Cetak") return "Belum Di-Packing";
+    return "Belum Di-QC & Packing";
+  }
   return "Kekurangan Qty";
 }
 
@@ -104,6 +113,10 @@ export function isCoordinationTask(taskType: string): boolean {
   );
 }
 
+export function isLoadingSjTask(taskType: string): boolean {
+  return taskType === "loading-sj";
+}
+
 export function remainingQty(task: OperationalTask): number | null {
   if (task.qty_target === undefined) return null;
   return Math.max(task.qty_target - task.qty_confirmed, 0);
@@ -143,9 +156,19 @@ export function filterTasksForActor(
   },
 ): OperationalTask[] {
   if (opts.isSuperAdmin || opts.operationsFull) return tasks;
-  // Assignment metadata does not hide permitted tasks (Owner contract).
-  // Branch filtering is enforced by backend list_tasks.
-  return tasks;
+  const email = (opts.actorEmail || "").trim().toLowerCase();
+  // Loading SJ: hanya assignee yang melihat sebagai pekerjaan aktif.
+  return tasks.filter((t) => {
+    if (t.task_type !== "loading-sj") return true;
+    const assigned = String(
+      (t.context && (t.context as { assigned_user_email?: string }).assigned_user_email) ||
+        "",
+    )
+      .trim()
+      .toLowerCase();
+    if (!assigned) return true;
+    return Boolean(email) && email === assigned;
+  });
 }
 
 /** Eligibility tombol Ubah Qty — dari kontrak backend, bukan status tampilan. */

@@ -44,6 +44,14 @@ def _print_lines(po_doc: dict[str, Any]) -> list[dict[str, Any]]:
     ]
 
 
+def _non_print_lines(po_doc: dict[str, Any]) -> list[dict[str, Any]]:
+    return [
+        i
+        for i in (_header(po_doc).get("items") or [])
+        if isinstance(i, dict) and i.get("process_kind") == "Non-Cetak"
+    ]
+
+
 def is_buffer_po(po_doc: dict[str, Any]) -> bool:
     """Atribut Buffer dari Accurate (charField5 / searchCharField5)."""
     label = str(_header(po_doc).get("buffer_label") or "").strip().lower()
@@ -232,15 +240,349 @@ PRODUCTION_FLOW_NODES: tuple[tuple[str, str], ...] = (
     ("flow-pengiriman", "Pengiriman"),
 )
 
+# Bucket virtual untuk PO yang seluruh tahap applicable sudah selesai.
+FLOW_SELESAI_ID = "flow-selesai"
+FLOW_SELESAI_LABEL = "Selesai"
+
+# Membership frontier — terpisah dari status node (production_flow_state).
+_TRACK_DESIGN = ("flow-design", "flow-approval-design")
+_TRACK_PAYMENT = ("flow-payment", "flow-approval-payment")
+_PARALLEL_AFTER_SCHEDULE = ("flow-screener", "flow-persiapan")
+_SERIAL_AFTER_PREP = (
+    "flow-operator",
+    "flow-konfirmasi-sample",
+    "flow-cetak",
+    "flow-packing",
+    "flow-surat-jalan",
+    "flow-loading",
+    "flow-pengiriman",
+)
+
+# Batch cursor by-stage — tanpa memotong populasi accepted.
+PRODUCTION_FLOW_BATCH_SIZE = 100
+
+MONITOR_LABEL_AKTIF = "Aktif"
+MONITOR_LABEL_DALAM_PROSES = "Dalam Proses"
+MONITOR_LABEL_SELESAI = "Selesai"
+
 
 def _node(node_id: str, label: str, status: str, detail: str) -> dict[str, Any]:
     return {"id": node_id, "label": label, "status": status, "detail": detail}
+
+
+def _status_passed(status: str) -> bool:
+    return status in (NODE_DONE, NODE_NOT_APPLICABLE)
+
+
+def _order_masuk_left_entry(statuses: dict[str, str]) -> bool:
+    """Order Masuk ditinggalkan begitu Design atau Payment mulai (running/done)."""
+    design = statuses.get("flow-design", NODE_WAITING)
+    payment = statuses.get("flow-payment", NODE_WAITING)
+    if design == NODE_NOT_APPLICABLE:
+        return payment in (NODE_RUNNING, NODE_DONE) or statuses.get(
+            "flow-approval-payment", NODE_WAITING
+        ) in (NODE_RUNNING, NODE_DONE)
+    return design in (NODE_RUNNING, NODE_DONE) or payment in (NODE_RUNNING, NODE_DONE)
+
+
+def _track_frontier(track: tuple[str, ...], statuses: dict[str, str]) -> list[str]:
+    """Tahap aktif pada satu track: running, atau menunggu frontier (bukan semua menunggu)."""
+    for node_id in track:
+        st = statuses.get(node_id, NODE_WAITING)
+        if st == NODE_NOT_APPLICABLE or st == NODE_DONE:
+            continue
+        if st == NODE_RUNNING:
+            return [node_id]
+        if st == NODE_WAITING:
+            return [node_id]
+    return []
+
+
+def monitoring_label(*, node_id: str, node_status: str) -> str:
+    """Label tabel monitoring — bukan status SoT node."""
+    if node_id == FLOW_SELESAI_ID:
+        return MONITOR_LABEL_SELESAI
+    if node_status == NODE_RUNNING:
+        return MONITOR_LABEL_DALAM_PROSES
+    return MONITOR_LABEL_AKTIF
+
+
+def _line_print_active_stages(
+    db: Database,
+    *,
+    accurate_po_id: str,
+    line: dict[str, Any],
+    line_allocs: list[dict[str, Any]],
+) -> set[str]:
+    """Membership per item Cetak setelah penjadwalan — union di level PO."""
+    active: set[str] = set()
+    line_id = str(line.get("accurate_line_id") or "")
+    line_qty = float(line.get("qty") or 0)
+    active_allocs = [
+        a
+        for a in line_allocs
+        if str(a.get("status") or "") != schedules.STATUS_RELEASED
+    ]
+    allocated_qty = sum(float(a.get("qty") or 0) for a in active_allocs)
+    # Penjadwalan selesai hanya jika seluruh qty line dialokasikan (aktif).
+    if not active_allocs or (line_qty > 0 and allocated_qty + 1e-9 < line_qty):
+        active.add("flow-penjadwalan")
+        return active
+
+    screened = [a for a in active_allocs if production.screen_confirmed_qty(db, a) > 0]
+    all_screened = bool(active_allocs) and len(screened) == len(active_allocs)
+
+    prep = tasks.get_task(db, production.prep_task_key(accurate_po_id, line_id)) or {}
+    prep_qty = float(prep.get("qty_confirmed") or 0)
+    prep_done = bool(line_qty) and prep_qty >= line_qty
+
+    # Screener || Persiapan
+    if not all_screened:
+        active.add("flow-screener")
+    if not prep_done:
+        active.add("flow-persiapan")
+    if not all_screened or not prep_done:
+        return active
+
+    # Sampel ditolak (terbaru) tanpa approved → kembali ke Operator.
+    for a in active_allocs:
+        latest = samples.latest_sample(db, a["allocation_id"])
+        if (
+            latest
+            and latest.get("status") == samples.STATUS_REJECTED
+            and samples.approved_sample(db, a["allocation_id"]) is None
+        ):
+            active.add("flow-operator")
+            return active
+
+    uploaded = sum(
+        1 for a in active_allocs if samples.latest_sample(db, a["allocation_id"])
+    )
+    approved = sum(
+        1 for a in active_allocs if samples.approved_sample(db, a["allocation_id"])
+    )
+    all_uploaded = uploaded == len(active_allocs)
+    all_approved = approved == len(active_allocs)
+    if not all_uploaded:
+        active.add("flow-operator")
+        return active
+    if not all_approved:
+        active.add("flow-konfirmasi-sample")
+        return active
+
+    printed = production.printed_total_for_line(
+        db, accurate_po_id=accurate_po_id, accurate_line_id=line_id
+    )
+    qc = tasks.get_task(db, production.qc_task_key(accurate_po_id, line_id)) or {}
+    packed = float(qc.get("qty_confirmed") or 0)
+
+    # Cetak || Packing paralel (partial print + partial packing).
+    if not line_qty or printed + 1e-9 < line_qty:
+        active.add("flow-cetak")
+    if printed > 0 and packed + 1e-9 < printed:
+        active.add("flow-packing")
+    return active
+
+
+def active_stage_membership_from_facts(
+    db: Database,
+    *,
+    statuses: dict[str, str],
+    has_print: bool,
+    accurate_po_id: str,
+    print_lines: list[dict[str, Any]],
+    allocations_by_line: dict[str, list[dict[str, Any]]],
+    non_print_lines: list[dict[str, Any]] | None = None,
+    po_doc: dict[str, Any] | None = None,
+) -> list[str]:
+    """Membership tahap aktif dari fakta operasional (+ progres per line)."""
+    if not statuses:
+        return []
+
+    # T5: saat strict ON, Selesai HANYA dari fulfillment checker — tanpa
+    # fallback all(_status_passed) yang bisa mengabaikan evidence/qty.
+    from app.config import get_settings
+
+    strict_on = bool(get_settings().strict_po_completion_enabled)
+    if po_doc is not None and strict_on:
+        from app.services.po_completion import evaluate_po_fulfillment
+
+        if evaluate_po_fulfillment(db, po_doc).get("complete"):
+            return [FLOW_SELESAI_ID]
+        # Incomplete: lanjutkan membership operasional (bukan Selesai).
+    elif all(
+        _status_passed(statuses.get(nid, NODE_WAITING)) for nid, _ in PRODUCTION_FLOW_NODES
+    ):
+        return [FLOW_SELESAI_ID]
+
+    if not _order_masuk_left_entry(statuses):
+        return ["flow-order-masuk"]
+
+    active: set[str] = set()
+    active.update(_track_frontier(_TRACK_DESIGN, statuses))
+    active.update(_track_frontier(_TRACK_PAYMENT, statuses))
+
+    design_done = _status_passed(statuses.get("flow-approval-design", NODE_WAITING))
+    payment_done = _status_passed(statuses.get("flow-approval-payment", NODE_WAITING))
+    if not (design_done and payment_done):
+        return _stable_stage_list(active)
+
+    # Non-Cetak packing (eligible task exists + remaining).
+    for line in non_print_lines or []:
+        line_id = str(line.get("accurate_line_id") or "")
+        if not line_id:
+            continue
+        qc = tasks.get_task(db, production.qc_task_key(accurate_po_id, line_id))
+        if qc is None:
+            continue
+        target = float(qc.get("qty_target") or line.get("qty") or 0)
+        confirmed = float(qc.get("qty_confirmed") or 0)
+        if target <= 0 or confirmed + 1e-9 < target:
+            active.add("flow-packing")
+
+    if not has_print:
+        if "flow-packing" in active:
+            return _stable_stage_list(active)
+        for nid in ("flow-surat-jalan", "flow-loading", "flow-pengiriman"):
+            st = statuses.get(nid, NODE_WAITING)
+            if st in (NODE_RUNNING, NODE_WAITING):
+                active.add(nid)
+                break
+        return _stable_stage_list(active)
+
+    # Penjadwalan + union tahap produksi per line Cetak
+    for line in print_lines:
+        line_id = str(line.get("accurate_line_id") or "")
+        line_allocs = allocations_by_line.get(line_id) or []
+        active.update(
+            _line_print_active_stages(
+                db,
+                accurate_po_id=accurate_po_id,
+                line=line,
+                line_allocs=line_allocs,
+            )
+        )
+
+    # Fulfillment PO-level setelah seluruh line cetak selesai packing
+    # (+ packing Non-Cetak bila masih sisa).
+    print_work_pending = bool(
+        active
+        & {
+            "flow-penjadwalan",
+            "flow-screener",
+            "flow-persiapan",
+            "flow-operator",
+            "flow-konfirmasi-sample",
+            "flow-cetak",
+            "flow-packing",
+        }
+    )
+    if not print_work_pending:
+        for nid in ("flow-surat-jalan", "flow-loading", "flow-pengiriman"):
+            st = statuses.get(nid, NODE_WAITING)
+            if st in (NODE_RUNNING, NODE_WAITING):
+                active.add(nid)
+                break
+
+    return _stable_stage_list(active)
+
+
+def _stable_stage_list(active: set[str]) -> list[str]:
+    order = [nid for nid, _ in PRODUCTION_FLOW_NODES] + [FLOW_SELESAI_ID]
+    return [nid for nid in order if nid in active]
+
+
+def active_stage_membership(flow: dict[str, Any]) -> list[str]:
+    """Fallback dari node status saja (tes/unit tanpa fakta line).
+
+    Prefer ``active_stage_membership_from_facts`` di jalur production_flow_state.
+    """
+    nodes = flow.get("nodes") or []
+    statuses = {
+        str(n.get("id")): str(n.get("status") or NODE_WAITING)
+        for n in nodes
+        if isinstance(n, dict) and n.get("id")
+    }
+    if not statuses:
+        return []
+    if all(_status_passed(statuses.get(nid, NODE_WAITING)) for nid, _ in PRODUCTION_FLOW_NODES):
+        return [FLOW_SELESAI_ID]
+    if not _order_masuk_left_entry(statuses):
+        return ["flow-order-masuk"]
+    active: set[str] = set()
+    active.update(_track_frontier(_TRACK_DESIGN, statuses))
+    active.update(_track_frontier(_TRACK_PAYMENT, statuses))
+    design_done = _status_passed(statuses.get("flow-approval-design", NODE_WAITING))
+    payment_done = _status_passed(statuses.get("flow-approval-payment", NODE_WAITING))
+    if design_done and payment_done:
+        sched = statuses.get("flow-penjadwalan", NODE_WAITING)
+        if sched in (NODE_WAITING, NODE_RUNNING):
+            active.add("flow-penjadwalan")
+        elif sched == NODE_DONE:
+            for nid in _PARALLEL_AFTER_SCHEDULE:
+                st = statuses.get(nid, NODE_WAITING)
+                if st in (NODE_RUNNING, NODE_WAITING):
+                    active.add(nid)
+            if not (active & set(_PARALLEL_AFTER_SCHEDULE)):
+                for nid in _SERIAL_AFTER_PREP:
+                    st = statuses.get(nid, NODE_WAITING)
+                    if st in (NODE_RUNNING, NODE_WAITING):
+                        active.add(nid)
+                        # Multi-stage: lanjut jika RUNNING berikutnya juga aktif
+                        # (cetak berjalan + packing menunggu beda line → keduanya)
+                        if st == NODE_WAITING:
+                            break
+        elif sched == NODE_NOT_APPLICABLE:
+            for nid in ("flow-surat-jalan", "flow-loading", "flow-pengiriman"):
+                st = statuses.get(nid, NODE_WAITING)
+                if st in (NODE_RUNNING, NODE_WAITING):
+                    active.add(nid)
+                    break
+    return _stable_stage_list(active)
+
+
+def accepted_po_query(
+    *,
+    branch_ids: list[str] | set[str] | None = None,
+    branch_scope: bool = False,
+    q: str | None = None,
+    urgent: bool | None = None,
+) -> dict[str, Any]:
+    """Filter Mongo: origin accurate + accepted (+ branch/q/urgent seperti Inbox)."""
+    from app.repositories.po_repository import branch_scope_query
+    from app.services.po_acceptance import ACCEPTANCE_ACCEPTED
+
+    query: dict[str, Any] = {
+        "origin": "accurate",
+        "operational.acceptance.status": ACCEPTANCE_ACCEPTED,
+    }
+    text = (q or "").strip()
+    if text:
+        query["$or"] = [
+            {"po_no": {"$regex": text, "$options": "i"}},
+            {"header.customer": {"$regex": text, "$options": "i"}},
+            {"accurate_id": {"$regex": text, "$options": "i"}},
+            {"header.items.item_name": {"$regex": text, "$options": "i"}},
+            {"header.items.item_code": {"$regex": text, "$options": "i"}},
+        ]
+    if urgent is True:
+        query["header.urgent"] = True
+    elif urgent is False:
+        query["header.urgent"] = {"$ne": True}
+    if branch_scope:
+        scope = branch_scope_query(branch_ids)
+        if "$or" in query:
+            query = {"$and": [query, scope]}
+        else:
+            query.update(scope)
+    return query
 
 
 def production_flow_state(db: Database, po_doc: dict[str, Any]) -> dict[str, Any]:
     """Status 15 node dari fakta operasional, bukan posisi visual."""
     accurate_po_id = str(po_doc.get("accurate_id") or "")
     print_lines = _print_lines(po_doc)
+    non_print_lines = _non_print_lines(po_doc)
     has_print = bool(print_lines)
     gate = gates.get_gates(db, accurate_po_id)
 
@@ -256,14 +598,16 @@ def production_flow_state(db: Database, po_doc: dict[str, Any]) -> dict[str, Any
     )
 
     allocations: list[dict[str, Any]] = []
+    allocations_by_line: dict[str, list[dict[str, Any]]] = {}
     for line in print_lines:
-        allocations.extend(
-            schedules.list_allocations(
-                db,
-                accurate_line_id=str(line.get("accurate_line_id")),
-                include_released=True,
-            )
+        line_id = str(line.get("accurate_line_id") or "")
+        line_allocs = schedules.list_allocations(
+            db,
+            accurate_line_id=line_id,
+            include_released=True,
         )
+        allocations_by_line[line_id] = line_allocs
+        allocations.extend(line_allocs)
 
     screen_done = sum(
         1 for a in allocations if production.screen_confirmed_qty(db, a) > 0
@@ -300,6 +644,17 @@ def production_flow_state(db: Database, po_doc: dict[str, Any]) -> dict[str, Any
     ]
 
     qty_target = sum(float(i.get("qty") or 0) for i in print_lines)
+    nc_packed = 0.0
+    nc_target = 0.0
+    nc_packing_tasks = 0
+    for line in non_print_lines:
+        line_id = str(line.get("accurate_line_id") or "")
+        qc = tasks.get_task(db, production.qc_task_key(accurate_po_id, line_id))
+        if qc is None:
+            continue
+        nc_packing_tasks += 1
+        nc_packed += float(qc.get("qty_confirmed") or 0)
+        nc_target += float(qc.get("qty_target") or line.get("qty") or 0)
     na = "Item Non-Cetak tidak melewati tahap ini."
 
     nodes = [
@@ -421,14 +776,35 @@ def production_flow_state(db: Database, po_doc: dict[str, Any]) -> dict[str, Any
         _node(
             "flow-packing",
             "Packing",
-            NODE_NOT_APPLICABLE
-            if not has_print
-            else NODE_DONE
-            if printed_total and packed_total >= printed_total
-            else NODE_RUNNING
-            if packed_total
-            else NODE_WAITING,
-            na if not has_print else f"QC & Packing {packed_total:g} dari {printed_total:g}.",
+            (
+                NODE_NOT_APPLICABLE
+                if not has_print and nc_packing_tasks == 0
+                else NODE_DONE
+                if (
+                    (not has_print or (printed_total and packed_total >= printed_total))
+                    and (
+                        nc_packing_tasks == 0
+                        or (nc_target > 0 and nc_packed + 1e-9 >= nc_target)
+                    )
+                )
+                else NODE_RUNNING
+                if (packed_total or nc_packed)
+                else NODE_WAITING
+            ),
+            (
+                na
+                if not has_print and nc_packing_tasks == 0
+                else (
+                    f"Packing Cetak {packed_total:g}/{printed_total:g}"
+                    + (
+                        f"; Non-Cetak {nc_packed:g}/{nc_target:g}"
+                        if nc_packing_tasks
+                        else ""
+                    )
+                    if has_print
+                    else f"Packing Non-Cetak {nc_packed:g} dari {nc_target:g}."
+                )
+            ),
         ),
         _node(
             "flow-surat-jalan",
@@ -457,7 +833,20 @@ def production_flow_state(db: Database, po_doc: dict[str, Any]) -> dict[str, Any
             f"{len(delivered)}/{len(notes)} SJ terkirim." if notes else "Menunggu SJ.",
         ),
     ]
-    return {
+    statuses = {
+        str(n.get("id")): str(n.get("status") or NODE_WAITING) for n in nodes
+    }
+    active_stages = active_stage_membership_from_facts(
+        db,
+        statuses=statuses,
+        has_print=has_print,
+        accurate_po_id=accurate_po_id,
+        print_lines=print_lines,
+        allocations_by_line=allocations_by_line,
+        non_print_lines=non_print_lines,
+        po_doc=po_doc,
+    )
+    flow = {
         "accurate_po_id": accurate_po_id,
         "po_no": po_doc.get("po_no"),
         "has_print_items": has_print,
@@ -466,7 +855,124 @@ def production_flow_state(db: Database, po_doc: dict[str, Any]) -> dict[str, Any
             ["flow-design", "flow-payment"],
             ["flow-screener", "flow-persiapan"],
         ],
+        "active_stages": active_stages,
         "source": "mongodb",
+    }
+    return flow
+
+
+def node_label(node_id: str) -> str:
+    if node_id == FLOW_SELESAI_ID:
+        return FLOW_SELESAI_LABEL
+    for nid, label in PRODUCTION_FLOW_NODES:
+        if nid == node_id:
+            return label
+    return node_id
+
+
+def list_production_flow_by_stage(
+    db: Database,
+    *,
+    node_id: str,
+    page: int = 1,
+    page_size: int = 50,
+    q: str | None = None,
+    urgent: bool | None = None,
+    accurate_po_id: str | None = None,
+    branch_ids: list[str] | set[str] | None = None,
+    branch_scope: bool = False,
+    serialize_po: Any = None,
+) -> dict[str, Any]:
+    """PO accepted aktif pada ``node_id`` — pagination penuh tanpa scan-cap.
+
+    Iterasi cursor deterministik atas seluruh accepted (+filter) dalam branch scope.
+    Membership dihitung server-side; frontend tidak memfilter populasi.
+    """
+    valid_ids = {nid for nid, _ in PRODUCTION_FLOW_NODES} | {FLOW_SELESAI_ID}
+    if node_id not in valid_ids:
+        raise ValueError(f"node_id tidak dikenal: {node_id}")
+
+    query = accepted_po_query(
+        branch_ids=branch_ids,
+        branch_scope=branch_scope,
+        q=q,
+        urgent=urgent,
+    )
+    po_filter = str(accurate_po_id or "").strip()
+    if po_filter:
+        query = {"$and": [query, {"accurate_id": po_filter}]}
+    coll = po_collection(db)
+    # Sort deterministik: updated_at desc, accurate_id desc (tie-break).
+    cursor = coll.find(query, {"_id": 0}).sort(
+        [("updated_at", -1), ("accurate_id", -1)]
+    )
+
+    matched: list[dict[str, Any]] = []
+    scanned = 0
+    for doc in cursor:
+        scanned += 1
+        flow = production_flow_state(db, doc)
+        membership = list(flow.get("active_stages") or [])
+        if node_id not in membership:
+            continue
+        node = next(
+            (n for n in (flow.get("nodes") or []) if n.get("id") == node_id),
+            None,
+        )
+        if node_id == FLOW_SELESAI_ID:
+            stage_status = NODE_DONE
+            stage_detail = "Seluruh tahap applicable selesai."
+            stage_label = FLOW_SELESAI_LABEL
+        else:
+            stage_status = str((node or {}).get("status") or NODE_WAITING)
+            stage_detail = str((node or {}).get("detail") or "")
+            stage_label = str((node or {}).get("label") or node_label(node_id))
+        mon_label = monitoring_label(node_id=node_id, node_status=stage_status)
+
+        po_payload = serialize_po(doc, db) if callable(serialize_po) else {
+            "accurate_id": doc.get("accurate_id"),
+            "po_no": doc.get("po_no"),
+            "header": doc.get("header") if isinstance(doc.get("header"), dict) else {},
+            "acceptance": {
+                "status": "accepted",
+            },
+        }
+        matched.append(
+            {
+                "po": po_payload,
+                "accurate_po_id": str(doc.get("accurate_id") or ""),
+                "po_no": doc.get("po_no"),
+                "node_id": node_id,
+                "stage_label": stage_label,
+                "stage_status": stage_status,
+                "stage_detail": stage_detail,
+                "monitoring_label": mon_label,
+                "active_stages": membership,
+                "has_print_items": bool(flow.get("has_print_items")),
+                "acceptance": po_payload.get("acceptance")
+                if isinstance(po_payload, dict)
+                else {"status": "accepted"},
+            }
+        )
+
+    total = len(matched)
+    page = max(1, int(page))
+    page_size = max(1, min(int(page_size), 100))
+    start = (page - 1) * page_size
+    items = matched[start : start + page_size]
+    return {
+        "node_id": node_id,
+        "stage_label": node_label(node_id),
+        "items": items,
+        "total": total,
+        "page": page,
+        "pageSize": page_size,
+        "scanned": scanned,
+        "scan_capped": False,
+        "batch_size": PRODUCTION_FLOW_BATCH_SIZE,
+        "source": "mongodb",
+        "accepted_only": True,
+        "supportedFilters": ["q", "urgent"],
     }
 
 

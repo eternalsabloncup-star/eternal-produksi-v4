@@ -63,6 +63,14 @@ class LoadingCancelRequest(BaseModel):
     reason: str = Field(min_length=3, max_length=500)
 
 
+class LoadingAssignRequest(BaseModel):
+    assigned_user_email: str = Field(min_length=3, max_length=200)
+
+
+class LoadingMismatchRequest(BaseModel):
+    reason: str | None = Field(default=None, max_length=500)
+
+
 class EvidenceDeleteRequest(BaseModel):
     evidence_id: str = Field(min_length=5)
     reason: str = Field(min_length=3, max_length=500)
@@ -270,6 +278,59 @@ def post_loading(
             accurate_sj_id=accurate_sj_id,
             idempotency_key=body.idempotency_key,
             assigned_driver_email=body.assigned_driver_email,
+        )
+    except Exception as exc:  # noqa: BLE001
+        raise _handle(exc) from exc
+
+
+@router.post("/{accurate_sj_id}/loading/match")
+def post_loading_match(
+    accurate_sj_id: str,
+    body: LoadingConfirmRequest,
+    auth: AuthContext = Depends(require_csrf),
+) -> dict[str, Any]:
+    """Sesuai — validasi authoritative + confirm Loading."""
+    try:
+        return delivery_service.confirm_loading_match(
+            get_db(),
+            auth.user,
+            accurate_sj_id=accurate_sj_id,
+            idempotency_key=body.idempotency_key,
+        )
+    except Exception as exc:  # noqa: BLE001
+        raise _handle(exc) from exc
+
+
+@router.post("/{accurate_sj_id}/loading/mismatch")
+def post_loading_mismatch(
+    accurate_sj_id: str,
+    body: LoadingMismatchRequest,
+    auth: AuthContext = Depends(require_csrf),
+) -> dict[str, Any]:
+    """Tidak Sesuai — discrepancy KP; tidak membuka Pengiriman."""
+    try:
+        return delivery_service.reject_loading_mismatch(
+            get_db(),
+            auth.user,
+            accurate_sj_id=accurate_sj_id,
+            reason=body.reason,
+        )
+    except Exception as exc:  # noqa: BLE001
+        raise _handle(exc) from exc
+
+
+@router.post("/{accurate_sj_id}/loading/assign")
+def post_loading_assign(
+    accurate_sj_id: str,
+    body: LoadingAssignRequest,
+    auth: AuthContext = Depends(require_csrf),
+) -> dict[str, Any]:
+    try:
+        return delivery_service.assign_loading_sj_task(
+            get_db(),
+            auth.user,
+            accurate_sj_id=accurate_sj_id,
+            assigned_user_email=body.assigned_user_email,
         )
     except Exception as exc:  # noqa: BLE001
         raise _handle(exc) from exc

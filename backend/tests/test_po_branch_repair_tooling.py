@@ -896,3 +896,95 @@ def test_apply_loop_stops_on_audit_persist_failure(
     assert report["stop_reason"] == "audit_persist_failed"
     assert report["filled"] == 1
     assert report["skipped"] == 2
+
+
+class _SyncFlags:
+    def __init__(self, **kwargs: Any) -> None:
+        for k, v in kwargs.items():
+            setattr(self, k, v)
+
+
+def _all_sync_off(**overrides: Any) -> _SyncFlags:
+    base = {
+        "po_auto_sync_enabled": False,
+        "invoice_auto_sync_enabled": False,
+        "receipt_auto_sync_enabled": False,
+        "sj_sync_enabled": False,
+        "sj_sync_production_enabled": False,
+    }
+    base.update(overrides)
+    return _SyncFlags(**base)
+
+
+def test_require_auto_sync_flags_off_all_clear(safety) -> None:
+    verified = safety.require_auto_sync_flags_off(_all_sync_off())
+    assert verified == {
+        "po_auto_sync_enabled": False,
+        "invoice_auto_sync_enabled": False,
+        "receipt_auto_sync_enabled": False,
+        "sj_sync_enabled": False,
+        "sj_sync_production_enabled": False,
+    }
+
+
+@pytest.mark.parametrize(
+    "flag",
+    [
+        "po_auto_sync_enabled",
+        "invoice_auto_sync_enabled",
+        "receipt_auto_sync_enabled",
+        "sj_sync_enabled",
+        "sj_sync_production_enabled",
+    ],
+)
+def test_require_auto_sync_flags_off_refuses_when_on(safety, flag: str) -> None:
+    with pytest.raises(ValueError, match=f"auto_sync_must_be_off:{flag}"):
+        safety.require_auto_sync_flags_off(_all_sync_off(**{flag: True}))
+
+
+def test_require_auto_sync_flags_off_refuses_missing_settings(safety) -> None:
+    with pytest.raises(ValueError, match="auto_sync_settings_missing"):
+        safety.require_auto_sync_flags_off(None)
+
+
+def test_require_auto_sync_flags_off_refuses_missing_field(safety) -> None:
+    incomplete = _SyncFlags(
+        po_auto_sync_enabled=False,
+        invoice_auto_sync_enabled=False,
+        receipt_auto_sync_enabled=False,
+        sj_sync_enabled=False,
+        # sj_sync_production_enabled intentionally absent
+    )
+    with pytest.raises(ValueError, match="auto_sync_flag_missing:sj_sync_production_enabled"):
+        safety.require_auto_sync_flags_off(incomplete)
+
+
+def test_require_auto_sync_flags_off_refuses_invalid_type(safety) -> None:
+    with pytest.raises(ValueError, match="auto_sync_flag_invalid:po_auto_sync_enabled:int"):
+        safety.require_auto_sync_flags_off(_all_sync_off(po_auto_sync_enabled=0))
+    with pytest.raises(ValueError, match="auto_sync_flag_invalid:invoice_auto_sync_enabled:str"):
+        safety.require_auto_sync_flags_off(
+            _all_sync_off(invoice_auto_sync_enabled="false")
+        )
+
+
+def test_require_auto_sync_flags_off_refuses_unreadable(safety) -> None:
+    class _Boom:
+        po_auto_sync_enabled = False
+        invoice_auto_sync_enabled = False
+        receipt_auto_sync_enabled = False
+        sj_sync_enabled = False
+
+        @property
+        def sj_sync_production_enabled(self) -> bool:
+            raise RuntimeError("cannot_read")
+
+    with pytest.raises(ValueError, match="auto_sync_flag_unreadable:sj_sync_production_enabled"):
+        safety.require_auto_sync_flags_off(_Boom())
+
+
+def test_apply_killswitch_no_longer_uses_wrong_attr_fallback() -> None:
+    """Regression: wrong getattr name + False fallback must not remain."""
+    src = APPLY.read_text()
+    assert 'getattr(settings, "v4_po_auto_sync_enabled"' not in src
+    assert "require_auto_sync_flags_off" in src

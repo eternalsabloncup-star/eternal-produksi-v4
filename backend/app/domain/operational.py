@@ -104,6 +104,15 @@ DEFAULT_TASK_TYPES: Final[tuple[TaskTypeSpec, ...]] = (
         actions=["view", "approve"],
     ),
     TaskTypeSpec(
+        task_type="loading-sj",
+        label="Loading Surat Jalan",
+        scope="delivery_note",
+        # Default role Helper; Driver/KP cancel via grant Master manual (Owner).
+        default_role="helper",
+        # cancel ada di spek Master tetapi tidak di-seed ke Helper (lihat seed).
+        actions=["view", "confirm", "edit", "cancel"],
+    ),
+    TaskTypeSpec(
         task_type="qty-loading-sj-berbeda",
         label="Qty Loading dan SJ Berbeda",
         scope="delivery_note",

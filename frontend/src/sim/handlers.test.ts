@@ -51,6 +51,52 @@ describe("handleSimRequest", () => {
     expect(body.task.qty_confirmed).toBe(5000);
   });
 
+  it("lists and partially confirms Non-Cetak packing task", async () => {
+    const list = handleSimRequest(
+      "/api/tasks?role=helper&done=false",
+      { method: "GET" },
+      session,
+    );
+    expect(list?.status).toBe(200);
+    const listed = (await list!.json()) as {
+      items: Array<{
+        task_key: string;
+        task_type: string;
+        label?: string;
+        ref?: { process_kind?: string; accurate_po_id?: string; accurate_line_id?: string };
+      }>;
+    };
+    const nc = listed.items.find(
+      (t) =>
+        t.task_type === "qc-packing" &&
+        t.ref?.process_kind === "Non-Cetak",
+    );
+    expect(nc).toBeTruthy();
+    expect(nc!.label).toBe("Packing Non-Cetak");
+
+    const res = handleSimRequest(
+      `/api/production/${nc!.ref!.accurate_po_id}/lines/${nc!.ref!.accurate_line_id}/qc-packing`,
+      {
+        method: "POST",
+        body: JSON.stringify({ qty: 3000, idempotency_key: "nc-sim-3000" }),
+      },
+      session,
+    );
+    expect(res?.status).toBe(200);
+    const body = (await res!.json()) as {
+      task: {
+        status: string;
+        qty_confirmed: number;
+        task_key: string;
+        ref?: { process_kind?: string };
+      };
+    };
+    expect(body.task.task_key).toBe(nc!.task_key);
+    expect(body.task.qty_confirmed).toBe(3000);
+    expect(body.task.status).toBe("sebagian");
+    expect(body.task.ref?.process_kind).toBe("Non-Cetak");
+  });
+
   it("does not handle non-api paths", () => {
     expect(handleSimRequest("/app/inbox", { method: "GET" }, session)).toBe(
       null,

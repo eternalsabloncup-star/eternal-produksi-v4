@@ -41,6 +41,7 @@ from lib.po_branch_repair_safety import (  # noqa: E402
     load_maintenance_lock,
     load_sealed_candidates,
     prewrite_block_reason,
+    require_auto_sync_flags_off,
     require_safe_db_target,
     require_snapshot_args,
     resolve_live_sha,
@@ -163,8 +164,12 @@ def main() -> int:
         print(json.dumps(base_report))
         return 4
 
-    if getattr(settings, "v4_po_auto_sync_enabled", False):
-        base_report.update({"refused": True, "reason": "po_auto_sync_must_be_off"})
+    try:
+        # Env/config gate (fail-closed). Runtime worker/timer = assert_no_po_sync_worker
+        # di atas — flag OFF saja bukan bukti proses sudah berhenti.
+        require_auto_sync_flags_off(settings)
+    except ValueError as exc:
+        base_report.update({"refused": True, "reason": str(exc)})
         persist_audit(audit_path, base_report)
         print(json.dumps(base_report))
         return 5

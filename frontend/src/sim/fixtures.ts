@@ -111,6 +111,17 @@ export const SIM_PO_DOCS: Array<Record<string, unknown>> = [
           process_raw: "Cetak",
           color: "Hitam",
         },
+        {
+          line_id: "L-301",
+          accurate_line_id: "L-301",
+          item_code: "LID-16",
+          item_name: "Lid 16oz Non-Cetak",
+          qty: 5000,
+          unit: "PCS",
+          process_kind: "Non-Cetak",
+          process_raw: "Non-Cetak",
+          color: "Natural",
+        },
       ],
     },
     acceptance: {
@@ -223,7 +234,41 @@ export let simTasks: OperationalTask[] = [
       po_no: PO_NO,
       accurate_line_id: LINE_CETAK,
       item_code: "CUP-12OZ",
+      process_kind: "Cetak",
     },
+  }),
+  /** Eligible accepted Non-Cetak packing — simulasi T1 (bukan pending/legacy). */
+  task({
+    task_key: `po:10002:line:L-301:qc-packing`,
+    task_type: "qc-packing",
+    label: "Packing Non-Cetak",
+    scope: "po_line",
+    assigned_role: "helper",
+    status: "belum_dikerjakan",
+    qty_target: 5000,
+    ref: {
+      accurate_po_id: "10002",
+      po_no: "SO-2026/11/002",
+      accurate_line_id: "L-301",
+      item_code: "LID-16",
+      process_kind: "Non-Cetak",
+    },
+    context: { process_kind: "Non-Cetak", packing_kind: "non-cetak" },
+  }),
+  task({
+    task_key: `sj:${SJ_ID}:loading-sj`,
+    task_type: "loading-sj",
+    label: "Loading Surat Jalan",
+    scope: "delivery_note",
+    assigned_role: "helper",
+    status: "belum_dikerjakan",
+    ref: {
+      accurate_po_id: PO_ID,
+      po_no: PO_NO,
+      accurate_delivery_note_id: SJ_ID,
+      sj_no: "SJ-2026/11/88",
+    },
+    context: { assigned_user_email: SIM_ACTOR },
   }),
   task({
     task_key: `sj:${SJ_ID}:pengiriman`,
@@ -393,6 +438,16 @@ export const SIM_TASK_TYPES = {
       actions: ["view", "input", "confirm"] as const,
       coordination: false,
       partial_qty: true,
+      is_default_mapping: true,
+    },
+    {
+      task_type: "loading-sj",
+      label: "Loading Surat Jalan",
+      scope: "delivery_note",
+      assigned_role: "helper" as OperationalRole,
+      actions: ["view", "confirm", "edit"] as const,
+      coordination: false,
+      partial_qty: false,
       is_default_mapping: true,
     },
     {
@@ -574,46 +629,38 @@ export const SIM_BUFFER = {
   ready_formula: "qty_cetak - qty_terkirim_terkonfirmasi",
 };
 
+const SIM_FLOW_NODES = [
+  { id: "flow-order-masuk", label: "Order Masuk", status: "selesai" as const, detail: "PO diterima" },
+  { id: "flow-design", label: "Design", status: "menunggu" as const, detail: "Belum ada file desain." },
+  { id: "flow-approval-design", label: "Approval Design", status: "menunggu" as const, detail: "Belum ada approval desain." },
+  { id: "flow-payment", label: "Payment", status: "menunggu" as const, detail: "Belum ada penerimaan terverifikasi." },
+  { id: "flow-approval-payment", label: "Approval Payment", status: "menunggu" as const, detail: "Belum ada penerimaan terverifikasi." },
+  { id: "flow-penjadwalan", label: "Penjadwalan", status: "menunggu" as const, detail: "0 alokasi operator." },
+  { id: "flow-screener", label: "Screener", status: "menunggu" as const, detail: "0/0 alokasi di-Screen." },
+  { id: "flow-persiapan", label: "Persiapan", status: "menunggu" as const, detail: "Disiapkan 0 dari 2000." },
+  { id: "flow-operator", label: "Operator", status: "menunggu" as const, detail: "0/0 operator mengunggah sampel." },
+  { id: "flow-konfirmasi-sample", label: "Konfirmasi Sample", status: "menunggu" as const, detail: "0/0 sampel disetujui." },
+  { id: "flow-cetak", label: "Cetak", status: "menunggu" as const, detail: "Qty cetak 0 dari 2000." },
+  { id: "flow-packing", label: "Packing", status: "menunggu" as const, detail: "QC & Packing 0 dari 0." },
+  { id: "flow-surat-jalan", label: "Surat Jalan", status: "menunggu" as const, detail: "Belum ada SJ Accurate." },
+  { id: "flow-loading", label: "Loading", status: "menunggu" as const, detail: "Menunggu SJ." },
+  { id: "flow-pengiriman", label: "Pengiriman", status: "menunggu" as const, detail: "Menunggu SJ." },
+];
+
+/** Hanya PO accepted — sim parity dengan gate Accepted. */
 export const SIM_FLOW = {
   items: [
     {
-      accurate_po_id: PO_ID,
-      po_no: PO_NO,
+      accurate_po_id: "10002",
+      po_no: "SO-2026/11/002",
       has_print_items: true,
-      nodes: [
-        {
-          id: "inbox",
-          label: "Inbox",
-          status: "selesai" as const,
-          detail: "PO masuk",
-        },
-        {
-          id: "design",
-          label: "Desain",
-          status: "berjalan" as const,
-          detail: "Menunggu approval",
-        },
-        {
-          id: "schedule",
-          label: "Jadwal",
-          status: "menunggu" as const,
-          detail: "Belum dialokasi penuh",
-        },
-        {
-          id: "print",
-          label: "Cetak",
-          status: "berjalan" as const,
-          detail: "800 / 2500",
-        },
-        {
-          id: "delivery",
-          label: "Kirim",
-          status: "menunggu" as const,
-          detail: "SJ siap",
-        },
-      ],
+      active_stages: ["flow-order-masuk"],
+      nodes: SIM_FLOW_NODES,
     },
   ],
+  nodes: SIM_FLOW_NODES.map(({ id, label }) => ({ id, label })),
+  accepted_only: true,
+  source: "api-simulation",
 };
 
 export const SIM_DASHBOARD = {

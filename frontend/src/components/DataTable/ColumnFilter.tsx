@@ -13,12 +13,21 @@ type Props = {
   showStatus?: boolean;
   showMachine?: boolean;
   showUrgent?: boolean;
+  /** Kontrol di kiri pencarian (mis. dropdown PO + Muat ulang). */
+  leading?: ReactNode;
   /** Konten tambahan di ujung kanan baris (mis. Kolom Tabel / Reset tampilan). */
   trailing?: ReactNode;
   /** Teks bantuan DEMO di kanan; default true untuk halaman lama. */
   showDemoHint?: boolean;
+  /**
+   * Teks bantuan API (cabang/status) — default true bila sourceMode=api
+   * dan showDemoHint=false. Matikan di Alur Produksi.
+   */
+  showApiHint?: boolean;
   /** Satu baris + scroll horizontal khusus toolbar. */
   compact?: boolean;
+  /** Class tambahan pada baris filter (mis. ep-flow-toolbar). */
+  className?: string;
   /**
    * Mode sumber Inbox.
    * API: cabang/status/mesin dinonaktifkan eksplisit (belum ada di Accurate).
@@ -34,18 +43,29 @@ export function ColumnFilter({
   showStatus = true,
   showMachine = false,
   showUrgent = false,
+  leading,
   trailing,
   showDemoHint = true,
+  showApiHint = true,
   compact = false,
+  className,
   sourceMode = "demo",
 }: Props) {
   const branchEnabled = inboxFilterEnabled(sourceMode, "branch");
   const statusEnabled = inboxFilterEnabled(sourceMode, "status");
   const machineEnabled = inboxFilterEnabled(sourceMode, "machine");
   const urgentEnabled = inboxFilterEnabled(sourceMode, "urgent");
+  const barClass = [
+    "ep-filterbar",
+    compact ? "is-compact" : "",
+    className || "",
+  ]
+    .filter(Boolean)
+    .join(" ");
 
   return (
-    <div className={`ep-filterbar${compact ? " is-compact" : ""}`}>
+    <div className={barClass}>
+      {leading}
       <div className="ep-search">
         <span style={{ fontSize: 14, color: "#97a8bc" }} aria-hidden>
           ⌕
@@ -163,7 +183,7 @@ export function ColumnFilter({
         <span className="ep-sub ep-filterbar-hint">
           Filter berlaku ke halaman tabel (DEMO)
         </span>
-      ) : sourceMode === "api" ? (
+      ) : sourceMode === "api" && showApiHint ? (
         <span className="ep-sub ep-filterbar-hint">
           Filter aktif: pencarian &amp; urgent. Cabang/status belum tersedia di
           Accurate.

@@ -41,11 +41,21 @@ const FLOW_STEP_IDS = [
   "flow-pengiriman",
 ] as const;
 
+export const FLOW_SELESAI_STEP: ProductionFlowStep = {
+  id: "flow-selesai",
+  label: "Selesai",
+};
+
 export function buildProductionFlowSteps(): ProductionFlowStep[] {
   return PRODUCTION_FLOW_LABELS.map((label, i) => ({
     id: FLOW_STEP_IDS[i],
     label,
   }));
+}
+
+/** 15 tahap + bucket Selesai (PO yang seluruh workflow applicable selesai). */
+export function buildProductionFlowStepsWithSelesai(): ProductionFlowStep[] {
+  return [...buildProductionFlowSteps(), FLOW_SELESAI_STEP];
 }
 
 type Props = {
