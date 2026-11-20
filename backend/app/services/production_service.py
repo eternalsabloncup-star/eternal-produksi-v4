@@ -733,6 +733,15 @@ def _sync_qc_task(db: Database, alloc: dict[str, Any]) -> dict[str, Any]:
     )
 
 
+def _po_line(po_doc: dict[str, Any], accurate_line_id: str) -> dict[str, Any] | None:
+    header = po_doc.get("header") if isinstance(po_doc.get("header"), dict) else {}
+    needle = str(accurate_line_id)
+    for item in header.get("items") or []:
+        if isinstance(item, dict) and str(item.get("accurate_line_id") or "") == needle:
+            return item
+    return None
+
+
 def confirm_qc_packing(
     db: Database,
     user: dict[str, Any],
@@ -743,15 +752,70 @@ def confirm_qc_packing(
     idempotency_key: str,
     note: str | None = None,
 ) -> dict[str, Any]:
-    """Satu Qty berarti lolos QC sekaligus selesai Packing.
+    """Satu Qty = packing terkonfirmasi (Cetak: QC+Pack; Non-Cetak: inspeksi fisik).
 
-    Target operasional = Qty cetak sah line (bukan Qty PO penuh).
-    Maksimum tambahan = cetak − packing terkonfirmasi.
+    Cetak: target = qty cetak sah; sisa = printed − confirmed.
+    Non-Cetak: target = qty PO-line terkini (Accurate); sisa = target − confirmed.
+    Revisi Accurate turun di bawah confirmed: tidak clamp history; confirm baru ditolak.
     """
+    from app.services.po_tasks import NON_PRINT_KIND, PRINT_KIND
+
     po_doc = _require_accepted_po(db, accurate_po_id)
     _assert_po_branch(user, po_doc)
     key = qc_task_key(accurate_po_id, accurate_line_id)
     task = tasks.get_task(db, key)
+    line = _po_line(po_doc, accurate_line_id)
+    process_kind = str(
+        (line or {}).get("process_kind")
+        or (task or {}).get("ref", {}).get("process_kind")
+        or (task or {}).get("context", {}).get("process_kind")
+        or ""
+    )
+
+    if process_kind == NON_PRINT_KIND:
+        if task is None:
+            raise LookupError(
+                "Tugas Packing Non-Cetak belum terbit — PO tidak eligible "
+                "atau belum di-derive setelah aktivasi."
+            )
+        if line is None:
+            raise LookupError(
+                f"Item line {accurate_line_id} tidak ditemukan pada PO {accurate_po_id}."
+            )
+        line_qty = float(line.get("qty") or 0)
+        already = float(task.get("qty_confirmed") or 0)
+        # Sync target tampilan ke qty Accurate terkini tanpa mengubah confirmed.
+        tasks.tasks_collection(db).update_one(
+            {"task_key": key},
+            {
+                "$set": {
+                    "qty_target": line_qty,
+                    "ref.process_kind": NON_PRINT_KIND,
+                    "context.process_kind": NON_PRINT_KIND,
+                    "context.packing_kind": "non-cetak",
+                }
+            },
+        )
+        remaining = max(line_qty - already, 0.0)
+        if qty > remaining:
+            raise ProductionQuantityError(
+                f"Qty Packing Non-Cetak {qty:g} melebihi sisa yang boleh dikonfirmasi "
+                f"({remaining:g}). Qty PO-line {line_qty:g}, sudah packing {already:g}."
+            )
+        result = confirm_task(
+            db, user, task_key=key, qty=qty, idempotency_key=idempotency_key, note=note
+        )
+        result["process_kind"] = NON_PRINT_KIND
+        result["qty_line_target"] = line_qty
+        result["qty_ready_to_ship"] = float(result["task"]["qty_confirmed"])
+        result["qty_available"] = max(
+            float(result["task"]["qty_confirmed"])
+            - float(result["task"].get("qty_consumed") or 0),
+            0.0,
+        )
+        return result
+
+    # —— Cetak (perilaku existing, tidak diubah) ——
     if task is None:
         raise LookupError("Tugas QC & Packing belum terbit — belum ada hasil cetak.")
 
@@ -771,6 +835,7 @@ def confirm_qc_packing(
     result = confirm_task(
         db, user, task_key=key, qty=qty, idempotency_key=idempotency_key, note=note
     )
+    result["process_kind"] = PRINT_KIND
     result["qty_printed"] = printed
     result["qty_ready_to_ship"] = float(result["task"]["qty_confirmed"])
     return result

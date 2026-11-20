@@ -48,6 +48,42 @@ export type ProductionFlow = {
   po_no: string;
   has_print_items: boolean;
   nodes: FlowNode[];
+  active_stages?: string[];
+};
+
+export type ProductionFlowStageRow = {
+  accurate_po_id: string;
+  po_no: string;
+  node_id: string;
+  stage_label: string;
+  stage_status: FlowNode["status"];
+  stage_detail: string;
+  /** Label monitoring tabel: Aktif / Dalam Proses / Selesai — bukan SoT node. */
+  monitoring_label?: string;
+  active_stages: string[];
+  has_print_items: boolean;
+  acceptance: {
+    status: string;
+    accepted_by?: string | null;
+    accepted_at?: string | null;
+    inbox_status?: string;
+  };
+  po: Record<string, unknown>;
+};
+
+export type ProductionFlowByStage = {
+  node_id: string;
+  stage_label: string;
+  items: ProductionFlowStageRow[];
+  total: number;
+  page: number;
+  pageSize: number;
+  scanned?: number;
+  scan_cap?: number;
+  scan_capped?: boolean;
+  batch_size?: number;
+  accepted_only?: boolean;
+  source: string;
 };
 
 export type DashboardMetrics = {
@@ -104,11 +140,32 @@ export async function fetchBufferStock(): Promise<BufferStock> {
 
 export async function fetchProductionFlow(
   accuratePoId?: string,
-): Promise<{ items: ProductionFlow[] }> {
+): Promise<{ items: ProductionFlow[]; accepted_only?: boolean }> {
   const qs = accuratePoId
     ? `?accurate_po_id=${encodeURIComponent(accuratePoId)}`
     : "";
   return request(`/api/production-flow${qs}`);
+}
+
+export async function fetchProductionFlowByStage(params: {
+  nodeId: string;
+  page?: number;
+  pageSize?: number;
+  q?: string;
+  urgent?: boolean;
+  accuratePoId?: string;
+}): Promise<ProductionFlowByStage> {
+  const search = new URLSearchParams();
+  search.set("node_id", params.nodeId);
+  if (params.page) search.set("page", String(params.page));
+  if (params.pageSize) search.set("pageSize", String(params.pageSize));
+  if (params.q?.trim()) search.set("q", params.q.trim());
+  if (params.urgent === true) search.set("urgent", "true");
+  if (params.urgent === false) search.set("urgent", "false");
+  if (params.accuratePoId) {
+    search.set("accurate_po_id", params.accuratePoId);
+  }
+  return request(`/api/production-flow/by-stage?${search.toString()}`);
 }
 
 export async function fetchDashboard(): Promise<DashboardMetrics> {

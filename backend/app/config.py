@@ -95,6 +95,45 @@ class Settings(BaseSettings):
             "SJ_SYNC_PRODUCTION_ENABLED",
         ),
     )
+    # Packing Non-Cetak (T1): boundary aktivasi eksplisit Owner.
+    # Kosong/default = fitur OFF (tidak derive task Non-Cetak).
+    # ISO-8601 UTC, contoh: 2026-11-20T17:00:00+00:00
+    # Hanya PO dengan acceptance.accepted_at >= nilai ini yang eligible.
+    non_cetak_packing_activated_at: str = Field(
+        default="",
+        validation_alias=AliasChoices(
+            "V4_NON_CETAK_PACKING_ACTIVATED_AT",
+            "NON_CETAK_PACKING_ACTIVATED_AT",
+        ),
+    )
+    # T2+: Loading membandingkan item Non-Cetak ke ledger Packing (bukan SJ↔SJ).
+    # Default OFF = jalur legacy self-compare tetap (aman deploy tanpa migrasi).
+    # ON = fail-closed bila ledger Packing Non-Cetak tidak ada / qty kurang.
+    loading_packing_ledger_enforced: bool = Field(
+        default=False,
+        validation_alias=AliasChoices(
+            "V4_LOADING_PACKING_LEDGER_ENFORCED",
+            "LOADING_PACKING_LEDGER_ENFORCED",
+        ),
+    )
+    # T3+: derive tugas loading-sj per SJ + gate assignee.
+    # Default OFF = Loading API lama tetap (pengiriman.confirm) tanpa task Loading baru.
+    loading_sj_task_enabled: bool = Field(
+        default=False,
+        validation_alias=AliasChoices(
+            "V4_LOADING_SJ_TASK_ENABLED",
+            "LOADING_SJ_TASK_ENABLED",
+        ),
+    )
+    # T5+: Selesai monitoring memakai checker fulfillment ketat.
+    # Default OFF = membership Selesai mengikuti node status existing.
+    strict_po_completion_enabled: bool = Field(
+        default=False,
+        validation_alias=AliasChoices(
+            "V4_STRICT_PO_COMPLETION_ENABLED",
+            "STRICT_PO_COMPLETION_ENABLED",
+        ),
+    )
     # Auto-sync Accurate — semua default OFF; worker one-shot terpisah dari FastAPI.
     po_auto_sync_enabled: bool = Field(
         default=False,
@@ -182,6 +221,30 @@ class Settings(BaseSettings):
             return []
         return [part.strip() for part in self.cors_origins.split(",") if part.strip()]
 
+    def _non_cetak_activation_summary(self) -> dict[str, object]:
+        """Status aktivasi Non-Cetak packing — parser sama dengan eligibility.
+
+        Invalid timestamp → OFF/invalid (bukan activated). Tanpa secret.
+        """
+        from app.services.po_tasks import parse_activation_datetime
+
+        raw = str(self.non_cetak_packing_activated_at or "").strip()
+        if not raw:
+            return {
+                "non_cetak_packing_activated": False,
+                "non_cetak_packing_activation_status": "off",
+            }
+        parsed = parse_activation_datetime(raw)
+        if parsed is None:
+            return {
+                "non_cetak_packing_activated": False,
+                "non_cetak_packing_activation_status": "invalid",
+            }
+        return {
+            "non_cetak_packing_activated": True,
+            "non_cetak_packing_activation_status": "on",
+        }
+
     def safe_summary(self) -> dict[str, object]:
         """Non-secret config summary for diagnostics."""
         return {
@@ -211,6 +274,13 @@ class Settings(BaseSettings):
             ],
             "sj_sync_enabled": bool(self.sj_sync_enabled),
             "sj_sync_production_enabled": bool(self.sj_sync_production_enabled),
+            # Diagnostik aktivasi — parser sama dengan eligibility (invalid = OFF).
+            **self._non_cetak_activation_summary(),
+            "loading_packing_ledger_enforced": bool(
+                self.loading_packing_ledger_enforced
+            ),
+            "loading_sj_task_enabled": bool(self.loading_sj_task_enabled),
+            "strict_po_completion_enabled": bool(self.strict_po_completion_enabled),
             "po_auto_sync_enabled": bool(self.po_auto_sync_enabled),
             "receipt_auto_sync_enabled": bool(self.receipt_auto_sync_enabled),
             "invoice_auto_sync_enabled": bool(self.invoice_auto_sync_enabled),

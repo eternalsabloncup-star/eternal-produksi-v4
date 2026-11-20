@@ -725,6 +725,12 @@ def test_discrepancy_success_and_no_seed(
 ) -> None:
     _packed(db, 100)
     delivery.ingest_delivery_note(db, OWNER, _sj(300))
+    master.set_role_actions(
+        db,
+        role="production-head",
+        task_type="loading-sj",
+        actions=["view", "confirm", "edit", "cancel"],
+    )
     seeded: list[str] = []
 
     def _spy_seed(database):
@@ -745,6 +751,12 @@ def test_discrepancy_fail_closed_without_master(
 ) -> None:
     _packed(db, 100)
     delivery.ingest_delivery_note(db, OWNER, _sj(300))
+    master.set_role_actions(
+        db,
+        role="production-head",
+        task_type="loading-sj",
+        actions=["view", "confirm", "edit", "cancel"],
+    )
     db["master_task_types"].delete_many({"task_type": "qty-loading-sj-berbeda"})
     monkeypatch.setattr(
         master,
@@ -764,6 +776,12 @@ def test_discrepancy_rolls_back_when_audit_fails(
 ) -> None:
     _packed(db, 100)
     delivery.ingest_delivery_note(db, OWNER, _sj(300))
+    master.set_role_actions(
+        db,
+        role="production-head",
+        task_type="loading-sj",
+        actions=["view", "confirm", "edit", "cancel"],
+    )
 
     def _boom(*a, **k):
         raise RuntimeError("discrepancy audit failed")
@@ -948,6 +966,12 @@ def test_discrepancy_missing_index_no_createindex(
 ) -> None:
     _packed(db, 100)
     delivery.ingest_delivery_note(db, OWNER, _sj(300))
+    master.set_role_actions(
+        db,
+        role="production-head",
+        task_type="loading-sj",
+        actions=["view", "confirm", "edit", "cancel"],
+    )
     clear_index_verification_cache(db=db)
     db["operational_tasks"].drop_index("uniq_task_key")
     created: list[str] = []

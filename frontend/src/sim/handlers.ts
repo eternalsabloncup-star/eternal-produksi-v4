@@ -7,6 +7,7 @@ import {
   LINE_CETAK,
   PO_ID,
   PO_NO,
+  SJ_ID,
   SIM_ACTOR,
   SIM_BUFFER,
   SIM_CAPABILITIES,
@@ -367,20 +368,42 @@ export function handleSimRequest(
     } catch {
       body = {};
     }
-    const roleHint = path.includes("/screen")
-      ? "screener"
-      : path.includes("/print")
-        ? "operator"
-        : path.includes("/qc-packing")
-          ? "helper"
+    const lineMatch = path.match(
+      /^\/api\/production\/([^/]+)\/lines\/([^/]+)\/(preparation|qc-packing)$/,
+    );
+    const allocMatch = path.match(
+      /^\/api\/production\/allocations\/([^/]+)\/(screen|print)$/,
+    );
+    let task =
+      lineMatch != null
+        ? simTasks.find(
+            (t) =>
+              t.task_type ===
+                (lineMatch[3] === "qc-packing" ? "qc-packing" : "persiapan-cup") &&
+              t.ref.accurate_po_id === decodeURIComponent(lineMatch[1]) &&
+              t.ref.accurate_line_id === decodeURIComponent(lineMatch[2]),
+          )
+        : allocMatch != null
+          ? simTasks.find(
+              (t) =>
+                t.task_type === (allocMatch[2] === "screen" ? "screen" : "cetak") &&
+                t.ref.allocation_id === decodeURIComponent(allocMatch[1]),
+            )
+          : undefined;
+    if (!task) {
+      const roleHint = path.includes("/screen")
+        ? "screener"
+        : path.includes("/print")
+          ? "operator"
           : "helper";
-    const task =
-      simTasks.find(
-        (t) =>
-          t.assigned_role === roleHint &&
-          t.status !== "selesai" &&
-          (t.ref.allocation_id === ALLOC_A || t.ref.accurate_po_id === PO_ID),
-      ) || simTasks.find((t) => t.assigned_role === roleHint);
+      task =
+        simTasks.find(
+          (t) =>
+            t.assigned_role === roleHint &&
+            t.status !== "selesai" &&
+            (t.ref.allocation_id === ALLOC_A || t.ref.accurate_po_id === PO_ID),
+        ) || simTasks.find((t) => t.assigned_role === roleHint);
+    }
     if (!task) return json({ detail: "Tugas tidak ditemukan" }, 404);
     const result = applyConfirm(
       task.task_key,
@@ -675,9 +698,9 @@ export function handleSimRequest(
       revision_status: "current",
       needs_reloading: false,
       delivered: false,
-      active_loading_id: "load-1",
+      active_loading_id: null,
       all_matched: true,
-      already_loaded: true,
+      already_loaded: false,
       items: [
         {
           sj_line_id: "sjl-1",
@@ -690,7 +713,56 @@ export function handleSimRequest(
           matched: true,
           reason: null,
         },
+        {
+          sj_line_id: "sjl-2",
+          accurate_line_id: "L-301",
+          item_code: "LID-16",
+          qty: 1000,
+          unit: "PCS",
+          process_kind: "Non-Cetak",
+          qty_available: 3000,
+          matched: true,
+          reason: null,
+        },
       ],
+    });
+  }
+  if (path.endsWith("/loading/match") && method === "POST") {
+    const loadingTask = simTasks.find((t) => t.task_type === "loading-sj");
+    if (loadingTask) {
+      loadingTask.status = "selesai";
+      loadingTask.qty_confirmed = 1;
+    }
+    return json({ duplicate: false, simulation: true, loading: { status: "active" } });
+  }
+  if (path.endsWith("/loading/mismatch") && method === "POST") {
+    const exists = simTasks.some((t) => t.task_type === "qty-loading-sj-berbeda");
+    if (!exists) {
+      simTasks.push({
+        task_key: `sj:${SJ_ID}:qty-loading-sj-berbeda`,
+        task_type: "qty-loading-sj-berbeda",
+        label: "Qty Loading dan SJ Berbeda",
+        scope: "delivery_note",
+        assigned_role: "production-head",
+        status: "belum_dikerjakan",
+        qty_confirmed: 0,
+        ref: {
+          accurate_po_id: PO_ID,
+          accurate_delivery_note_id: SJ_ID,
+          sj_no: "SJ-2026/11/88",
+        },
+        context: {
+          message:
+            "Mohon konfirmasi ke administrasi karena qty loading dan SJ berbeda",
+        },
+      });
+    }
+    return json({
+      discrepancy_task: {
+        task_key: `sj:${SJ_ID}:qty-loading-sj-berbeda`,
+        task_type: "qty-loading-sj-berbeda",
+      },
+      simulation: true,
     });
   }
   if (
@@ -710,7 +782,83 @@ export function handleSimRequest(
 
   // Analytics
   if (path === "/api/buffer-stock" && method === "GET") return json(SIM_BUFFER);
+  if (path.startsWith("/api/production-flow/by-stage") && method === "GET") {
+    const nodeId = url.searchParams.get("node_id") || "flow-order-masuk";
+    const page = Math.max(1, Number(url.searchParams.get("page") || 1));
+    const pageSize = Math.min(
+      100,
+      Math.max(1, Number(url.searchParams.get("pageSize") || 50)),
+    );
+    const accuratePoId = url.searchParams.get("accurate_po_id") || "";
+    const acceptedDocs = SIM_PO_DOCS.filter((d) => {
+      const acc = d.acceptance as { status?: string } | undefined;
+      return acc?.status === "accepted";
+    });
+    const flowItem = SIM_FLOW.items[0];
+    const active = new Set(flowItem?.active_stages || ["flow-order-masuk"]);
+    const inStage =
+      nodeId === "flow-selesai"
+        ? []
+        : active.has(nodeId)
+          ? acceptedDocs.filter(
+              (d) => !accuratePoId || String(d.accurate_id) === accuratePoId,
+            )
+          : [];
+    const node =
+      flowItem?.nodes.find((n) => n.id === nodeId) ||
+      ({
+        id: nodeId,
+        label: nodeId,
+        status: "menunggu" as const,
+        detail: "",
+      });
+    const start = (page - 1) * pageSize;
+    const slice = inStage.slice(start, start + pageSize);
+    const monLabel =
+      nodeId === "flow-selesai"
+        ? "Selesai"
+        : String(node.status) === "berjalan"
+          ? "Dalam Proses"
+          : "Aktif";
+    return json({
+      node_id: nodeId,
+      stage_label: node.label,
+      items: slice.map((doc) => {
+        const header = (doc.header || {}) as Record<string, unknown>;
+        return {
+          accurate_po_id: String(doc.accurate_id),
+          po_no: header.po_no || doc.po_no,
+          node_id: nodeId,
+          stage_label: node.label,
+          stage_status: node.status,
+          stage_detail: node.detail,
+          monitoring_label: monLabel,
+          active_stages: flowItem?.active_stages || ["flow-order-masuk"],
+          has_print_items: true,
+          acceptance: doc.acceptance,
+          po: {
+            ...doc,
+            po_no: header.po_no || doc.po_no,
+            customer: header.customer ?? null,
+            item_count: Array.isArray(header.items) ? header.items.length : 0,
+          },
+        };
+      }),
+      total: inStage.length,
+      page,
+      pageSize,
+      scan_capped: false,
+      accepted_only: true,
+      source: "api-simulation",
+    });
+  }
   if (path.startsWith("/api/production-flow") && method === "GET") {
+    const accuratePoId = url.searchParams.get("accurate_po_id");
+    if (accuratePoId) {
+      const hit = SIM_FLOW.items.find((i) => i.accurate_po_id === accuratePoId);
+      if (!hit) return json({ detail: "PO Accurate tidak ditemukan" }, 404);
+      return json({ items: [hit], accepted_only: true });
+    }
     return json(SIM_FLOW);
   }
   if (path === "/api/dashboard" && method === "GET") return json(SIM_DASHBOARD);

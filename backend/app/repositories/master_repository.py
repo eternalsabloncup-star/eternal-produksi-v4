@@ -142,9 +142,13 @@ def seed_master_defaults(db: Database) -> dict[str, int]:
             inserted_types += 1
 
         # payment-bypass: tersedia di Master tetapi tidak di-grant otomatis ke role mana pun.
-        seed_actions: list[str] = (
-            [] if spec.task_type == "payment-bypass" else list(spec.actions)
-        )
+        # loading-sj: Helper tidak mendapat cancel (Owner: cancel = KP/Admin manual).
+        if spec.task_type == "payment-bypass":
+            seed_actions: list[str] = []
+        elif spec.task_type == "loading-sj":
+            seed_actions = ["view", "confirm", "edit"]
+        else:
+            seed_actions = list(spec.actions)
         grant = actions_coll.update_one(
             {"role": spec.default_role, "task_type": spec.task_type},
             {
@@ -161,6 +165,25 @@ def seed_master_defaults(db: Database) -> dict[str, int]:
         )
         if grant.upserted_id is not None:
             inserted_grants += 1
+
+        # loading-sj cancel → production-head (bootstrap/test only; prod = Master manual).
+        if spec.task_type == "loading-sj":
+            kp_grant = actions_coll.update_one(
+                {"role": "production-head", "task_type": "loading-sj"},
+                {
+                    "$setOnInsert": {
+                        "role": "production-head",
+                        "task_type": "loading-sj",
+                        "actions": ["view", "edit", "cancel"],
+                        "is_default_mapping": True,
+                        "created_at": now,
+                        "updated_at": now,
+                    }
+                },
+                upsert=True,
+            )
+            if kp_grant.upserted_id is not None:
+                inserted_grants += 1
 
     return {"task_types": inserted_types, "role_actions": inserted_grants}
 
