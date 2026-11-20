@@ -26,6 +26,7 @@ HEAD = {
     "email_normalized": "kp@eternal.local",
     "role": "user",
     "operational_role": "production-head",
+    "effective_module_permissions": ["access.all_branches"],
 }
 
 
@@ -85,6 +86,7 @@ def _seed_http(db: Database) -> None:
             "role": "user",
             "operational_role": "production-head",
             "is_active": True,
+            "effective_module_permissions": ["access.all_branches"]
         }
     )
     db["users"].insert_one(
@@ -95,6 +97,7 @@ def _seed_http(db: Database) -> None:
             "role": "user",
             "operational_role": "operator",
             "is_active": True,
+            "effective_module_permissions": ["access.all_branches"]
         }
     )
 

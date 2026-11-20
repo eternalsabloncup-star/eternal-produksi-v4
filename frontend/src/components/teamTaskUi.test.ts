@@ -181,6 +181,35 @@ describe("filterTasksForActor", () => {
     });
     expect(filtered.map((t) => t.task_key)).toEqual(["d1"]);
   });
+
+  it("hides empty assignment for operator and driver (fail-closed)", () => {
+    const printEmpty = task({
+      task_key: "c-empty",
+      task_type: "cetak",
+      status: "belum_dikerjakan",
+      context: {},
+    });
+    const deliveryEmpty = task({
+      task_key: "d-empty",
+      task_type: "pengiriman",
+      status: "belum_dikerjakan",
+      context: {},
+    });
+    expect(
+      filterTasksForActor([printEmpty], {
+        isSuperAdmin: false,
+        actorEmail: "opa@eternal.local",
+        operationalRole: "operator",
+      }).map((t) => t.task_key),
+    ).toEqual([]);
+    expect(
+      filterTasksForActor([deliveryEmpty], {
+        isSuperAdmin: false,
+        actorEmail: "drva@eternal.local",
+        operationalRole: "driver",
+      }).map((t) => t.task_key),
+    ).toEqual([]);
+  });
 });
 
 describe("sample ulang labels", () => {

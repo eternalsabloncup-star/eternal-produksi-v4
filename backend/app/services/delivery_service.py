@@ -16,9 +16,11 @@ from app.repositories.po_repository import get_by_accurate_id
 from app.services import production_service as production
 from app.services.audit_log import append_audit_event
 from app.services.object_auth import (
+    ObjectAuthError,
     actor_email,
     assert_branch_access,
     assert_driver_assignment,
+    resolve_loading_driver_assignment,
 )
 from app.services.task_engine import require_action
 
@@ -248,8 +250,14 @@ def confirm_loading(
     *,
     accurate_sj_id: str,
     idempotency_key: str,
+    assigned_driver_email: str | None = None,
 ) -> dict[str, Any]:
-    """Satu aksi Loading untuk seluruh item SJ — Qty QC + Loading + Driver + audit atomik."""
+    """Satu aksi Loading untuk seluruh item SJ — Qty QC + Loading + Driver + audit atomik.
+
+    Aktor Loading ≠ assignment kurir. Assignment hanya dari:
+    assignment yang sudah ada, ``assigned_driver_email`` eksplisit, atau
+    self-claim kurir (operational_role=driver) bila masih kosong.
+    """
     require_action(db, user, task_type=DRIVER_TASK, action="confirm")
     assigned_role = _prepare_delivery_txn(db)
 
@@ -282,6 +290,12 @@ def confirm_loading(
         raise LookupError(f"Surat Jalan tidak ditemukan: {accurate_sj_id}")
     assert_branch_access(user, scope_object=note)
     actor = actor_email(user) or str(user.get("email_normalized") or "")
+    try:
+        driver_assigned, assign_source = resolve_loading_driver_assignment(
+            user, note, requested_driver_email=assigned_driver_email
+        )
+    except ObjectAuthError:
+        raise
     sequence = deliveries.next_loading_sequence(db, accurate_sj_id)
 
     def _operation(session: Any) -> dict[str, Any]:
@@ -358,21 +372,26 @@ def confirm_loading(
                 reason="Surat Jalan direvisi selama konfirmasi Loading.",
                 session=session,
             )
-        # Assignment kurir otoritatif = aktor Loading (fail-closed untuk kurir lain).
+        # Loading actor ≠ kurir. Jangan timpa assignment valid; jangan invent dari gudang/KP.
         note_assigned = dict(note)
-        if actor:
+        if driver_assigned and assign_source in ("requested", "driver_self_claim"):
             deliveries.delivery_notes_collection(db).update_one(
                 {"accurate_sj_id": str(accurate_sj_id)},
                 {
                     "$set": {
-                        "assigned_driver_email": actor,
-                        "driver_email": actor,
+                        "assigned_driver_email": driver_assigned,
+                        "driver_email": driver_assigned,
                     }
                 },
                 session=session,
             )
-            note_assigned["assigned_driver_email"] = actor
-            note_assigned["driver_email"] = actor
+            note_assigned["assigned_driver_email"] = driver_assigned
+            note_assigned["driver_email"] = driver_assigned
+        elif driver_assigned:
+            note_assigned["assigned_driver_email"] = driver_assigned
+            note_assigned["driver_email"] = (
+                note_assigned.get("driver_email") or driver_assigned
+            )
         driver_task = _ensure_driver_task(
             db, note_assigned, loading, assigned_role=assigned_role, session=session
         )
@@ -386,7 +405,9 @@ def confirm_loading(
                 "sj_no": note_assigned["sj_no"],
                 "loading_id": loading["loading_id"],
                 "sj_version": loading.get("sj_version"),
-                "assigned_driver_email": actor,
+                "loading_actor_email": actor,
+                "assigned_driver_email": driver_assigned,
+                "assignment_source": assign_source,
                 "item_count": len(loading["items"]),
                 "qty_by_line": [
                     {

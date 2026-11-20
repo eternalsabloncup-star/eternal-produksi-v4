@@ -37,6 +37,7 @@ def _seed(db: Database) -> None:
             "role": "user",
             "operational_role": "production-head",
             "is_active": True,
+            "effective_module_permissions": ["access.all_branches"]
         }
     )
     db["users"].insert_one(
@@ -47,6 +48,7 @@ def _seed(db: Database) -> None:
             "role": "user",
             "operational_role": "operator",
             "is_active": True,
+            "effective_module_permissions": ["access.all_branches"]
         }
     )
 

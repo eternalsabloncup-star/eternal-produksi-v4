@@ -160,10 +160,15 @@ export async function fetchLoadingValidation(
 export async function confirmLoading(
   sjId: string,
   idempotencyKey: string,
+  assignedDriverEmail?: string | null,
 ): Promise<{ duplicate: boolean }> {
+  const body: Record<string, string> = { idempotency_key: idempotencyKey };
+  if (assignedDriverEmail && assignedDriverEmail.trim()) {
+    body.assigned_driver_email = assignedDriverEmail.trim();
+  }
   return request(`/api/delivery/${encodeURIComponent(sjId)}/loading`, {
     method: "POST",
-    body: JSON.stringify({ idempotency_key: idempotencyKey }),
+    body: JSON.stringify(body),
   });
 }
 

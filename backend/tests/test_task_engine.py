@@ -22,7 +22,12 @@ LINE_REF = TaskRef(
 
 
 def _helper_user(email: str = "helper@eternal.local") -> dict:
-    return {"email_normalized": email, "role": "user", "operational_role": "helper"}
+    return {
+        "email_normalized": email,
+        "role": "user",
+        "operational_role": "helper",
+        "effective_module_permissions": ["access.all_branches"],
+    }
 
 
 def _seed_prep_task(db: Database, qty_target: float = 1000) -> dict:
@@ -153,7 +158,8 @@ def test_rbac_denies_role_without_master_grant(db: Database) -> None:
         "email_normalized": "driver@eternal.local",
         "role": "user",
         "operational_role": "driver",
-    }
+        "effective_module_permissions": ["access.all_branches"],
+}
     with pytest.raises(task_engine.TaskPermissionError):
         task_engine.confirm_task(
             db, driver, task_key=task["task_key"], qty=10, idempotency_key="driver-x1"

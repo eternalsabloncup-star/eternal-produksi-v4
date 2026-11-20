@@ -25,11 +25,13 @@ HEAD = {
     "email_normalized": "kp@eternal.local",
     "role": "user",
     "operational_role": "production-head",
+    "effective_module_permissions": ["access.all_branches"],
 }
 OP = {
     "email_normalized": "op@eternal.local",
     "role": "user",
     "operational_role": "operator",
+    "effective_module_permissions": ["access.all_branches"],
 }
 PNG = b"\x89PNG\r\n\x1a\nsample"
 

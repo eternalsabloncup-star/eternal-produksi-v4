@@ -22,12 +22,14 @@ DESIGNER = {
     "email_normalized": "designer@eternal.local",
     "role": "user",
     "operational_role": "designer",
+    "effective_module_permissions": ["access.all_branches"],
 }
 OWNER = {"email_normalized": "owner@eternal.local", "role": "super_admin"}
 OPERATOR = {
     "email_normalized": "operator@eternal.local",
     "role": "user",
     "operational_role": "operator",
+    "effective_module_permissions": ["access.all_branches"],
 }
 
 
@@ -277,7 +279,8 @@ def test_bypass_via_master_grant_not_hardcoded_role(db: Database) -> None:
         "email_normalized": "kp@eternal.local",
         "role": "user",
         "operational_role": "production-head",
-    }
+        "effective_module_permissions": ["access.all_branches"],
+}
     with pytest.raises(payment_service.PaymentPermissionError):
         payment_service.bypass_payment_gate(
             db, head, accurate_po_id=PO_ID, reason="tanpa grant"

@@ -41,6 +41,7 @@ def _seed(db: Database) -> None:
             "role": "user",
             "operational_role": "production-head",
             "is_active": True,
+            "effective_module_permissions": ["access.all_branches"]
         }
     )
     db["users"].insert_one(
@@ -51,6 +52,7 @@ def _seed(db: Database) -> None:
             "role": "user",
             "operational_role": "operator",
             "is_active": True,
+            "effective_module_permissions": ["access.all_branches"]
         }
     )
 
@@ -212,6 +214,7 @@ def test_design_evidence_content_stream_scoped(
         "email_normalized": "owner@eternal.local",
         "role": "super_admin",
         "operational_role": None,
+        "effective_module_permissions": ["access.all_branches"]
     }
     design_service.submit_design(
         db,

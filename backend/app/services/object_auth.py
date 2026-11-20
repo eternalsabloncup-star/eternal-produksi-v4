@@ -85,18 +85,20 @@ def assert_branch_access(
     *,
     scope_object: dict[str, Any] | None,
 ) -> None:
+    """Fail-closed: butuh Super Admin / access.all_branches / cabang cocok.
+
+    Akun tanpa ``branch_ids`` tidak mendapat akses otomatis ke objek legacy
+    tanpa ``branch_code``. Owner harus mengisi cabang akun atau memberi
+    ``access.all_branches`` secara eksplisit.
+    """
     if bypasses_branch(user):
         return
     branches = user_branch_ids(user)
     obj_branch = object_branch_code(scope_object)
     if not branches:
-        # Tanpa daftar cabang yang valid: tolak objek ber-cabang; legacy
-        # pasangan tanpa cabang diizinkan hanya jika assignment lolos di pemanggil.
-        if obj_branch is not None:
-            raise ObjectAuthError(
-                "Objek di luar cabang yang diizinkan untuk akun ini."
-            )
-        return
+        raise ObjectAuthError(
+            "Akun tanpa scope cabang yang valid — akses ditolak."
+        )
     if obj_branch is None:
         raise ObjectAuthError(
             "Scope cabang objek tidak dapat divalidasi — akses ditolak."
@@ -105,6 +107,50 @@ def assert_branch_access(
         raise ObjectAuthError(
             "Objek di luar cabang yang diizinkan untuk akun ini."
         )
+
+
+def authoritative_driver_email(note: dict[str, Any] | None) -> str:
+    if not isinstance(note, dict):
+        return ""
+    return normalize_email(
+        str(note.get("assigned_driver_email") or note.get("driver_email") or "")
+    )
+
+
+def resolve_loading_driver_assignment(
+    user: dict[str, Any],
+    note: dict[str, Any],
+    *,
+    requested_driver_email: str | None = None,
+) -> tuple[str | None, str]:
+    """Pisahkan aktor Loading dari assignment kurir.
+
+    Returns ``(assigned_email_or_none, source)`` where source is one of:
+    ``preserved`` | ``requested`` | ``driver_self_claim`` | ``none``.
+
+    - Tidak menimpa assignment kurir yang sudah valid.
+    - Tidak membuat assignment palsu dari aktor gudang/KP.
+    - Kurir (operational_role=driver) boleh self-claim hanya jika kosong.
+    - ``requested_driver_email`` eksplisit hanya dipakai jika assignment kosong.
+    """
+    existing = authoritative_driver_email(note)
+    if existing:
+        requested = normalize_email(str(requested_driver_email or ""))
+        if requested and requested != existing:
+            raise ObjectAuthError(
+                "Assignment kurir sudah ada dan tidak boleh ditimpa saat Loading."
+            )
+        return existing, "preserved"
+
+    requested = normalize_email(str(requested_driver_email or ""))
+    if requested:
+        return requested, "requested"
+
+    actor = actor_email(user)
+    role = str(user.get("operational_role") or "").strip().lower()
+    if actor and role == "driver":
+        return actor, "driver_self_claim"
+    return None, "none"
 
 
 def assert_operator_assignment(

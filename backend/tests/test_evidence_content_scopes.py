@@ -56,6 +56,7 @@ def _users(db: Database) -> None:
                 "role": role,
                 "operational_role": op,
                 "is_active": True,
+                "effective_module_permissions": ["access.all_branches"]
             }
         )
 
@@ -73,12 +74,14 @@ def test_sample_evidence_content_scoped(app_client: TestClient, db: Database) ->
         "email_normalized": "kp@eternal.local",
         "role": "user",
         "operational_role": "production-head",
-    }
+        "effective_module_permissions": ["access.all_branches"],
+}
     op = {
         "email_normalized": "op@eternal.local",
         "role": "user",
         "operational_role": "operator",
-    }
+        "effective_module_permissions": ["access.all_branches"],
+}
     created = scheduling_service.create_allocations(
         db,
         head,
@@ -170,12 +173,14 @@ def test_sample_reject_sets_sampel_ulang_label(db: Database) -> None:
         "email_normalized": "kp@eternal.local",
         "role": "user",
         "operational_role": "production-head",
-    }
+        "effective_module_permissions": ["access.all_branches"],
+}
     op = {
         "email_normalized": "op@eternal.local",
         "role": "user",
         "operational_role": "operator",
-    }
+        "effective_module_permissions": ["access.all_branches"],
+}
     created = scheduling_service.create_allocations(
         db,
         head,
@@ -271,12 +276,14 @@ def test_sample_evidence_assignment_and_branch(app_client: TestClient, db: Datab
         "email_normalized": "kp@eternal.local",
         "role": "user",
         "operational_role": "production-head",
+        "effective_module_permissions": ["access.all_branches"]
     }
     op = {
         "email_normalized": "op@eternal.local",
         "role": "user",
         "operational_role": "operator",
-    }
+        "effective_module_permissions": ["access.all_branches"],
+}
     created = scheduling_service.create_allocations(
         db,
         head,

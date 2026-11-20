@@ -23,11 +23,13 @@ HEAD = {
     "email_normalized": "kp@eternal.local",
     "role": "user",
     "operational_role": "production-head",
+    "effective_module_permissions": ["access.all_branches"],
 }
 OPERATOR_USER = {
     "email_normalized": "operator@eternal.local",
     "role": "user",
     "operational_role": "operator",
+    "effective_module_permissions": ["access.all_branches"],
 }
 OWNER = {"email_normalized": "owner@eternal.local", "role": "super_admin"}
 

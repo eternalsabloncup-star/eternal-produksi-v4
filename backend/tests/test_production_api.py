@@ -29,6 +29,7 @@ def _user(db: Database, email: str, role: str) -> None:
             "role": "user",
             "operational_role": role,
             "is_active": True,
+            "effective_module_permissions": ["access.all_branches"]
         }
     )
 
@@ -58,7 +59,12 @@ def _seed(db: Database) -> str:
     po_doc = get_by_accurate_id(db, PO_ID)
     res = scheduling_service.create_allocations(
         db,
-        {"email_normalized": "kp@eternal.local", "role": "user", "operational_role": "production-head"},
+        {
+            "email_normalized": "kp@eternal.local",
+            "role": "user",
+            "operational_role": "production-head",
+            "effective_module_permissions": ["access.all_branches"],
+        },
         po_doc=po_doc,
         accurate_line_id=LINE_A,
         allocations=[{"operator_email": "op1@eternal.local", "qty": 500}],

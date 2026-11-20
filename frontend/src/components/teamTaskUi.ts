@@ -154,7 +154,8 @@ export function filterTasksForActor(
     const ctx = t.context || {};
     if (ALLOC_SCOPED.has(t.task_type) && role === "operator") {
       const op = String(ctx.operator_email || "").trim().toLowerCase();
-      return !op || op === actor;
+      // Fail-closed selaras backend: assignment kosong ≠ milik aktor.
+      return Boolean(op) && op === actor;
     }
     if (t.task_type === "pengiriman" && role === "driver") {
       const drv = String(
@@ -162,7 +163,7 @@ export function filterTasksForActor(
       )
         .trim()
         .toLowerCase();
-      return !drv || drv === actor;
+      return Boolean(drv) && drv === actor;
     }
     return true;
   });

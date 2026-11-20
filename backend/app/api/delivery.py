@@ -44,6 +44,8 @@ class AccurateDeliverySyncRequest(BaseModel):
 
 class LoadingConfirmRequest(BaseModel):
     idempotency_key: str = Field(min_length=8, max_length=200)
+    # Opsional: penugasan kurir eksplisit saat Loading (tidak menimpa assignment valid).
+    assigned_driver_email: str | None = Field(default=None, max_length=200)
 
 
 class CoordinationConfirmRequest(BaseModel):
@@ -261,6 +263,7 @@ def post_loading(
             auth.user,
             accurate_sj_id=accurate_sj_id,
             idempotency_key=body.idempotency_key,
+            assigned_driver_email=body.assigned_driver_email,
         )
     except Exception as exc:  # noqa: BLE001
         raise _handle(exc) from exc
