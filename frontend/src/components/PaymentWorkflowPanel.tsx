@@ -105,8 +105,12 @@ export function PaymentWorkflowPanel({ accuratePoId, poNo, onChanged }: Props) {
 
   async function onBypass() {
     const reason = bypassReason.trim();
-    if (!reason) {
-      setError("Alasan bypass wajib diisi.");
+    if (reason.length < 3) {
+      setError("Alasan bypass wajib diisi (minimal 3 karakter).");
+      return;
+    }
+    if (reason.length > 500) {
+      setError("Alasan bypass maksimal 500 karakter.");
       return;
     }
     const confirmed = window.confirm(
@@ -118,13 +122,25 @@ export function PaymentWorkflowPanel({ accuratePoId, poNo, onChanged }: Props) {
     setNotice(null);
     try {
       const gates = await bypassPaymentGate(accuratePoId, reason);
-      setNotice(`Bypass disimpan · gate: ${gateLabel(gates?.payment?.state)}.`);
+      const label = gateLabel(
+        gates?.payment && typeof gates.payment === "object"
+          ? (gates.payment as { state?: string }).state
+          : undefined,
+      );
+      setNotice(
+        gates.duplicate
+          ? `Sudah di-bypass · gate: ${label}.`
+          : `Bypass disimpan · gate: ${label}.`,
+      );
       setBypassReason("");
       await load();
       onChanged?.();
     } catch (err) {
       if (err instanceof WorkflowApiError && err.status === 403) {
         setError("Akses ditolak: tidak memiliki izin Bypass Payment (Master).");
+      } else if (err instanceof WorkflowApiError && err.status === 409) {
+        setError(err.message || "Gate payment sudah terbuka — bypass ditolak.");
+        await load();
       } else {
         setError(err instanceof Error ? err.message : "Bypass ditolak.");
       }

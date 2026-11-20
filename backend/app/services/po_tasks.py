@@ -196,7 +196,9 @@ def _derive_tasks_under_writer_lease(
             if sess is None and is_po_accepted(po_doc):
                 sync_design_gate_for_non_print_po(db, po_doc)
 
-        scheduling_open = gates.both_gates_open(db, accurate_po_id)
+        scheduling_open = gates.both_gates_open(
+            db, accurate_po_id, session=sess
+        )
         for line in lines:
             ref = TaskRef(
                 accurate_po_id=accurate_po_id,
@@ -271,7 +273,7 @@ def _derive_tasks_under_writer_lease(
             "skipped": skipped,
             "scheduling_unlocked": scheduling_open,
             "non_cetak_packing_eligible": nc_eligible,
-            "gates": gates.get_gates(db, accurate_po_id),
+            "gates": gates.get_gates(db, accurate_po_id, session=sess),
         }
 
     # Sudah di dalam txn pemanggil (accept): renew di session yang sama.

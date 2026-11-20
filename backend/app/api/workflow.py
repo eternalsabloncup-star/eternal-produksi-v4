@@ -349,14 +349,24 @@ def post_payment_bypass(
     body: BypassPaymentRequest,
     auth: AuthContext = Depends(require_csrf),
 ) -> dict[str, Any]:
-    _require_po_accepted(_po_or_404(accurate_po_id))
     db = get_db()
+    try:
+        po_doc = require_po_branch_access(db, auth.user, accurate_po_id)
+    except LookupError as exc:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, str(exc)) from exc
+    except ObjectAuthError as exc:
+        raise HTTPException(status.HTTP_403_FORBIDDEN, str(exc)) from exc
+    _require_po_accepted(po_doc)
     try:
         return payment_service.bypass_payment_gate(
             db, auth.user, accurate_po_id=accurate_po_id, reason=body.reason
         )
     except payment_service.PaymentPermissionError as exc:
         raise HTTPException(status.HTTP_403_FORBIDDEN, str(exc)) from exc
+    except payment_service.PaymentGateConflictError as exc:
+        raise HTTPException(status.HTTP_409_CONFLICT, str(exc)) from exc
+    except LookupError as exc:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, str(exc)) from exc
     except ValueError as exc:
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, str(exc)) from exc
 

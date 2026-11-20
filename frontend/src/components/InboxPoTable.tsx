@@ -10,6 +10,7 @@ import { ColumnFilter } from "./DataTable/ColumnFilter";
 import { DataTable } from "./DataTable/DataTable";
 import { DEFAULT_TABLE_PAGE_SIZE } from "./DataTable/Pagination";
 import type { ColumnDef } from "./DataTable/types";
+import { InboxBypassPaymentButton } from "./InboxBypassPaymentButton";
 import { InboxLiveTrackingButton } from "./InboxLiveTrackingButton";
 import { InboxPoDetailModal } from "./InboxPoDetailModal";
 import { PoLineItemsDetail } from "./PoLineItemsDetail";
@@ -278,8 +279,39 @@ export function InboxPoTable({ tableId }: Props) {
         minWidth: 112,
         render: (row) => <InboxLiveTrackingButton row={row} />,
       },
+      ...(sourceMode === "api"
+        ? [
+            {
+              id: "bypassPayment",
+              label: "Bypass Payment",
+              hideable: true,
+              defaultWidth: 140,
+              minWidth: 120,
+              render: (row: PoRow) => (
+                <InboxBypassPaymentButton
+                  row={row}
+                  onUpdated={(next) => {
+                    setRows((prev) =>
+                      prev.map((r) =>
+                        r.accurateId && r.accurateId === next.accurateId
+                          ? next
+                          : r,
+                      ),
+                    );
+                    setSelected((cur) =>
+                      cur?.accurateId &&
+                      cur.accurateId === next.accurateId
+                        ? next
+                        : cur,
+                    );
+                  }}
+                />
+              ),
+            } satisfies ColumnDef<PoRow>,
+          ]
+        : []),
     ],
-    [],
+    [sourceMode],
   );
 
   function resetFilters() {
