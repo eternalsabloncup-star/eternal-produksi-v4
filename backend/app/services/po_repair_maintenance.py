@@ -12,6 +12,7 @@ Bukan transaksi lintas koleksi untuk seluruh repair — fence per writer + drain
 
 from __future__ import annotations
 
+import contextvars
 import secrets
 from contextlib import contextmanager
 from dataclasses import dataclass
@@ -117,10 +118,34 @@ class WriterFence:
         renew_po_repair_writer_lease(db, self, session=session)
 
 
+# Reentrant: accept → derive dalam txn memakai satu fence (hindari lease baru di snapshot).
+_active_writer_fence: contextvars.ContextVar[WriterFence | None] = contextvars.ContextVar(
+    "po_repair_active_writer_fence", default=None
+)
+_active_writer_depth: contextvars.ContextVar[int] = contextvars.ContextVar(
+    "po_repair_active_writer_depth", default=0
+)
+
+
 def enter_po_repair_writer_section(
     db: Database, *, ttl_seconds: int = DEFAULT_WRITER_TTL_SECONDS
 ) -> WriterFence:
-    """Ambil writer lease terikat epoch; gagal jika maintenance aktif."""
+    """Ambil writer lease terikat epoch; nested call reuse fence aktif."""
+    existing = _active_writer_fence.get()
+    if existing is not None:
+        still = db[LOCKS_COLLECTION].find_one(
+            {"_id": f"{WRITER_ID_PREFIX}{existing.token}"}
+        )
+        if still is None:
+            # Contextvar bocor antar-test / crash — reset, ambil lease baru.
+            _active_writer_fence.set(None)
+            _active_writer_depth.set(0)
+        else:
+            # Jangan renew di sini: nested call sering di dalam Mongo txn; renew
+            # tanpa session bisa deadlock terhadap lock lease di session induk.
+            _active_writer_depth.set(_active_writer_depth.get() + 1)
+            return existing
+
     refuse_if_po_repair_maintenance(db)
     epoch = current_fence_epoch(db)
     now = _now()
@@ -136,19 +161,29 @@ def enter_po_repair_writer_section(
             "expires_at": now + timedelta(seconds=ttl),
         }
     )
-    # Post-insert: maintenance atau epoch bump race.
     if is_po_repair_maintenance_active(db) or current_fence_epoch(db) != epoch:
         db[LOCKS_COLLECTION].delete_one({"_id": f"{WRITER_ID_PREFIX}{token}"})
         raise PoRepairMaintenanceError(
             "Operasi ditolak: remediasi branch_id PO sedang dalam maintenance isolation."
         )
-    return WriterFence(token=token, epoch=epoch, ttl_seconds=ttl)
+    fence = WriterFence(token=token, epoch=epoch, ttl_seconds=ttl)
+    _active_writer_fence.set(fence)
+    _active_writer_depth.set(1)
+    return fence
 
 
 def exit_po_repair_writer_section(
     db: Database, fence: WriterFence | str
 ) -> None:
     token = fence.token if isinstance(fence, WriterFence) else fence
+    depth = _active_writer_depth.get()
+    active = _active_writer_fence.get()
+    if active is not None and active.token == token and depth > 1:
+        _active_writer_depth.set(depth - 1)
+        return
+    if active is not None and active.token == token:
+        _active_writer_fence.set(None)
+        _active_writer_depth.set(0)
     db[LOCKS_COLLECTION].delete_one({"_id": f"{WRITER_ID_PREFIX}{token}"})
 
 
