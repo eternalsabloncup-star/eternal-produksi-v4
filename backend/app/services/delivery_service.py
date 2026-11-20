@@ -94,6 +94,11 @@ def ingest_delivery_note(
     actor = str(user.get("email_normalized") or "")
 
     def _operation(session: Any) -> dict[str, Any]:
+        from app.services.po_repair_maintenance import active_writer_fence
+
+        fence = active_writer_fence()
+        if fence is not None:
+            fence.assert_valid(db, session=session)
         result = deliveries.apply_upsert_delivery_note(db, payload, session=session)
         note = result["delivery_note"]
         sj_id = str(note["accurate_sj_id"])

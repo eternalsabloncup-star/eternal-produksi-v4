@@ -183,8 +183,10 @@ def insert_allocation(
     print_color: str | None = None,
     screen_kind: str | None = None,
     branch_code: str | None = None,
+    session: Any | None = None,
 ) -> dict[str, Any]:
-    _ensure_once(db)
+    if session is None:
+        _ensure_once(db)
     now = datetime.now(timezone.utc)
     doc: dict[str, Any] = {
         "allocation_id": allocation_id,
@@ -208,7 +210,7 @@ def insert_allocation(
     if branch_code is not None and str(branch_code).strip():
         doc["branch_code"] = str(branch_code).strip().upper()
     try:
-        allocations_collection(db).insert_one(dict(doc))
+        allocations_collection(db).insert_one(dict(doc), session=session)
     except DuplicateKeyError as exc:
         raise ValueError(f"allocation_id duplikat: {allocation_id}") from exc
     append_history(
@@ -219,6 +221,7 @@ def insert_allocation(
         qty_before=None,
         qty_after=float(qty),
         reason="Alokasi jadwal awal",
+        session=session,
     )
     doc.pop("_id", None)
     return doc

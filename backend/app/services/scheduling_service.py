@@ -179,12 +179,38 @@ def create_allocations(
 ) -> dict[str, Any]:
     """Konfirmasi jadwal: bagi Qty item line ke satu/beberapa operator."""
     from app.services.po_acceptance import PoAcceptanceError, require_po_accepted
+    from app.services.po_repair_maintenance import WriterFence, po_repair_writer_section
 
-    try:
-        require_po_accepted(po_doc)
-    except PoAcceptanceError as exc:
-        raise ScheduleGateError(str(exc)) from exc
+    with po_repair_writer_section(db) as fence:
+        try:
+            require_po_accepted(po_doc)
+        except PoAcceptanceError as exc:
+            raise ScheduleGateError(str(exc)) from exc
 
+        return _create_allocations_under_writer_lease(
+            db,
+            user,
+            po_doc=po_doc,
+            accurate_line_id=accurate_line_id,
+            allocations=allocations,
+            idempotency_key=idempotency_key,
+            schedule_date=schedule_date,
+            writer_fence=fence,
+        )
+
+
+def _create_allocations_under_writer_lease(
+    db: Database,
+    user: dict[str, Any],
+    *,
+    po_doc: dict[str, Any],
+    accurate_line_id: str,
+    allocations: list[dict[str, Any]],
+    idempotency_key: str,
+    schedule_date: str | None = None,
+    writer_fence: WriterFence,
+) -> dict[str, Any]:
+    writer_fence.assert_valid(db)
     require_action(db, user, task_type="penjadwalan", action="confirm")
     if not idempotency_key.strip():
         raise ValueError("idempotency_key wajib diisi.")
@@ -225,9 +251,11 @@ def create_allocations(
     sched_date = (schedule_date or date.today().isoformat()).strip()
     if len(sched_date) >= 10:
         sched_date = sched_date[:10]
-    created: list[dict[str, Any]] = []
     from app.repositories import settings_user_repository as users
+    from app.services.object_auth import object_branch_code
+    from app.services.po_repair_maintenance import mutate_under_writer_fence
 
+    pending: list[dict[str, Any]] = []
     for entry in allocations:
         operator = str(entry.get("operator_email") or "").strip()
         qty = float(entry.get("qty") or 0)
@@ -251,8 +279,6 @@ def create_allocations(
                     "(terpisah dari ukuran screen Master Produk)."
                 )
 
-        # Bila email ada di Master sebagai operator: wajib nama.
-        # Email bebas (Jadwal Produksi lama / uji) tetap diterima tanpa invent ID.
         master_op = users.find_active_operator_by_email(db, operator)
         if master_op is not None and not master_op.get("display_name"):
             raise ScheduleQuantityError(
@@ -261,32 +287,59 @@ def create_allocations(
         if master_op is not None:
             operator = str(master_op["email"])
 
-        allocation_id = build_allocation_id(
-            accurate_line_id, schedules.next_sequence(db, accurate_line_id)
+        pending.append(
+            {
+                "operator_email": operator,
+                "qty": qty,
+                "print_color": print_color,
+                "screen_kind": screen_kind,
+            }
         )
-        from app.services.object_auth import object_branch_code
 
-        branch_code = object_branch_code(po_doc)
-        created.append(
-            schedules.insert_allocation(
-                db,
-                allocation_id=allocation_id,
-                accurate_po_id=accurate_po_id,
-                po_no=str(po_doc.get("po_no") or ""),
-                accurate_line_id=accurate_line_id,
-                item_code=str(line.get("item_code") or ""),
-                operator_email=operator,
-                qty=qty,
-                schedule_date=sched_date,
-                created_by=actor,
-                print_color=print_color,
-                screen_kind=screen_kind,
-                branch_code=branch_code,
+    # ID di luar txn: next_sequence berbasis count tidak melihat insert uncommitted.
+    base_seq = schedules.next_sequence(db, accurate_line_id)
+    for i, item in enumerate(pending):
+        item["allocation_id"] = build_allocation_id(accurate_line_id, base_seq + i)
+
+    branch_code = object_branch_code(po_doc)
+    po_no = str(po_doc.get("po_no") or "")
+    item_code = str(line.get("item_code") or "")
+
+    def _write_allocations(session: Any) -> list[dict[str, Any]]:
+        out: list[dict[str, Any]] = []
+        for item in pending:
+            out.append(
+                schedules.insert_allocation(
+                    db,
+                    allocation_id=item["allocation_id"],
+                    accurate_po_id=accurate_po_id,
+                    po_no=po_no,
+                    accurate_line_id=accurate_line_id,
+                    item_code=item_code,
+                    operator_email=item["operator_email"],
+                    qty=item["qty"],
+                    schedule_date=sched_date,
+                    created_by=actor,
+                    print_color=item["print_color"],
+                    screen_kind=item["screen_kind"],
+                    branch_code=branch_code,
+                    session=session,
+                )
             )
-        )
+        return out
 
-    follow_ups = _create_follow_up_tasks(db, po_doc, line, created)
-    _mark_scheduling_task(db, accurate_po_id, accurate_line_id, requested)
+    created = mutate_under_writer_fence(db, writer_fence, _write_allocations)
+
+    def _write_followups(session: Any) -> list[str]:
+        keys = _create_follow_up_tasks(
+            db, po_doc, line, created, session=session
+        )
+        _mark_scheduling_task(
+            db, accurate_po_id, accurate_line_id, requested, session=session
+        )
+        return keys
+
+    follow_ups = mutate_under_writer_fence(db, writer_fence, _write_followups)
 
     append_audit_event(
         db,
@@ -315,6 +368,8 @@ def _create_follow_up_tasks(
     po_doc: dict[str, Any],
     line: dict[str, Any],
     created: list[dict[str, Any]],
+    *,
+    session: Any | None = None,
 ) -> list[str]:
     """Persiapan Helper (per item line) dan Screen (per alokasi) berjalan paralel.
 
@@ -345,6 +400,7 @@ def _create_follow_up_tasks(
         qty_target=float(line.get("qty") or 0),
         label="Persiapan Cup",
         context={"item_name": line.get("item_name")},
+        session=session,
     )
     keys.append(prep["task_key"])
 
@@ -363,12 +419,14 @@ def _create_follow_up_tasks(
             assigned_role=screen_role,
             ref=alloc_ref,
             label="Screen",
-            context={"operator_email": alloc["operator_email"], "qty_alokasi": alloc["qty"]},
+            context={
+                "operator_email": alloc["operator_email"],
+                "qty_alokasi": alloc["qty"],
+            },
+            session=session,
         )
         keys.append(screen["task_key"])
 
-        # Operator butuh tugas sendiri sebagai titik unggah sampel; prasyarat
-        # (screen + kuota Helper) tetap divalidasi saat unggah.
         sample = tasks.upsert_task(
             db,
             task_type="konfirmasi-sample",
@@ -381,23 +439,31 @@ def _create_follow_up_tasks(
                 "qty_alokasi": alloc["qty"],
                 "display_kind": "perlu-sampel",
             },
+            session=session,
         )
         keys.append(sample["task_key"])
     return keys
 
 
 def _mark_scheduling_task(
-    db: Database, accurate_po_id: str, accurate_line_id: str, qty: float
+    db: Database,
+    accurate_po_id: str,
+    accurate_line_id: str,
+    qty: float,
+    *,
+    session: Any | None = None,
 ) -> None:
     key = build_task_key(
         "penjadwalan",
         "po_line",
         TaskRef(accurate_po_id=accurate_po_id, accurate_line_id=accurate_line_id),
     )
-    task = tasks.get_task(db, key)
+    task = tasks.get_task(db, key, session=session)
     if task is None:
         return
-    allocated = schedules.active_allocated_qty(db, accurate_line_id)
+    allocated = schedules.active_allocated_qty(
+        db, accurate_line_id, session=session
+    )
     target = float(task.get("qty_target") or 0)
     status = (
         tasks.TASK_STATUS_DONE
@@ -407,6 +473,7 @@ def _mark_scheduling_task(
     tasks.tasks_collection(db).update_one(
         {"task_key": key},
         {"$set": {"qty_confirmed": allocated, "status": status}},
+        session=session,
     )
 
 
@@ -425,6 +492,31 @@ def revise_allocation_qty(
     transaksi replica set agar tidak commit state invalid terhadap print konkuren
     atau revisi alokasi lain pada item yang sama.
     """
+    from app.services.po_repair_maintenance import WriterFence, po_repair_writer_section
+
+    with po_repair_writer_section(db) as fence:
+        return _revise_allocation_qty_under_writer_lease(
+            db,
+            user,
+            po_doc=po_doc,
+            allocation_id=allocation_id,
+            qty=qty,
+            reason=reason,
+            writer_fence=fence,
+        )
+
+
+def _revise_allocation_qty_under_writer_lease(
+    db: Database,
+    user: dict[str, Any],
+    *,
+    po_doc: dict[str, Any],
+    allocation_id: str,
+    qty: float,
+    reason: str,
+    writer_fence: WriterFence,
+) -> dict[str, Any]:
+    writer_fence.assert_valid(db)
     require_action(db, user, task_type="penjadwalan", action="edit")
     if qty < 0:
         raise ScheduleQuantityError("Qty alokasi tidak boleh negatif.")
@@ -481,6 +573,7 @@ def revise_allocation_qty(
     print_key = print_task_key(alloc)
 
     def _operation(session: Any) -> dict[str, Any]:
+        writer_fence.assert_valid(db, session=session)
         # Serialize kapasitas line antar alokasi (bukan process-local lock).
         schedules.touch_line_guard(db, line_id, session=session)
         live = schedules.get_allocation(db, allocation_id, session=session)
@@ -597,11 +690,29 @@ def scan_reschedule(
     as_of: str | None = None,
 ) -> dict[str, Any]:
     """Pergantian hari dengan Qty cetak kurang → satu tugas Penjadwalan Ulang."""
+    from app.services.po_repair_maintenance import WriterFence, po_repair_writer_section
+
+    with po_repair_writer_section(db) as fence:
+        return _scan_reschedule_under_writer_lease(
+            db, user, po_doc=po_doc, as_of=as_of, writer_fence=fence
+        )
+
+
+def _scan_reschedule_under_writer_lease(
+    db: Database,
+    user: dict[str, Any],
+    *,
+    po_doc: dict[str, Any],
+    as_of: str | None = None,
+    writer_fence: WriterFence,
+) -> dict[str, Any]:
+    from app.services.po_repair_maintenance import mutate_under_writer_fence
+
     require_action(db, user, task_type="penjadwalan-ulang", action="input")
     today = as_of or date.today().isoformat()
     accurate_po_id = str(po_doc.get("accurate_id") or "")
     header = po_doc.get("header") if isinstance(po_doc.get("header"), dict) else {}
-    created: list[str] = []
+    pending: list[dict[str, Any]] = []
     skipped: list[str] = []
 
     for line in header.get("items") or []:
@@ -626,30 +737,50 @@ def scan_reschedule(
         if shortfall <= 0:
             skipped.append(f"{line_id}:tidak-ada-kekurangan")
             continue
-
-        reschedule_role = master.require_task_type_assigned_role(db, "penjadwalan-ulang")
-        task = tasks.upsert_task(
-            db,
-            task_type="penjadwalan-ulang",
-            scope="po_line",
-            assigned_role=reschedule_role,
-            ref=TaskRef(
-                accurate_po_id=accurate_po_id,
-                po_no=str(po_doc.get("po_no") or ""),
-                accurate_line_id=line_id,
-                item_code=str(line.get("item_code") or ""),
-                process_kind="Cetak",
-            ),
-            qty_target=shortfall,
-            label="Penjadwalan Ulang",
-            context={
-                "as_of": today,
-                "qty_scheduled": scheduled,
-                "qty_printed": printed,
-                "qty_shortfall": shortfall,
-            },
+        pending.append(
+            {
+                "line_id": line_id,
+                "item_code": str(line.get("item_code") or ""),
+                "shortfall": shortfall,
+                "scheduled": scheduled,
+                "printed": printed,
+            }
         )
-        created.append(task["task_key"])
+
+    def _write(session: Any) -> list[str]:
+        created: list[str] = []
+        reschedule_role = master.require_task_type_assigned_role(
+            db, "penjadwalan-ulang"
+        )
+        for item in pending:
+            task = tasks.upsert_task(
+                db,
+                task_type="penjadwalan-ulang",
+                scope="po_line",
+                assigned_role=reschedule_role,
+                ref=TaskRef(
+                    accurate_po_id=accurate_po_id,
+                    po_no=str(po_doc.get("po_no") or ""),
+                    accurate_line_id=item["line_id"],
+                    item_code=item["item_code"],
+                    process_kind="Cetak",
+                ),
+                qty_target=item["shortfall"],
+                label="Penjadwalan Ulang",
+                context={
+                    "as_of": today,
+                    "qty_scheduled": item["scheduled"],
+                    "qty_printed": item["printed"],
+                    "qty_shortfall": item["shortfall"],
+                },
+                session=session,
+            )
+            created.append(task["task_key"])
+        return created
+
+    created = (
+        mutate_under_writer_fence(db, writer_fence, _write) if pending else []
+    )
 
     if created:
         append_audit_event(

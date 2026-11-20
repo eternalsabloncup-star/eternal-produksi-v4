@@ -197,6 +197,29 @@ def sync_delivery_order_payload(
     require_registered_po: bool = True,
 ) -> dict[str, Any]:
     """Normalisasi + ingest satu SJ. Skip bila PO belum terdaftar di V4."""
+    from app.services.po_repair_maintenance import WriterFence, po_repair_writer_section
+
+    with po_repair_writer_section(db) as fence:
+        return _sync_delivery_order_payload_under_writer_lease(
+            db,
+            user,
+            payload,
+            mongo_guard=mongo_guard,
+            require_registered_po=require_registered_po,
+            writer_fence=fence,
+        )
+
+
+def _sync_delivery_order_payload_under_writer_lease(
+    db: Database,
+    user: dict[str, Any],
+    payload: dict[str, Any],
+    *,
+    mongo_guard: MongoGuardMode = "test",
+    require_registered_po: bool = True,
+    writer_fence: WriterFence,
+) -> dict[str, Any]:
+    writer_fence.assert_valid(db)
     _guard_db(db, mongo_guard=mongo_guard)
     note = deliveries.normalize_delivery_note(payload)
     po_id = str(note["accurate_po_id"])
