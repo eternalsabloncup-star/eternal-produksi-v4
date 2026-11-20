@@ -155,8 +155,8 @@ def test_multi_so_still_fail_closed_on_targeted_sync(db: Database) -> None:
     result = delivery_sync.sync_selected_delivery_orders_from_accurate(
         db, OWNER, ["9"], client=client, scope="multi"
     )
-    assert result["failed"] == 1
+    # Fail-closed ingest: tidak create DN; durable quarantine sebagai review.
+    assert result.get("review_required", 0) == 1
+    assert result["failed"] == 0
     assert result["created"] == 0
-    assert any(
-        f.get("code") == "MULTI_SO_NOT_SUPPORTED" for f in result["failures"]
-    )
+    assert deliveries.get_delivery_note(db, "9") is None

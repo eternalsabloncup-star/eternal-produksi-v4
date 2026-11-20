@@ -221,14 +221,66 @@ def _sync_delivery_order_payload_under_writer_lease(
 ) -> dict[str, Any]:
     writer_fence.assert_valid(db)
     _guard_db(db, mongo_guard=mongo_guard)
-    note = deliveries.normalize_delivery_note(payload)
+    from app.services.accurate_auto_sync.sj_sync_review import (
+        REASON_MULTI_SO,
+        REASON_PO_NOT_REGISTERED,
+        collect_line_sales_order_ids,
+        mark_sj_sync_review_resolved,
+        upsert_sj_sync_review,
+    )
+
+    try:
+        note = deliveries.normalize_delivery_note(payload)
+    except deliveries.DeliveryNoteIdentityError as exc:
+        # Hanya MULTI_SO yang di-quarantine sebagai review. Konflik identitas
+        # lain / kegagalan infrastruktur tetap fatal ke pemanggil.
+        if getattr(exc, "code", "") != REASON_MULTI_SO:
+            raise
+        sj_id = as_text(payload.get("id") or payload.get("accurate_sj_id"))
+        if not sj_id:
+            raise
+        so_ids = collect_line_sales_order_ids(payload)
+        upsert_sj_sync_review(
+            db,
+            accurate_sj_id=sj_id,
+            reason=REASON_MULTI_SO,
+            source_so_ids=so_ids,
+            sj_no=as_text(payload.get("number") or payload.get("sj_no")) or None,
+            # Retryable: siklus berikutnya boleh re-fetch; ingest hanya jika
+            # sumber sudah single-SO. Jangan map PO palsu.
+            retryable=True,
+            last_error_code=REASON_MULTI_SO,
+        )
+        return {
+            "outcome": "review_required",
+            "reason": REASON_MULTI_SO,
+            "accurate_sj_id": sj_id,
+            "source_so_ids": so_ids,
+            "writes": 0,
+            "quarantined": True,
+        }
+
     po_id = str(note["accurate_po_id"])
     if require_registered_po and get_by_accurate_id(db, po_id) is None:
+        upsert_sj_sync_review(
+            db,
+            accurate_sj_id=str(note["accurate_sj_id"]),
+            reason=REASON_PO_NOT_REGISTERED,
+            source_so_ids=[po_id],
+            accurate_po_id=po_id,
+            sj_no=as_text(note.get("sj_no")) or None,
+            retryable=True,
+            last_error_code=REASON_PO_NOT_REGISTERED,
+        )
+        # Tetap ``skipped`` agar kompatibel counter manual sync; discovery
+        # mengenali keduanya. Deferred record menjamin replay setelah PO ada.
         return {
             "outcome": "skipped",
-            "reason": "po_not_registered",
+            "reason": REASON_PO_NOT_REGISTERED,
             "accurate_sj_id": note["accurate_sj_id"],
             "accurate_po_id": po_id,
+            "deferred": True,
+            "writes": 0,
         }
 
     before = deliveries.get_delivery_note(db, note["accurate_sj_id"])
@@ -239,6 +291,11 @@ def _sync_delivery_order_payload_under_writer_lease(
         outcome = "updated"
     else:
         outcome = "unchanged"
+    mark_sj_sync_review_resolved(
+        db,
+        accurate_sj_id=str(note["accurate_sj_id"]),
+        disposition=f"ingested_{outcome}",
+    )
     return {
         "outcome": outcome,
         "accurate_sj_id": note["accurate_sj_id"],
@@ -279,6 +336,7 @@ def sync_delivery_orders_from_accurate(
         "updated": 0,
         "unchanged": 0,
         "skipped": 0,
+        "review_required": 0,
         "failed": 0,
         "listed": 0,
         "pages": 0,
@@ -345,6 +403,8 @@ def sync_delivery_orders_from_accurate(
                         counters["skipped"] += 1
                         reason = str(outcome.get("reason") or "unknown")
                         skip_reasons[reason] = skip_reasons.get(reason, 0) + 1
+                    elif key == "review_required":
+                        counters["review_required"] += 1
                     elif key in counters:
                         counters[key] += 1
                     else:
@@ -413,6 +473,7 @@ def sync_selected_delivery_orders_from_accurate(
             "updated": 0,
             "unchanged": 0,
             "skipped": 0,
+            "review_required": 0,
             "failed": 0,
             "listed": 0,
             "pages": 0,
@@ -430,6 +491,7 @@ def sync_selected_delivery_orders_from_accurate(
         "updated": 0,
         "unchanged": 0,
         "skipped": 0,
+        "review_required": 0,
         "failed": 0,
         "listed": 0,
         "pages": 0,
@@ -453,6 +515,8 @@ def sync_selected_delivery_orders_from_accurate(
                     counters["skipped"] += 1
                     reason = str(outcome.get("reason") or "unknown")
                     skip_reasons[reason] = skip_reasons.get(reason, 0) + 1
+                elif key == "review_required":
+                    counters["review_required"] += 1
                 elif key in counters:
                     counters[key] += 1
                 else:

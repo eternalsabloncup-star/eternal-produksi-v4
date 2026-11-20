@@ -23,6 +23,7 @@ from app.services.accurate_auto_sync.status import (
     mark_running,
     record_job_result,
 )
+from app.services.accurate_auto_sync.sj_sync_review import list_open_retryable_reviews
 from app.services.delivery_sync import (
     DeliverySyncDisabledError,
     is_sj_sync_enabled,
@@ -72,6 +73,81 @@ def sync_one_sj(
             mongo_guard=guard,  # type: ignore[arg-type]
             require_registered_po=True,
         )
+
+
+def replay_open_sj_reviews(
+    db: Database,
+    *,
+    client: AccurateReadClient,
+    owner_token: str,
+    mongo_guard: str | None,
+    counters: dict[str, int],
+    failures: list[dict[str, Any]],
+    started: float,
+    timeout_seconds: float,
+    max_rows: int,
+) -> dict[str, Any]:
+    """Replay deferred/quarantine terbuka sebelum discovery list.
+
+    Infrastruktur (auth/timeout/connection) tetap fatal. MULTI_SO yang masih
+    multi tetap ``review_required`` tanpa ingest. po_not_registered diulang
+    setelah PO terdaftar.
+    """
+    replayed = 0
+    for review in list_open_retryable_reviews(db, limit=max_rows):
+        if time.monotonic() - started > timeout_seconds:
+            return {"stopped": "timeout", "replayed": replayed}
+        if counters["listed"] >= max_rows:
+            return {"stopped": "max_rows", "replayed": replayed}
+        sj_id = str(review.get("accurate_sj_id") or "")
+        if not sj_id:
+            continue
+        require_owns_job_lock(db, job="sj", owner_token=owner_token)
+        try:
+            result = sync_one_sj(
+                db,
+                sj_id,
+                client=client,
+                owner_token=owner_token,
+                mongo_guard=mongo_guard,
+            )
+        except AutoSyncLockError:
+            raise
+        except Exception as exc:  # noqa: BLE001
+            # Auth/network/runtime → fatal agar tidak diklasifikasi review.
+            from app.integrations.accurate.auth import AccurateAuthError
+
+            if isinstance(
+                exc, (AccurateAuthError, TimeoutError, ConnectionError, RuntimeError)
+            ):
+                raise
+            counters["failed"] += 1
+            failures.append(
+                {
+                    "stage": "review_replay",
+                    "accurate_id": sj_id,
+                    "error": type(exc).__name__,
+                    "code": getattr(exc, "code", "sync_failed"),
+                }
+            )
+            return {"stopped": "page_failed", "replayed": replayed}
+        counters["listed"] += 1
+        counters["fetched"] += 1
+        replayed += 1
+        key = str(result.get("outcome") or "failed")
+        if key in counters:
+            counters[key] += 1
+        else:
+            counters["failed"] += 1
+            failures.append(
+                {
+                    "stage": "review_replay",
+                    "accurate_id": sj_id,
+                    "code": "unknown_outcome",
+                }
+            )
+            return {"stopped": "page_failed", "replayed": replayed}
+    return {"stopped": None, "replayed": replayed}
 
 
 def run_sj_auto_sync(
@@ -137,6 +213,52 @@ def run_sj_auto_sync(
                 mongo_guard=active_guard,
             )
 
+        replay = replay_open_sj_reviews(
+            db,
+            client=reader,
+            owner_token=token,
+            mongo_guard=active_guard,
+            counters=counters,
+            failures=failures,
+            started=started,
+            timeout_seconds=timeout_seconds,
+            max_rows=max_rows,
+        )
+        accurate_requests = int(replay.get("replayed") or 0)
+        if replay.get("stopped") == "page_failed":
+            status = record_job_result(
+                db,
+                "sj",
+                enabled=True,
+                ok=False,
+                counters=counters,
+                error="page_failed",
+                error_code="page_failed",
+                duration_seconds=time.monotonic() - started,
+                partial=True,
+                complete=False,
+                detail={
+                    "auto_sync": True,
+                    "mongo_guard": active_guard,
+                    "review_replay": replay,
+                    "failures": failures[:20],
+                },
+            )
+            return {
+                "ok": False,
+                "job": "sj",
+                "enabled": True,
+                "partial": True,
+                "complete": False,
+                "accurate_requests": accurate_requests,
+                "writes": counters["created"] + counters["updated"],
+                "counters": counters,
+                "stopped_reason": "page_failed",
+                "failures": failures[:30],
+                "mongo_guard": active_guard,
+                "status": status,
+            }
+
         disc = run_discovery_cycle(
             db,
             job="sj",
@@ -152,7 +274,7 @@ def run_sj_auto_sync(
             started=started,
             contract_status=SJ_CONTRACT_STATUS,
         )
-        accurate_requests = int(disc["accurate_requests"])
+        accurate_requests += int(disc["accurate_requests"])
         checkpoint = disc["checkpoint"]
         stopped_reason = disc.get("stopped_reason")
         ok = bool(disc["ok"])
@@ -178,9 +300,11 @@ def run_sj_auto_sync(
                 ),
                 "contract_status": SJ_CONTRACT_STATUS,
                 "sort_warnings": disc.get("sort_warnings") or [],
+                "review_replay": replay,
                 "note": (
                     "Auto SJ default fail-closed ke guard test. Production "
-                    "hanya jika V4_SJ_SYNC_PRODUCTION_ENABLED=1 + CEO."
+                    "hanya jika V4_SJ_SYNC_PRODUCTION_ENABLED=1 + CEO. "
+                    "MULTI_SO → quarantine review; po_not_registered → deferred replay."
                 ),
                 "failures": failures[:20],
                 "checkpoint": {
