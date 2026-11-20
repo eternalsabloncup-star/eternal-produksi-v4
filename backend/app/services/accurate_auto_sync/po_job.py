@@ -267,7 +267,9 @@ def sync_one_listed_sales_order(
     require_owns_job_lock(db, job="po", owner_token=owner_token)
     from app.services.accurate_auto_sync.date_floor import detail_scope_outcome
     from app.services.po_ingest_guards import (
+        fill_empty_branch_id_cas,
         mark_branch_conflict_review,
+        po_has_operational_dependencies,
         resolve_branch_for_ingest,
     )
 
@@ -309,6 +311,18 @@ def sync_one_listed_sales_order(
             source_branch_id=str(branch_res.get("source_branch_id")),
         )
 
+    def _try_fill_empty_branch() -> dict[str, Any] | None:
+        """CAS cabang kosong — termasuk sebelum early-return unchanged / accepted."""
+        if branch_action != "set" or not branch_id:
+            return None
+        aid = str(po.accurate_id or accurate_id)
+        # Gate aman: dependency ada tetap boleh CAS kosong (bukan overwrite),
+        # tetapi catat review bila race mengisi gagal setelah accept.
+        filled = fill_empty_branch_id_cas(
+            db, accurate_id=aid, branch_id=str(branch_id), owner_token=owner_token
+        )
+        return filled
+
     if before is None:
         if branch_action != "set" or not branch_id:
             return {
@@ -338,6 +352,8 @@ def sync_one_listed_sales_order(
                         po=po,
                         owner_token=owner_token,
                     )
+                # Accepted menang race: isi cabang kosong bila masih kosong.
+                _try_fill_empty_branch()
                 return _apply_safe_accepted_metadata(
                     db,
                     accurate_id=str(po.accurate_id),
@@ -358,6 +374,7 @@ def sync_one_listed_sales_order(
         }
 
     if is_po_accepted(before):
+        filled = _try_fill_empty_branch()
         if _material_line_change(line_diff):
             return _mark_material_review(
                 db,
@@ -367,13 +384,29 @@ def sync_one_listed_sales_order(
                 po=po,
                 owner_token=owner_token,
             )
-        return _apply_safe_accepted_metadata(
+        meta_out = _apply_safe_accepted_metadata(
             db,
             accurate_id=str(po.accurate_id),
             before=before,
             po=po,
             owner_token=owner_token,
         )
+        if filled is not None:
+            meta_out = {
+                **meta_out,
+                "outcome": "updated" if meta_out.get("outcome") == "unchanged" else meta_out.get("outcome"),
+                "branch_id": str(branch_id),
+                "branch_filled": True,
+            }
+            if meta_out.get("outcome") == "updated" and not _material_line_change(line_diff):
+                # Hanya cabang yang diisi; header aman.
+                meta_out["outcome"] = "updated"
+        elif branch_action == "set" and branch_id and po_has_operational_dependencies(
+            db, str(po.accurate_id or accurate_id)
+        ):
+            # CAS gagal (race mengisi) — jangan geser scope; catat saja.
+            meta_out = {**meta_out, "branch_fill_skipped": True}
+        return meta_out
 
     # Belum accepted: update penuh dengan filter anti-race Terima PO.
     header_keys = (
@@ -392,6 +425,16 @@ def sync_one_listed_sales_order(
         and not header_changed
         and branch_action != "conflict"
     ):
+        # Jangan early-return unchanged sebelum cabang kosong ditangani.
+        filled = _try_fill_empty_branch()
+        if filled is not None:
+            return {
+                "outcome": "updated",
+                "accurate_id": str(po.accurate_id),
+                "line_diff": line_diff,
+                "branch_id": str(branch_id),
+                "branch_filled": True,
+            }
         return {
             "outcome": "unchanged",
             "accurate_id": str(po.accurate_id),
@@ -418,6 +461,7 @@ def sync_one_listed_sales_order(
                     po=po,
                     owner_token=owner_token,
                 )
+            _try_fill_empty_branch()
             return _apply_safe_accepted_metadata(
                 db,
                 accurate_id=str(po.accurate_id),

@@ -12,7 +12,6 @@ from pymongo.database import Database
 from app.domain.po import PoHeaderModel
 from app.services.accurate_auto_sync.date_floor import detail_scope_outcome
 from app.services.branch_identity import normalize_branch_identity
-from app.services.object_auth import object_branch_code
 
 
 def source_branch_id_from_po(po: PoHeaderModel) -> str | None:
@@ -41,6 +40,47 @@ def require_active_master_branch(db: Database, branch_id: str) -> str:
     return code
 
 
+def canonical_branch_id_field(doc: dict[str, Any] | None) -> str | None:
+    """Hanya ``branch_id`` dokumen — jangan anggap meta Accurate sebagai keputusan existing."""
+    if not isinstance(doc, dict):
+        return None
+    return normalize_branch_identity(doc.get("branch_id"))
+
+
+def po_has_operational_dependencies(db: Database, accurate_id: str) -> bool:
+    """Task / alokasi / SJ terkait — gate aman sebelum mengisi cabang kosong."""
+    aid = str(accurate_id)
+    if db["operational_tasks"].find_one(
+        {"$or": [{"accurate_po_id": aid}, {"accurate_id": aid}]}, {"_id": 1}
+    ):
+        return True
+    if db["production_allocations"].find_one(
+        {"$or": [{"accurate_po_id": aid}, {"accurate_id": aid}]}, {"_id": 1}
+    ):
+        return True
+    if db["accurate_delivery_notes"].find_one(
+        {"$or": [{"accurate_po_id": aid}, {"accurate_po_ids": aid}]}, {"_id": 1}
+    ):
+        return True
+    return False
+
+
+def fill_empty_branch_id_cas(
+    db: Database,
+    *,
+    accurate_id: str,
+    branch_id: str,
+    owner_token: str | None = None,
+) -> dict[str, Any] | None:
+    """CAS isi ``branch_id`` hanya jika kosong. Memerlukan lease bila ``owner_token`` diberikan."""
+    from app.repositories.po_repository import set_branch_id_if_empty
+    from app.services.accurate_auto_sync.locks import require_owns_job_lock
+
+    if owner_token is not None:
+        require_owns_job_lock(db, job="po", owner_token=owner_token)
+    return set_branch_id_if_empty(db, accurate_id, branch_id)
+
+
 def resolve_branch_for_ingest(
     db: Database,
     *,
@@ -54,6 +94,9 @@ def resolve_branch_for_ingest(
     - ``preserve`` — pertahankan existing
     - ``conflict`` — source beda dari existing; jangan geser scope
     - gagal: ``ok=False`` + ``outcome`` failed (zero write untuk insert baru)
+
+    Existing hanya dari field kanonis ``branch_id``. Meta Accurate adalah source,
+    bukan keputusan cabang yang sudah dikunci.
     """
     source = source_branch_id_from_po(po)
     if not source:
@@ -79,11 +122,7 @@ def resolve_branch_for_ingest(
             "writes": 0,
         }
 
-    existing_id = None
-    if existing is not None:
-        existing_id = normalize_branch_identity(
-            existing.get("branch_id")
-        ) or normalize_branch_identity(object_branch_code(existing))
+    existing_id = canonical_branch_id_field(existing)
 
     if existing_id and existing_id != source:
         return {

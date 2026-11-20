@@ -312,3 +312,269 @@ def test_kill_switch_off_zero_http_zero_write(
     assert client.list_calls == 0
     assert client.detail_calls == 0
     assert list(ingest_db["accurate_sales_orders"].find()) == before
+
+
+def test_existing_empty_branch_unchanged_header_fills_cas(
+    ingest_db: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """P0: PO existing tanpa branch_id + header/item sama → CAS isi, bukan unchanged kosong."""
+    monkeypatch.setenv("V4_PO_AUTO_SYNC_ENABLED", "1")
+    from app.config import clear_settings_cache
+
+    clear_settings_cache()
+    payload = _detail("88100", trans_date="05/11/2026", branch_id="50")
+    token = locks.acquire_job_lock(ingest_db, job="po")
+    po = normalize_sales_order(payload)
+    po_job._upsert_unaccepted(
+        ingest_db,
+        po,
+        line_diff={
+            "added_line_ids": [],
+            "removed_line_ids": [],
+            "changed_line_ids": [],
+            "previous_line_count": 0,
+            "current_line_count": 2,
+        },
+        owner_token=token,
+        branch_id=None,
+        set_branch_on_insert=False,
+    )
+    # Simulasikan dokumen historis tanpa cabang kanonis (meta Accurate boleh ada).
+    ingest_db["accurate_sales_orders"].update_one(
+        {"accurate_id": "88100"},
+        {"$unset": {"branch_id": ""}},
+    )
+    locks.release_job_lock(ingest_db, job="po", owner_token=token)
+    assert get_by_accurate_id(ingest_db, "88100").get("branch_id") in (None, "")
+
+    client = FakeAccurateClient(
+        list_rows=[{"id": 88100}],
+        details={"88100": payload},
+    )
+    result = po_job.run_po_auto_sync(
+        ingest_db, client=client, page_size=20, max_pages=1, max_rows=5
+    )
+    doc = get_by_accurate_id(ingest_db, "88100")
+    assert doc["branch_id"] == "50"
+    assert result["counters"]["updated"] >= 1
+    assert result["counters"].get("unchanged", 0) == 0
+
+
+def test_accepted_empty_branch_fills_without_scope_steal(
+    ingest_db: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("V4_PO_AUTO_SYNC_ENABLED", "1")
+    from app.config import clear_settings_cache
+
+    clear_settings_cache()
+    token = locks.acquire_job_lock(ingest_db, job="po")
+    payload = _detail("88110", trans_date="05/11/2026", branch_id="150")
+    po = normalize_sales_order(payload)
+    po_job._upsert_unaccepted(
+        ingest_db,
+        po,
+        line_diff={
+            "added_line_ids": [],
+            "removed_line_ids": [],
+            "changed_line_ids": [],
+            "previous_line_count": 0,
+            "current_line_count": 2,
+        },
+        owner_token=token,
+        branch_id=None,
+        set_branch_on_insert=False,
+    )
+    ingest_db["accurate_sales_orders"].update_one(
+        {"accurate_id": "88110"},
+        {
+            "$unset": {"branch_id": ""},
+            "$set": {
+                "operational": {
+                    "acceptance": {
+                        "status": ACCEPTANCE_ACCEPTED,
+                        "accepted_by": "tester@example.com",
+                    },
+                    "inbox_status": "PO Diterima",
+                    "custom_marker": "accepted-keep",
+                }
+            },
+        },
+    )
+    locks.release_job_lock(ingest_db, job="po", owner_token=token)
+
+    client = FakeAccurateClient(
+        list_rows=[{"id": 88110}],
+        details={"88110": payload},
+    )
+    po_job.run_po_auto_sync(
+        ingest_db, client=client, page_size=20, max_pages=1, max_rows=5
+    )
+    doc = get_by_accurate_id(ingest_db, "88110")
+    assert doc["branch_id"] == "150"
+    assert doc["operational"]["custom_marker"] == "accepted-keep"
+    assert doc["operational"]["acceptance"]["status"] == ACCEPTANCE_ACCEPTED
+
+
+def test_dependency_present_empty_branch_cas_only(
+    ingest_db: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Dependency ada: boleh CAS kosong, tidak menimpa cabang manual."""
+    monkeypatch.setenv("V4_PO_AUTO_SYNC_ENABLED", "1")
+    from app.config import clear_settings_cache
+
+    clear_settings_cache()
+    token = locks.acquire_job_lock(ingest_db, job="po")
+    payload = _detail("88120", trans_date="05/11/2026", branch_id="50")
+    po = normalize_sales_order(payload)
+    po_job._upsert_unaccepted(
+        ingest_db,
+        po,
+        line_diff={
+            "added_line_ids": [],
+            "removed_line_ids": [],
+            "changed_line_ids": [],
+            "previous_line_count": 0,
+            "current_line_count": 2,
+        },
+        owner_token=token,
+        branch_id="150",
+        set_branch_on_insert=True,
+    )
+    locks.release_job_lock(ingest_db, job="po", owner_token=token)
+    ingest_db["operational_tasks"].insert_one(
+        {"accurate_po_id": "88120", "task_type": "print", "status": "open"}
+    )
+    client = FakeAccurateClient(
+        list_rows=[{"id": 88120}],
+        details={"88120": _detail("88120", trans_date="05/11/2026", branch_id="50")},
+    )
+    po_job.run_po_auto_sync(
+        ingest_db, client=client, page_size=20, max_pages=1, max_rows=5
+    )
+    doc = get_by_accurate_id(ingest_db, "88120")
+    assert doc["branch_id"] == "150"
+    assert (doc.get("operational") or {}).get("branch_review", {}).get("status") == "conflict"
+
+
+def test_manual_sync_one_date_floor_contract(ingest_db: Database) -> None:
+    """P0: jalur manual sync_one — excluded/failed tanpa exception; Nov sukses."""
+    from app.services.po_sync import sync_one_sales_order_from_accurate
+
+    class _Client:
+        def __init__(self, details: dict[str, dict[str, Any]]):
+            self.details = details
+
+        def fetch_sales_order_detail(self, accurate_id: str | int) -> dict[str, Any]:
+            return copy.deepcopy(self.details[str(accurate_id)])
+
+    oct_client = _Client(
+        {"88200": _detail("88200", trans_date="31/10/2026", branch_id="50")}
+    )
+    excluded = sync_one_sales_order_from_accurate(
+        ingest_db, 88200, client=oct_client, mongo_guard="test"
+    )
+    assert excluded["ok"] is False
+    assert excluded["outcome"] == "excluded"
+    assert excluded["writes"] == 0
+    assert excluded["process_kinds"] == []
+    assert get_by_accurate_id(ingest_db, "88200") is None
+
+    bad = _detail("88201", trans_date="01/11/2026", branch_id="50")
+    bad["transDate"] = "bukan-tanggal"
+    failed = sync_one_sales_order_from_accurate(
+        ingest_db, 88201, client=_Client({"88201": bad}), mongo_guard="test"
+    )
+    assert failed["ok"] is False
+    assert failed["outcome"] == "failed"
+    assert failed["writes"] == 0
+    assert get_by_accurate_id(ingest_db, "88201") is None
+
+    nov = sync_one_sales_order_from_accurate(
+        ingest_db,
+        88202,
+        client=_Client(
+            {"88202": _detail("88202", trans_date="01/11/2026", branch_id="50")}
+        ),
+        mongo_guard="test",
+    )
+    assert nov["ok"] is True
+    assert nov["writes"] >= 1
+    assert get_by_accurate_id(ingest_db, "88202")["branch_id"] == "50"
+
+    mixed = sync_one_sales_order_from_accurate(
+        ingest_db,
+        88203,
+        client=_Client(
+            {
+                "88203": _detail(
+                    "88203",
+                    trans_date="06/11/2026",
+                    branch_id="150",
+                    number="PO/28/10/2026/000099",
+                )
+            }
+        ),
+        mongo_guard="test",
+    )
+    assert mixed["ok"] is True
+    assert get_by_accurate_id(ingest_db, "88203")["branch_id"] == "150"
+
+
+def test_cas_branch_fill_concurrent_no_overwrite(ingest_db: Database) -> None:
+    """P1: race CAS — cabang manual tidak tertimpa; kosong hanya terisi sekali."""
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+
+    from app.repositories.po_repository import set_branch_id_if_empty
+
+    ingest_db["accurate_sales_orders"].insert_one(
+        {
+            "accurate_id": "88300",
+            "po_no": "PO/CAS/1",
+            "header": {"items": []},
+            "operational": {},
+            "created_at": datetime.now(timezone.utc),
+        }
+    )
+
+    def _fill(code: str) -> str | None:
+        doc = set_branch_id_if_empty(ingest_db, "88300", code)
+        return None if doc is None else doc.get("branch_id")
+
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        futs = [pool.submit(_fill, "50" if i % 2 == 0 else "150") for i in range(16)]
+        results = [f.result() for f in as_completed(futs)]
+
+    winners = [r for r in results if r is not None]
+    assert len(winners) == 1
+    final = get_by_accurate_id(ingest_db, "88300")["branch_id"]
+    assert final in {"50", "150"}
+    assert winners[0] == final
+    # Re-CAS tidak menimpa.
+    assert set_branch_id_if_empty(ingest_db, "88300", "999") is None
+    assert get_by_accurate_id(ingest_db, "88300")["branch_id"] == final
+
+
+def test_dry_run_verification_levels_no_false_ready() -> None:
+    import importlib.util
+    import sys
+    from pathlib import Path
+
+    script = Path(__file__).resolve().parents[2] / "scripts" / "po_branch_repair_dry_run.py"
+    spec = importlib.util.spec_from_file_location("po_branch_repair_dry_run", script)
+    assert spec and spec.loader
+    mod = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = mod
+    spec.loader.exec_module(mod)
+
+    snap = {
+        "tasks": 0,
+        "alloc": 0,
+        "sj": 0,
+        "branch_id": None,
+        "meta_branch": "50",
+        "stored_po_date": "2026-11-05",
+        "detail_verified": False,
+    }
+    assert mod._classify(snap) == "CANDIDATE_FROM_MONGO_SNAPSHOT"
+    snap["detail_verified"] = True
+    assert mod._classify(snap) == "VALID_IN_SCOPE_READY_FOR_BRANCH_REPAIR"

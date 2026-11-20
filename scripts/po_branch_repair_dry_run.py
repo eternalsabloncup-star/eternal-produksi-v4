@@ -35,6 +35,7 @@ PRIORITY = (
     "INVALID_OR_MISSING_TRANSACTION_DATE",
     "OUT_OF_SCOPE_BEFORE_FLOOR",
     "SOURCE_DETAIL_NOT_VERIFIED",
+    "CANDIDATE_FROM_MONGO_SNAPSHOT",
     "VALID_IN_SCOPE_READY_FOR_BRANCH_REPAIR",
 )
 
@@ -91,7 +92,10 @@ def _classify(row: dict[str, Any]) -> str:
         )
     if parsed < FLOOR:
         return "OUT_OF_SCOPE_BEFORE_FLOOR"
-    return "VALID_IN_SCOPE_READY_FOR_BRANCH_REPAIR"
+    # Snapshot Mongo saja ≠ siap production write.
+    if row.get("detail_verified"):
+        return "VALID_IN_SCOPE_READY_FOR_BRANCH_REPAIR"
+    return "CANDIDATE_FROM_MONGO_SNAPSHOT"
 
 
 def main() -> int:
@@ -177,12 +181,29 @@ def main() -> int:
         }
         # Snapshot Mongo: header.po_date = transDate Accurate (bukan tanggal nomor PO).
         row["category"] = _classify(row)
+        if row.get("detail_verified"):
+            row["verification_level"] = "VERIFIED_FROM_ACCURATE_DETAIL"
+        elif row["category"] in {
+            "SOURCE_DETAIL_NOT_VERIFIED",
+            "INVALID_OR_MISSING_TRANSACTION_DATE",
+        } and not row.get("stored_po_date"):
+            row["verification_level"] = "NOT_VERIFIED"
+        else:
+            row["verification_level"] = "VERIFIED_FROM_MONGO_SNAPSHOT"
         items.append(row)
 
     counts: dict[str, int] = {k: 0 for k in PRIORITY}
     counts["ALREADY_HAS_BRANCH_ID"] = 0
+    verification_counts = {
+        "VERIFIED_FROM_MONGO_SNAPSHOT": 0,
+        "VERIFIED_FROM_ACCURATE_DETAIL": 0,
+        "NOT_VERIFIED": 0,
+    }
     for row in items:
         counts[row["category"]] = counts.get(row["category"], 0) + 1
+        verification_counts[row["verification_level"]] = (
+            verification_counts.get(row["verification_level"], 0) + 1
+        )
 
     report = {
         "ok": True,
@@ -193,17 +214,25 @@ def main() -> int:
         "production_total_po": len(all_ids),
         "new_po_count": len(new_ids),
         "counts": counts,
-        "repair_candidates": [
+        "verification_counts": verification_counts,
+        "repair_candidates_mongo_snapshot_only": [
+            i["accurate_id"]
+            for i in items
+            if i["category"] == "CANDIDATE_FROM_MONGO_SNAPSHOT"
+        ],
+        "repair_candidates_production_ready": [
             i["accurate_id"]
             for i in items
             if i["category"] == "VALID_IN_SCOPE_READY_FOR_BRANCH_REPAIR"
+            and i.get("verification_level") == "VERIFIED_FROM_ACCURATE_DETAIL"
         ],
         "items": items,
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "notes": [
             "Tidak ada production write.",
-            "Kategori ALREADY_HAS_BRANCH_ID = delta yang sudah ber-cabang (bukan kandidat repair).",
-            "Accurate detail live tidak dipanggil di dry-run default (hindari sync/HTTP massal).",
+            "CANDIDATE_FROM_MONGO_SNAPSHOT ≠ siap production write.",
+            "VALID_IN_SCOPE_READY_FOR_BRANCH_REPAIR hanya jika Accurate detail diverifikasi.",
+            "Accurate detail live tidak dipanggil di dry-run default.",
         ],
     }
     Path(args.out).write_text(json.dumps(report, indent=2))
@@ -214,7 +243,13 @@ def main() -> int:
                 "out": args.out,
                 "new_po_count": len(new_ids),
                 "counts": counts,
-                "repair_candidates": len(report["repair_candidates"]),
+                "verification_counts": verification_counts,
+                "repair_candidates_mongo_snapshot_only": len(
+                    report["repair_candidates_mongo_snapshot_only"]
+                ),
+                "repair_candidates_production_ready": len(
+                    report["repair_candidates_production_ready"]
+                ),
                 "wrote_mongo": False,
             }
         )

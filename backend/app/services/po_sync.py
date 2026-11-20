@@ -219,6 +219,7 @@ def sync_sales_order_payload(
         "line_diff": line_diff,
         "operational_preserved": isinstance((stored or {}).get("operational"), dict),
         "branch_apply": branch_apply,
+        "outcome": "created" if before == 0 else "updated",
         "writes": 1,
     }
 
@@ -248,6 +249,36 @@ def sync_one_sales_order_from_accurate(
 
     result = sync_sales_order_payload(db, payload, mongo_guard=mongo_guard)
     result["fetch_ok"] = True
+    outcome = result.get("outcome")
+    writes = int(result.get("writes") or 0)
+    # Rejected/excluded/failed: jangan akses result["po"].items (bisa None).
+    if writes == 0 and outcome in {"excluded", "failed"}:
+        return {
+            "accurate_id": result.get("accurate_id"),
+            "po_no": result.get("po_no"),
+            "po_count": result.get("count_after", 0),
+            "line_count": 0,
+            "was_insert": False,
+            "was_updated": False,
+            "inserted": False,
+            "updated": False,
+            "duplicate_prevented": True,
+            "idempotent": True,
+            "count_after": result.get("count_after", 0),
+            "line_diff": result.get("line_diff"),
+            "operational_preserved": True,
+            "fetch_ok": True,
+            "process_kinds": [],
+            "outcome": outcome,
+            "reason": result.get("reason"),
+            "writes": 0,
+            "ok": False,
+        }
+
+    po = result.get("po")
+    process_kinds = (
+        [i.process_kind for i in po.items] if po is not None else []
+    )
     # Jangan sertakan payload mentah / pelanggan di return untuk caller log-safe.
     safe = {
         "accurate_id": result["accurate_id"],
@@ -264,7 +295,11 @@ def sync_one_sales_order_from_accurate(
         "line_diff": result["line_diff"],
         "operational_preserved": result["operational_preserved"],
         "fetch_ok": True,
-        "process_kinds": [i.process_kind for i in result["po"].items],
+        "process_kinds": process_kinds,
+        "outcome": outcome or ("created" if result["was_insert"] else "updated"),
+        "writes": writes if writes else 1,
+        "ok": True,
+        "branch_apply": result.get("branch_apply"),
     }
     return safe
 

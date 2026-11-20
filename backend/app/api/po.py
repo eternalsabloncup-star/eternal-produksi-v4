@@ -321,7 +321,27 @@ def sync_payload(
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, "sales_order wajib.")
 
     result = sync_sales_order_payload(get_db(), body.sales_order)
-    po = result["po"]
+    po = result.get("po")
+    if result.get("writes") == 0 and result.get("outcome") in {"excluded", "failed"}:
+        return {
+            "accurate_id": result.get("accurate_id"),
+            "po_no": result.get("po_no"),
+            "line_count": 0,
+            "was_insert": False,
+            "duplicate_prevented": True,
+            "count_after": result.get("count_after", 0),
+            "process_kinds": [],
+            "colors": [],
+            "outcome": result.get("outcome"),
+            "reason": result.get("reason"),
+            "writes": 0,
+            "ok": False,
+        }
+    if po is None:
+        raise HTTPException(
+            status.HTTP_422_UNPROCESSABLE_ENTITY,
+            "Sinkronisasi ditolak tanpa dokumen PO.",
+        )
     return {
         "accurate_id": result["accurate_id"],
         "po_no": result["po_no"],
@@ -331,4 +351,7 @@ def sync_payload(
         "count_after": result["count_after"],
         "process_kinds": [i.process_kind for i in po.items],
         "colors": [i.color for i in po.items],
+        "outcome": result.get("outcome") or ("created" if result["was_insert"] else "updated"),
+        "writes": result.get("writes", 1),
+        "ok": True,
     }
