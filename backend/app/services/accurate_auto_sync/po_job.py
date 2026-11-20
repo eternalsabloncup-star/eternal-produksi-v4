@@ -41,6 +41,20 @@ DEFAULT_MAX_PAGES = 5
 DEFAULT_MAX_ROWS = 100
 DEFAULT_TIMEOUT_SECONDS = 50.0
 
+
+def _fenced_collection_write(db: Database, write_fn: Any) -> Any:
+    """Bila writer fence aktif: renew + write dalam satu txn (commit boundary)."""
+    from app.services.po_repair_maintenance import (
+        active_writer_fence,
+        mutate_under_writer_fence,
+    )
+
+    fence = active_writer_fence()
+    if fence is None:
+        return write_fn(None)
+    return mutate_under_writer_fence(db, fence, write_fn)
+
+
 # Metadata aman pada PO accepted. Bukan customer/alamat/items/operasional.
 _SAFE_ACCEPTED_HEADER_KEYS = (
     "ship_zone",
@@ -143,11 +157,15 @@ def _mark_material_review(
     before_header = before.get("header") if isinstance(before.get("header"), dict) else {}
     set_fields.update(_safe_header_patch(before_header, po))
 
-    updated = po_collection(db).find_one_and_update(
-        _accepted_filter(accurate_id),
-        {"$set": set_fields},
-        return_document=ReturnDocument.AFTER,
-    )
+    def _write(session: Any) -> dict[str, Any] | None:
+        return po_collection(db).find_one_and_update(
+            _accepted_filter(accurate_id),
+            {"$set": set_fields},
+            return_document=ReturnDocument.AFTER,
+            session=session,
+        )
+
+    updated = _fenced_collection_write(db, _write)
     if updated is None:
         # Race: acceptance berubah — jangan tulis review pada PO belum diterima.
         return {"outcome": "skipped", "reason": "acceptance_race", "accurate_id": accurate_id}
@@ -160,8 +178,14 @@ def _upsert_unaccepted(
     *,
     line_diff: dict[str, Any],
     owner_token: str,
+    branch_id: str | None = None,
+    set_branch_on_insert: bool = False,
 ) -> dict[str, Any]:
-    """Insert/update penuh hanya jika PO belum accepted (atomic filter)."""
+    """Insert/update penuh hanya jika PO belum accepted (atomic filter).
+
+    ``branch_id`` kanonis hanya di ``$setOnInsert`` / ``$set`` saat kosong —
+    tidak menimpa cabang manual/existing.
+    """
     require_owns_job_lock(db, job="po", owner_token=owner_token)
     require_po_indexes(db)
     doc = _to_document(po)
@@ -183,20 +207,27 @@ def _upsert_unaccepted(
             "current_line_count": line_diff.get("current_line_count"),
         },
     }
-    try:
-        result = po_collection(db).find_one_and_update(
+    set_on_insert: dict[str, Any] = {
+        "created_at": now,
+        "accurate_id": accurate_id,
+        "operational": {"inbox_status": "PO Baru"},
+    }
+    if set_branch_on_insert and branch_id:
+        set_on_insert["branch_id"] = branch_id
+    def _write(session: Any) -> dict[str, Any] | None:
+        return po_collection(db).find_one_and_update(
             _not_accepted_filter(accurate_id),
             {
                 "$set": set_fields,
-                "$setOnInsert": {
-                    "created_at": now,
-                    "accurate_id": accurate_id,
-                    "operational": {"inbox_status": "PO Baru"},
-                },
+                "$setOnInsert": set_on_insert,
             },
             upsert=True,
             return_document=ReturnDocument.AFTER,
+            session=session,
         )
+
+    try:
+        result = _fenced_collection_write(db, _write)
     except DuplicateKeyError:
         # Race: dokumen accepted sudah ada (unique accurate_id).
         return {"outcome": "skipped", "reason": "acceptance_race", "accurate_id": accurate_id}
@@ -204,6 +235,7 @@ def _upsert_unaccepted(
     if result is None:
         return {"outcome": "skipped", "reason": "acceptance_race", "accurate_id": accurate_id}
 
+    # Existing tanpa branch_id: jangan auto-heal di jalur sync rutin.
     return {
         "outcome": "updated",
         "accurate_id": accurate_id,
@@ -227,11 +259,15 @@ def _apply_safe_accepted_metadata(
         return {"outcome": "unchanged", "accurate_id": accurate_id}
     now = _now()
     patch.update({"updated_at": now, "source_synced_at": now})
-    updated = po_collection(db).find_one_and_update(
-        _accepted_filter(accurate_id),
-        {"$set": patch},
-        return_document=ReturnDocument.AFTER,
-    )
+    def _write(session: Any) -> dict[str, Any] | None:
+        return po_collection(db).find_one_and_update(
+            _accepted_filter(accurate_id),
+            {"$set": patch},
+            return_document=ReturnDocument.AFTER,
+            session=session,
+        )
+
+    updated = _fenced_collection_write(db, _write)
     if updated is None:
         return {"outcome": "skipped", "reason": "acceptance_race", "accurate_id": accurate_id}
     return {"outcome": "updated", "accurate_id": accurate_id}
@@ -246,9 +282,36 @@ def sync_one_listed_sales_order(
 ) -> dict[str, Any]:
     """Fetch detail → normalize → conditional upsert dengan guard acceptance + lease."""
     require_owns_job_lock(db, job="po", owner_token=owner_token)
+    from app.services.po_repair_maintenance import WriterFence, po_repair_writer_section
+
+    with po_repair_writer_section(db) as fence:
+        return _sync_one_listed_sales_order_under_writer_lease(
+            db,
+            accurate_id,
+            client=client,
+            owner_token=owner_token,
+            writer_fence=fence,
+        )
+
+
+def _sync_one_listed_sales_order_under_writer_lease(
+    db: Database,
+    accurate_id: str,
+    *,
+    client: AccurateReadClient,
+    owner_token: str,
+    writer_fence: WriterFence,
+) -> dict[str, Any]:
+    writer_fence.assert_valid(db)
     payload = client.fetch_sales_order_detail(accurate_id)
+    writer_fence.assert_valid(db)
     require_owns_job_lock(db, job="po", owner_token=owner_token)
     from app.services.accurate_auto_sync.date_floor import detail_scope_outcome
+    from app.services.po_ingest_guards import (
+        mark_branch_conflict_review,
+        mark_empty_branch_review,
+        resolve_branch_for_ingest,
+    )
 
     gated = detail_scope_outcome(payload, accurate_id=str(accurate_id))
     if gated is not None:
@@ -257,8 +320,83 @@ def sync_one_listed_sales_order(
     before = get_by_accurate_id(db, po.accurate_id or accurate_id)
     line_diff = diff_synced_lines(before, po)
 
+    branch_res = resolve_branch_for_ingest(db, po=po, existing=before)
+    if not branch_res.get("ok"):
+        # Insert baru / update tanpa cabang valid — zero write.
+        if before is None:
+            return {
+                "outcome": branch_res.get("outcome") or "failed",
+                "reason": branch_res.get("reason"),
+                "code": branch_res.get("code"),
+                "accurate_id": str(po.accurate_id or accurate_id),
+                "writes": 0,
+            }
+        # Existing tanpa cabang kanonis + source invalid: jangan perluas scope palsu.
+        if not before.get("branch_id"):
+            mark_empty_branch_review(
+                db,
+                accurate_id=str(po.accurate_id or accurate_id),
+                source_branch_id=branch_res.get("source_branch_id"),
+                reason=str(branch_res.get("reason") or "existing_missing_branch_id"),
+            )
+            return {
+                "outcome": "review_required",
+                "reason": branch_res.get("reason") or "existing_missing_branch_id",
+                "code": branch_res.get("code"),
+                "accurate_id": str(po.accurate_id or accurate_id),
+                "writes": 0,
+            }
+
+    branch_action = str(branch_res.get("action") or "preserve")
+    branch_id = branch_res.get("branch_id")
+    if branch_action == "conflict":
+        mark_branch_conflict_review(
+            db,
+            accurate_id=str(po.accurate_id or accurate_id),
+            existing_branch_id=str(branch_res.get("branch_id")),
+            source_branch_id=str(branch_res.get("source_branch_id")),
+        )
+
+    def _note_empty_branch_if_needed(doc: dict[str, Any] | None) -> bool:
+        """True jika existing tanpa branch_id — review, tanpa auto-fill."""
+        if doc is None or doc.get("branch_id"):
+            return False
+        if branch_action != "set":
+            # Source invalid sudah ditangani di atas; tetap tandai bila kosong.
+            mark_empty_branch_review(
+                db,
+                accurate_id=str(po.accurate_id or accurate_id),
+                source_branch_id=branch_res.get("source_branch_id"),
+                reason="existing_missing_branch_id",
+            )
+            return True
+        mark_empty_branch_review(
+            db,
+            accurate_id=str(po.accurate_id or accurate_id),
+            source_branch_id=str(branch_id) if branch_id else branch_res.get(
+                "source_branch_id"
+            ),
+            reason="existing_missing_branch_id",
+        )
+        return True
+
     if before is None:
-        result = _upsert_unaccepted(db, po, line_diff=line_diff, owner_token=owner_token)
+        if branch_action != "set" or not branch_id:
+            return {
+                "outcome": "failed",
+                "reason": "missing_branch_id",
+                "code": "missing_branch_id",
+                "accurate_id": str(po.accurate_id or accurate_id),
+                "writes": 0,
+            }
+        result = _upsert_unaccepted(
+            db,
+            po,
+            line_diff=line_diff,
+            owner_token=owner_token,
+            branch_id=str(branch_id),
+            set_branch_on_insert=True,
+        )
         if result.get("outcome") == "skipped":
             before2 = get_by_accurate_id(db, str(po.accurate_id))
             if before2 is not None and is_po_accepted(before2):
@@ -271,13 +409,21 @@ def sync_one_listed_sales_order(
                         po=po,
                         owner_token=owner_token,
                     )
-                return _apply_safe_accepted_metadata(
+                needs_review = _note_empty_branch_if_needed(before2)
+                meta = _apply_safe_accepted_metadata(
                     db,
                     accurate_id=str(po.accurate_id),
                     before=before2,
                     po=po,
                     owner_token=owner_token,
                 )
+                if needs_review:
+                    return {
+                        **meta,
+                        "outcome": "review_required",
+                        "reason": "existing_missing_branch_id",
+                    }
+                return meta
             return {
                 "outcome": "skipped",
                 "reason": result.get("reason") or "acceptance_race",
@@ -287,7 +433,10 @@ def sync_one_listed_sales_order(
             "outcome": "created",
             "accurate_id": str(po.accurate_id),
             "line_diff": line_diff,
+            "branch_id": str(branch_id),
         }
+
+    needs_empty_review = _note_empty_branch_if_needed(before)
 
     if is_po_accepted(before):
         if _material_line_change(line_diff):
@@ -299,13 +448,20 @@ def sync_one_listed_sales_order(
                 po=po,
                 owner_token=owner_token,
             )
-        return _apply_safe_accepted_metadata(
+        meta_out = _apply_safe_accepted_metadata(
             db,
             accurate_id=str(po.accurate_id),
             before=before,
             po=po,
             owner_token=owner_token,
         )
+        if needs_empty_review:
+            return {
+                **meta_out,
+                "outcome": "review_required",
+                "reason": "existing_missing_branch_id",
+            }
+        return meta_out
 
     # Belum accepted: update penuh dengan filter anti-race Terima PO.
     header_keys = (
@@ -319,14 +475,32 @@ def sync_one_listed_sales_order(
     header_changed = any(
         before_header.get(key) != getattr(po, key, None) for key in header_keys
     )
-    if not _material_line_change(line_diff) and not header_changed:
+    if (
+        not _material_line_change(line_diff)
+        and not header_changed
+        and branch_action != "conflict"
+    ):
+        if needs_empty_review:
+            return {
+                "outcome": "review_required",
+                "reason": "existing_missing_branch_id",
+                "accurate_id": str(po.accurate_id),
+                "line_diff": line_diff,
+            }
         return {
             "outcome": "unchanged",
             "accurate_id": str(po.accurate_id),
             "line_diff": line_diff,
         }
 
-    result = _upsert_unaccepted(db, po, line_diff=line_diff, owner_token=owner_token)
+    result = _upsert_unaccepted(
+        db,
+        po,
+        line_diff=line_diff,
+        owner_token=owner_token,
+        branch_id=None,
+        set_branch_on_insert=False,
+    )
     if result.get("outcome") == "skipped":
         before2 = get_by_accurate_id(db, str(po.accurate_id))
         if before2 is not None and is_po_accepted(before2):
@@ -339,20 +513,35 @@ def sync_one_listed_sales_order(
                     po=po,
                     owner_token=owner_token,
                 )
-            return _apply_safe_accepted_metadata(
+            needs_review = _note_empty_branch_if_needed(before2)
+            meta = _apply_safe_accepted_metadata(
                 db,
                 accurate_id=str(po.accurate_id),
                 before=before2,
                 po=po,
                 owner_token=owner_token,
             )
+            if needs_review:
+                return {
+                    **meta,
+                    "outcome": "review_required",
+                    "reason": "existing_missing_branch_id",
+                }
+            return meta
         return {"outcome": "skipped", "reason": "acceptance_race", "accurate_id": str(po.accurate_id)}
 
-    return {
-        "outcome": "updated",
+    out: dict[str, Any] = {
+        "outcome": "review_required" if needs_empty_review else "updated",
         "accurate_id": str(po.accurate_id),
         "line_diff": line_diff,
     }
+    if needs_empty_review:
+        out["reason"] = "existing_missing_branch_id"
+    if branch_action == "conflict":
+        out["outcome"] = "review_required"
+        out["branch_conflict"] = True
+        out["reason"] = "branch_conflict"
+    return out
 
 
 def run_po_auto_sync(

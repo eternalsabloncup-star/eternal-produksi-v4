@@ -50,6 +50,7 @@ def _payload(so_id: int, *, trans_date: str, ship_zone: str = "K") -> dict[str, 
     p["id"] = so_id
     p["number"] = f"PO/{so_id}"
     p["transDate"] = trans_date
+    p["branchId"] = 50
     p["charField3"] = ship_zone
     return p
 
@@ -126,6 +127,14 @@ class FloorClient:
 def pdb(db: Database) -> Database:
     ensure_auto_sync_status_indexes(db)
     ensure_po_indexes(db)
+    from app.repositories.org_master_repository import (
+        ensure_org_master_indexes,
+        upsert_branch,
+    )
+
+    ensure_org_master_indexes(db)
+    upsert_branch(db, code="50", name="Yogyakarta", is_active=True)
+    upsert_branch(db, code="150", name="Semarang", is_active=True)
     return db
 
 

@@ -71,6 +71,14 @@ class FakeAccurateClient:
 @pytest.fixture()
 def auto_sync_db(db: Database) -> Database:
     ensure_auto_sync_status_indexes(db)
+    from app.repositories.org_master_repository import (
+        ensure_org_master_indexes,
+        upsert_branch,
+    )
+
+    ensure_org_master_indexes(db)
+    upsert_branch(db, code="50", name="Yogyakarta", is_active=True)
+    upsert_branch(db, code="150", name="Semarang", is_active=True)
     return db
 
 
@@ -100,6 +108,7 @@ def _payload(
     payload = copy.deepcopy(SAMPLE_SALES_ORDER_STRUCTURE)
     payload["id"] = so_id
     payload["number"] = f"PO/TEST/{so_id}"
+    payload["branchId"] = 50
     payload["charField3"] = ship_zone
     payload["charField5"] = "Non - Buffer"
     payload["detailItem"][0]["salesmanName"] = "Sales Transaksi"

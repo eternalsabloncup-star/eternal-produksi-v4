@@ -4,9 +4,11 @@ Alur: DO list (paginated) → DO detail → normalize → validasi PO V4 → ing
 Tidak menulis Accurate. Tidak menghapus SJ V4 yang absen dari listing.
 Tidak menyamakan Qty SJ dengan Qty Loading. Tidak ada scheduler/auto-sync.
 
-Mutasi Mongo hanya lewat ``assert_safe_mongo_sync_target`` (DB test
-``eternal_v4_test_*``). Jalur production eksplisit memerlukan persetujuan CEO
-terpisah — endpoint API tahap ini selalu memakai guard ``test``.
+Mutasi Mongo default lewat ``assert_safe_mongo_sync_target`` (DB test
+``eternal_v4_test_*``). Jalur production eksplisit memakai
+``assert_safe_mongo_production_sync_target`` + flag
+``V4_SJ_SYNC_PRODUCTION_ENABLED`` (default OFF; butuh CEO).
+Endpoint API manual tetap ``mongo_guard=test``.
 """
 
 from __future__ import annotations
@@ -19,7 +21,11 @@ from pymongo.database import Database
 from pymongo.errors import DuplicateKeyError, PyMongoError, ServerSelectionTimeoutError
 
 from app.config import get_settings
-from app.db_guard import UnsafeMongoTargetError, assert_safe_mongo_sync_target
+from app.db_guard import (
+    UnsafeMongoTargetError,
+    assert_safe_mongo_production_sync_target,
+    assert_safe_mongo_sync_target,
+)
 from app.integrations.accurate.auth import AccurateAuthError
 from app.integrations.accurate.client import AccurateReadClient
 from app.integrations.accurate.fields import as_text
@@ -27,7 +33,7 @@ from app.repositories import delivery_repository as deliveries
 from app.repositories.po_repository import get_by_accurate_id
 from app.services import delivery_service
 
-MongoGuardMode = Literal["test"]
+MongoGuardMode = Literal["test", "production"]
 
 SYNC_LOCK_COLLECTION = "sync_locks"
 SYNC_LOCK_ID = "delivery_order_sync"
@@ -69,22 +75,51 @@ def require_sj_sync_enabled() -> None:
         )
 
 
+def is_sj_sync_production_enabled() -> bool:
+    """Flag jalur production SJ; default OFF dan independen dari kill switch test."""
+    return bool(get_settings().sj_sync_production_enabled)
+
+
+def require_sj_sync_production_enabled() -> None:
+    if not is_sj_sync_production_enabled():
+        raise UnsafeMongoTargetError(
+            "Jalur production SJ nonaktif (V4_SJ_SYNC_PRODUCTION_ENABLED). "
+            "Nyalakan hanya setelah CEO + backup + non-prod PASS.",
+            code="mongo_sj_production_flag_off",
+        )
+
+
+def resolve_sj_mongo_guard() -> MongoGuardMode:
+    """Pilih guard: production hanya jika kedua flag ON; selain itu test."""
+    if is_sj_sync_enabled() and is_sj_sync_production_enabled():
+        return "production"
+    return "test"
+
+
 def _guard_db(db: Database, *, mongo_guard: MongoGuardMode = "test") -> None:
     import os
 
     require_sj_sync_enabled()
-    if mongo_guard != "test":
-        raise UnsafeMongoTargetError(
-            "Sinkronisasi Surat Jalan Accurate tahap ini hanya mengizinkan "
-            "mongo_guard=test (production memerlukan persetujuan CEO).",
-            code="mongo_sj_production_sync_blocked",
-        )
     settings = get_settings()
     expected_auth = (
         os.environ.get("V4_MONGO_AUTH_SOURCE")
         or os.environ.get("MONGO_AUTH_SOURCE")
         or ""
     ).strip() or None
+    if mongo_guard == "production":
+        require_sj_sync_production_enabled()
+        assert_safe_mongo_production_sync_target(
+            uri=settings.mongodb_uri,
+            db_name=db.name,
+            app_env=settings.app_env,
+            expected_auth_source=expected_auth or "eternal_v4",
+        )
+        return
+    if mongo_guard != "test":
+        raise UnsafeMongoTargetError(
+            "mongo_guard SJ tidak dikenal — gunakan test atau production.",
+            code="mongo_sj_guard_invalid",
+        )
     assert_safe_mongo_sync_target(
         uri=settings.mongodb_uri,
         db_name=db.name,
@@ -162,6 +197,29 @@ def sync_delivery_order_payload(
     require_registered_po: bool = True,
 ) -> dict[str, Any]:
     """Normalisasi + ingest satu SJ. Skip bila PO belum terdaftar di V4."""
+    from app.services.po_repair_maintenance import WriterFence, po_repair_writer_section
+
+    with po_repair_writer_section(db) as fence:
+        return _sync_delivery_order_payload_under_writer_lease(
+            db,
+            user,
+            payload,
+            mongo_guard=mongo_guard,
+            require_registered_po=require_registered_po,
+            writer_fence=fence,
+        )
+
+
+def _sync_delivery_order_payload_under_writer_lease(
+    db: Database,
+    user: dict[str, Any],
+    payload: dict[str, Any],
+    *,
+    mongo_guard: MongoGuardMode = "test",
+    require_registered_po: bool = True,
+    writer_fence: WriterFence,
+) -> dict[str, Any]:
+    writer_fence.assert_valid(db)
     _guard_db(db, mongo_guard=mongo_guard)
     note = deliveries.normalize_delivery_note(payload)
     po_id = str(note["accurate_po_id"])
