@@ -48,6 +48,44 @@ def money_to_storage(amount: Decimal) -> float:
     return float(amount)
 
 
+_TRUE_TOKENS = frozenset({"true", "1", "yes", "ya"})
+_FALSE_TOKENS = frozenset({"false", "0", "no", "tidak"})
+
+
+def parse_accurate_bool(value: Any) -> tuple[bool | None, str | None]:
+    """Parse boolean kontrak Accurate (voidCheq dkk).
+
+    Returns ``(parsed, error)``:
+    - ``(True/False, None)`` — nilai dikenal
+    - ``(None, None)`` — null/missing (caller memutuskan default kontrak)
+    - ``(None, reason)`` — ambigu/tidak dikenal → REVIEW, jangan diam-diam False
+
+    Tidak memakai ``bool(str)`` — ``bool("false")`` adalah True di Python.
+    """
+    if value is None:
+        return None, None
+    if isinstance(value, bool):
+        return value, None
+    if isinstance(value, (int, float)):
+        if isinstance(value, float) and (
+            value != value or value in (float("inf"), float("-inf"))
+        ):
+            return None, "boolean nonfinite"
+        if value == 1:
+            return True, None
+        if value == 0:
+            return False, None
+        return None, "boolean numerik tidak dikenal"
+    text = as_text(value).strip().lower()
+    if not text:
+        return None, None
+    if text in _TRUE_TOKENS:
+        return True, None
+    if text in _FALSE_TOKENS:
+        return False, None
+    return None, f"boolean ambigu: {text!r}"
+
+
 def _material_invoice_fields(doc: dict[str, Any]) -> dict[str, Any]:
     return {
         "accurate_invoice_id": doc.get("accurate_invoice_id"),
@@ -203,12 +241,23 @@ def normalize_sales_receipt(payload: dict[str, Any]) -> dict[str, Any]:
                 "totalPayment tidak cocok dengan jumlah paymentAmount alokasi."
             )
 
-    void_flag = payload.get("voidCheq")
-    if void_flag is True or str(void_flag).lower() in {"true", "1", "yes"}:
+    # Kontrak live: voidCheq boolean. Missing/null = bukan void (False).
+    # Ambigu → REVIEW fail-closed; storage void_cheq True agar tidak dianggap bersih.
+    void_parsed, void_err = parse_accurate_bool(payload.get("voidCheq"))
+    if void_err is not None:
+        review_reasons.append(
+            f"voidCheq tidak dapat ditafsirkan ({void_err}). "
+            "Aturan void ambigu — gate dievaluasi REVIEW."
+        )
+        void_cheq = True
+    elif void_parsed is True:
         review_reasons.append(
             "Receipt ditandai void/reversal (voidCheq). "
             "Aturan void belum diputuskan Owner — gate tidak boleh tetap terbuka."
         )
+        void_cheq = True
+    else:
+        void_cheq = False
 
     review_reason = "; ".join(dict.fromkeys(review_reasons)) if review_reasons else None
     return {
@@ -218,7 +267,7 @@ def normalize_sales_receipt(payload: dict[str, Any]) -> dict[str, Any]:
         "total_payment": money_to_storage(total_payment) if total_payment is not None else None,
         "allocations": allocations,
         "invoice_ids": invoice_ids,
-        "void_cheq": bool(void_flag) if void_flag is not None else False,
+        "void_cheq": void_cheq,
         "review_required": bool(review_reason),
         "review_reason": review_reason,
     }
@@ -238,6 +287,6 @@ def receipt_material_fingerprint(doc: dict[str, Any]) -> dict[str, Any]:
         "review_reason": raw.get("review_reason"),
         "receipt_no": raw.get("receipt_no"),
         "invoice_ids": list(raw.get("invoice_ids") or []),
-        "void_cheq": bool(raw.get("void_cheq")),
+        "void_cheq": True if raw.get("void_cheq") is True else False,
         "allocations": list(raw.get("allocations") or []),
     }

@@ -11,6 +11,7 @@ from pymongo.database import Database
 from app.integrations.accurate.normalize_invoice_receipt import (
     normalize_sales_invoice,
     normalize_sales_receipt,
+    parse_accurate_bool,
     parse_money,
 )
 from app.integrations.accurate.normalize import normalize_sales_order
@@ -68,8 +69,9 @@ def _receipt_payload(
     invoice_id: int = 120402,
     amount: Any = 1000.0,
     total: Any | None = None,
-    void_cheq: bool = False,
+    void_cheq: Any = False,
     omit_payment_amount: bool = False,
+    omit_void_cheq: bool = False,
 ) -> dict:
     alloc: dict[str, Any] = {
         "id": 50,
@@ -78,14 +80,16 @@ def _receipt_payload(
     }
     if not omit_payment_amount:
         alloc["paymentAmount"] = amount
-    return {
+    doc: dict[str, Any] = {
         "id": rid,
         "number": f"SR/{rid}",
         "transDate": "20/11/2026",
         "totalPayment": total if total is not None else amount,
-        "voidCheq": void_cheq,
         "detailInvoice": [alloc],
     }
+    if not omit_void_cheq:
+        doc["voidCheq"] = void_cheq
+    return doc
 
 
 class FakeClient:
@@ -244,3 +248,100 @@ def test_invoice_normalize_invalid_total_review() -> None:
     doc = normalize_sales_invoice(payload)
     assert doc["review_required"] is True
     assert doc["total_amount"] is None
+
+
+@pytest.mark.parametrize(
+    "raw,expected,err",
+    [
+        (False, False, None),
+        (True, True, None),
+        ("false", False, None),
+        ("true", True, None),
+        ("0", False, None),
+        ("1", True, None),
+        (0, False, None),
+        (1, True, None),
+        (None, None, None),
+        ("maybe", None, "boolean ambigu"),
+    ],
+)
+def test_parse_accurate_bool_void_cheq(raw: Any, expected: bool | None, err: str | None) -> None:
+    parsed, reason = parse_accurate_bool(raw)
+    assert parsed is expected
+    if err is None:
+        assert reason is None
+    else:
+        assert reason is not None and err in reason
+
+
+def test_void_cheq_string_false_not_void() -> None:
+    """Regression: bool('false')==True di Python — harus tetap non-void."""
+    doc = normalize_sales_receipt(_receipt_payload(void_cheq="false"))
+    assert doc["void_cheq"] is False
+    assert doc["review_required"] is False
+
+
+def test_void_cheq_string_true_review() -> None:
+    doc = normalize_sales_receipt(_receipt_payload(void_cheq="true"))
+    assert doc["void_cheq"] is True
+    assert doc["review_required"] is True
+
+
+def test_void_cheq_missing_not_void() -> None:
+    doc = normalize_sales_receipt(_receipt_payload(omit_void_cheq=True))
+    assert doc["void_cheq"] is False
+    assert doc["review_required"] is False
+
+
+def test_void_cheq_unknown_review() -> None:
+    doc = normalize_sales_receipt(_receipt_payload(void_cheq="unknown"))
+    assert doc["review_required"] is True
+    assert doc["void_cheq"] is True
+
+
+def test_void_false_to_true_reevaluates_gate(
+    fin_db: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("V4_INVOICE_AUTO_SYNC_ENABLED", "1")
+    monkeypatch.setenv("V4_RECEIPT_AUTO_SYNC_ENABLED", "1")
+    from app.config import clear_settings_cache
+
+    clear_settings_cache()
+    _seed_po(fin_db)
+    receipts = {"120203": _receipt_payload(void_cheq="false")}
+    client = FakeClient({"120402": _invoice_payload()}, receipts)
+    invoice_job.run_invoice_auto_sync(fin_db, client=client)
+    receipt_job.run_receipt_auto_sync(fin_db, client=client)
+    assert payment_service.evaluate_payment_gate(fin_db, "95106")["payment"]["state"] == "open"
+
+    receipts["120203"] = _receipt_payload(void_cheq="true")
+    r = receipt_job.run_receipt_auto_sync(fin_db, client=client)
+    assert r["counters"]["review_required"] == 1
+    assert r["gate_mutations"] >= 1
+    assert payment_service.evaluate_payment_gate(fin_db, "95106")["payment"]["state"] == "review"
+
+
+def test_void_true_to_false_reevaluates(
+    fin_db: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("V4_INVOICE_AUTO_SYNC_ENABLED", "1")
+    monkeypatch.setenv("V4_RECEIPT_AUTO_SYNC_ENABLED", "1")
+    from app.config import clear_settings_cache
+
+    clear_settings_cache()
+    _seed_po(fin_db)
+    # Seed valid receipt dulu agar void menempel ke PO (bukan UNMAPPED).
+    receipts = {"120203": _receipt_payload(void_cheq=False)}
+    client = FakeClient({"120402": _invoice_payload()}, receipts)
+    invoice_job.run_invoice_auto_sync(fin_db, client=client)
+    receipt_job.run_receipt_auto_sync(fin_db, client=client)
+    assert payment_service.evaluate_payment_gate(fin_db, "95106")["payment"]["state"] == "open"
+
+    receipts["120203"] = _receipt_payload(void_cheq=True)
+    receipt_job.run_receipt_auto_sync(fin_db, client=client)
+    assert payment_service.evaluate_payment_gate(fin_db, "95106")["payment"]["state"] == "review"
+
+    receipts["120203"] = _receipt_payload(void_cheq=False)
+    r = receipt_job.run_receipt_auto_sync(fin_db, client=client)
+    assert r["writes"] >= 1
+    assert payment_service.evaluate_payment_gate(fin_db, "95106")["payment"]["state"] == "open"

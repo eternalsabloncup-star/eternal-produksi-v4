@@ -183,7 +183,7 @@ def _candidate_doc(
             "review_reason": reason,
             "receipt_no": normalized.get("receipt_no"),
             "invoice_ids": normalized.get("invoice_ids") or [],
-            "void_cheq": bool(normalized.get("void_cheq")),
+            "void_cheq": normalized.get("void_cheq") is True,
             "allocations": normalized.get("allocations") or [],
             "gate_mutation": False,
         },
@@ -275,7 +275,7 @@ def sync_one_receipt(
             "review_required": False,
             "receipt_no": normalized.get("receipt_no"),
             "invoice_ids": normalized.get("invoice_ids") or [],
-            "void_cheq": bool(normalized.get("void_cheq")),
+            "void_cheq": normalized.get("void_cheq") is True,
             "allocations": normalized.get("allocations") or [],
         },
     )
