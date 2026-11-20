@@ -28,7 +28,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p = argparse.ArgumentParser(description="One-shot Accurate auto-sync worker.")
     p.add_argument(
         "--job",
-        choices=("po", "receipt", "sj", "all"),
+        choices=("po", "invoice", "receipt", "sj", "all"),
         default="all",
         help="Job yang dijalankan sekali (default: all).",
     )

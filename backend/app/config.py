@@ -97,6 +97,12 @@ class Settings(BaseSettings):
             "V4_RECEIPT_AUTO_SYNC_ENABLED", "RECEIPT_AUTO_SYNC_ENABLED"
         ),
     )
+    invoice_auto_sync_enabled: bool = Field(
+        default=False,
+        validation_alias=AliasChoices(
+            "V4_INVOICE_AUTO_SYNC_ENABLED", "INVOICE_AUTO_SYNC_ENABLED"
+        ),
+    )
     # Interval target scheduler eksternal (detik). Bukan loop di dalam API process.
     accurate_auto_sync_interval_seconds: int = Field(
         default=60,
@@ -179,10 +185,12 @@ class Settings(BaseSettings):
             "sj_sync_enabled": bool(self.sj_sync_enabled),
             "po_auto_sync_enabled": bool(self.po_auto_sync_enabled),
             "receipt_auto_sync_enabled": bool(self.receipt_auto_sync_enabled),
+            "invoice_auto_sync_enabled": bool(self.invoice_auto_sync_enabled),
             "accurate_auto_sync_interval_seconds": int(
                 self.accurate_auto_sync_interval_seconds
             ),
-            "receipt_sync_contract": "unverified",
+            "invoice_sync_contract": "verified_live_read_only",
+            "receipt_sync_contract": "verified_live_read_only",
             "accurate_paths": {
                 "api_token": "/api/api-token.do",
                 "open_db": "/api/open-db.do",
@@ -190,7 +198,10 @@ class Settings(BaseSettings):
                 "so_detail": "/accurate/api/sales-order/detail.do",
                 "do_list": "/accurate/api/delivery-order/list.do",
                 "do_detail": "/accurate/api/delivery-order/detail.do",
-                # sales-receipt: belum terverifikasi — jangan di-hardcode sebagai ready
+                "si_list": "/accurate/api/sales-invoice/list.do",
+                "si_detail": "/accurate/api/sales-invoice/detail.do",
+                "sr_list": "/accurate/api/sales-receipt/list.do",
+                "sr_detail": "/accurate/api/sales-receipt/detail.do",
             },
         }
 

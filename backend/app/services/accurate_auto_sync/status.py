@@ -9,7 +9,7 @@ from pymongo import ASCENDING
 from pymongo.database import Database
 
 STATUS_COLLECTION = "accurate_auto_sync_status"
-JobName = Literal["po", "receipt", "sj"]
+JobName = Literal["po", "invoice", "receipt", "sj"]
 
 REQUIRED_AUTO_SYNC_STATUS_INDEX_SPECS: list[dict[str, Any]] = [
     {
@@ -199,7 +199,7 @@ def list_job_statuses(
     stale_after = stale_after_seconds or max(180, int(interval_seconds) * 3)
     now = _now()
     jobs: list[dict[str, Any]] = []
-    for job in ("po", "receipt", "sj"):
+    for job in ("po", "invoice", "receipt", "sj"):
         enabled = bool(enabled_flags.get(job, False))
         if not enabled:
             jobs.append(disabled_status_view(job))  # type: ignore[arg-type]

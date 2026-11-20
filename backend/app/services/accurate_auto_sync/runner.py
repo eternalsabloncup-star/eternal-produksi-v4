@@ -7,25 +7,29 @@ from typing import Any, Literal
 from pymongo.database import Database
 
 from app.config import get_settings
-from app.services.accurate_auto_sync import po_job, receipt_job, sj_job
+from app.services.accurate_auto_sync import invoice_job, po_job, receipt_job, sj_job
 from app.services.accurate_auto_sync.status import list_job_statuses
 
-JobName = Literal["po", "receipt", "sj"]
-JOB_NAMES: tuple[JobName, ...] = ("po", "receipt", "sj")
+JobName = Literal["po", "invoice", "receipt", "sj"]
+JOB_NAMES: tuple[JobName, ...] = ("po", "invoice", "receipt", "sj")
 
 
 def run_auto_sync_job(db: Database, job: str) -> dict[str, Any]:
     name = str(job or "").strip().lower()
     if name == "po":
         return po_job.run_po_auto_sync(db)
+    if name == "invoice":
+        return invoice_job.run_invoice_auto_sync(db)
     if name == "receipt":
         return receipt_job.run_receipt_auto_sync(db)
     if name == "sj":
         return sj_job.run_sj_auto_sync(db)
     if name == "all":
-        results = {j: run_auto_sync_job(db, j) for j in JOB_NAMES}
+        # Invoice sebelum receipt agar mapping invoice→PO tersedia.
+        order: tuple[JobName, ...] = ("po", "invoice", "receipt", "sj")
+        results = {j: run_auto_sync_job(db, j) for j in order}
         return {"ok": all(bool(r.get("ok")) for r in results.values()), "jobs": results}
-    raise ValueError(f"Job tidak dikenal: {job!r}. Gunakan po|receipt|sj|all.")
+    raise ValueError(f"Job tidak dikenal: {job!r}. Gunakan po|invoice|receipt|sj|all.")
 
 
 def monitoring_snapshot(db: Database) -> dict[str, Any]:
@@ -34,6 +38,7 @@ def monitoring_snapshot(db: Database) -> dict[str, Any]:
         db,
         enabled_flags={
             "po": bool(settings.po_auto_sync_enabled),
+            "invoice": bool(settings.invoice_auto_sync_enabled),
             "receipt": bool(settings.receipt_auto_sync_enabled),
             "sj": bool(settings.sj_sync_enabled),
         },

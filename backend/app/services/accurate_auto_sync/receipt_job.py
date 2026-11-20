@@ -1,9 +1,10 @@
-"""Auto-sync Penerimaan Penjualan — BLOCKED sampai kontrak Accurate terverifikasi.
+"""Auto-sync Penerimaan Penjualan Accurate (kill switch OFF default).
 
-Tidak ada PATH sales-receipt di AccurateReadClient. Job ini:
-- Menghormati kill switch (OFF = zero request/write/lock/status).
-- Saat ON tanpa kontrak: fail-closed, zero Accurate HTTP, status BLOCKED.
-- Tidak membuka payment gate dengan aturan baru.
+Kontrak diverifikasi live: /accurate/api/sales-receipt/list.do|detail.do
+dengan detailInvoice[].invoiceId + paymentAmount.
+
+Gate payment memakai evaluasi existing — tidak ada threshold baru.
+Receipt ambigu → REVIEW / tidak auto-open.
 """
 
 from __future__ import annotations
@@ -14,24 +15,41 @@ from typing import Any
 from pymongo.database import Database
 
 from app.config import get_settings
+from app.integrations.accurate.auth import AccurateAuthError
+from app.integrations.accurate.client import AccurateReadClient
+from app.integrations.accurate.fields import as_text
+from app.integrations.accurate.normalize_invoice_receipt import normalize_sales_receipt
+from app.repositories import invoice_repository as invoices
+from app.repositories import payment_repository as payments
+from app.repositories.po_repository import get_by_accurate_id
 from app.services.accurate_auto_sync.locks import (
     AutoSyncLockError,
     acquire_job_lock,
+    refresh_job_lock,
     release_job_lock,
+    require_owns_job_lock,
 )
 from app.services.accurate_auto_sync.status import (
+    INCOMPLETE_STOP_REASONS,
     disabled_status_view,
     mark_running,
     record_job_result,
 )
+from app.services import payment_service
 
-# Kontrak resmi belum ada di repo (tidak ada list/detail path tervalidasi).
-RECEIPT_CONTRACT_STATUS = "unverified"
-RECEIPT_CONTRACT_BLOCKER = (
-    "Endpoint Accurate Penerimaan Penjualan (sales-receipt) belum terverifikasi "
-    "di source V4. Jangan menebak path/field. Sediakan respons sanitasi Owner "
-    "atau dokumentasi path resmi sebelum mengaktifkan parser."
-)
+# Kontrak path + shape diverifikasi read-only pada Accurate production Owner.
+RECEIPT_CONTRACT_STATUS = "verified_live_read_only"
+RECEIPT_CONTRACT_BLOCKER = ""
+
+DEFAULT_PAGE_SIZE = 20
+DEFAULT_MAX_PAGES = 5
+DEFAULT_MAX_ROWS = 100
+DEFAULT_TIMEOUT_SECONDS = 50.0
+
+_SYSTEM_USER = {
+    "email_normalized": "system:accurate-auto-sync",
+    "role": "super_admin",
+}
 
 
 def is_receipt_auto_sync_enabled() -> bool:
@@ -39,76 +57,188 @@ def is_receipt_auto_sync_enabled() -> bool:
 
 
 def receipt_contract_ready() -> bool:
-    return RECEIPT_CONTRACT_STATUS == "verified"
+    return RECEIPT_CONTRACT_STATUS.startswith("verified")
 
 
-def run_receipt_auto_sync(db: Database) -> dict[str, Any]:
+def _list_page_params(page: int, page_size: int) -> dict[str, Any]:
+    return {"sp.page": page, "sp.pageSize": page_size}
+
+
+def _resolve_po_for_receipt(
+    db: Database, normalized: dict[str, Any]
+) -> dict[str, Any]:
+    """Petakan receipt → invoice store → SO id. Fail-closed bila ambigu."""
+    if normalized.get("review_required"):
+        return {
+            "ok": False,
+            "review": True,
+            "reason": normalized.get("review_reason"),
+            "accurate_po_id": "",
+            "invoice_no": "",
+            "amount": normalized.get("total_payment") or 0.0,
+        }
+
+    invoice_ids = list(normalized.get("invoice_ids") or [])
+    if len(invoice_ids) != 1:
+        return {
+            "ok": False,
+            "review": True,
+            "reason": "Receipt tidak punya tepat satu invoiceId.",
+            "accurate_po_id": "",
+            "invoice_no": "",
+            "amount": normalized.get("total_payment") or 0.0,
+        }
+
+    invoice_id = invoice_ids[0]
+    inv = invoices.get_invoice(db, invoice_id)
+    if inv is None:
+        return {
+            "ok": False,
+            "review": True,
+            "reason": (
+                f"Invoice {invoice_id} belum ada di V4 — jalankan invoice sync lebih dulu "
+                "atau tandai REVIEW."
+            ),
+            "accurate_po_id": "",
+            "invoice_no": "",
+            "amount": normalized.get("total_payment") or 0.0,
+        }
+
+    if inv.get("review_required") or not inv.get("primary_accurate_po_id"):
+        return {
+            "ok": False,
+            "review": True,
+            "reason": inv.get("review_reason")
+            or "Invoice terkait tidak punya primary PO yang sah.",
+            "accurate_po_id": "",
+            "invoice_no": inv.get("invoice_no") or "",
+            "amount": normalized.get("total_payment") or 0.0,
+        }
+
+    po_id = str(inv["primary_accurate_po_id"])
+    if get_by_accurate_id(db, po_id) is None:
+        return {
+            "ok": False,
+            "review": True,
+            "reason": f"PO {po_id} belum terdaftar di Inbox V4.",
+            "accurate_po_id": po_id,
+            "invoice_no": inv.get("invoice_no") or "",
+            "amount": normalized.get("total_payment") or 0.0,
+        }
+
+    alloc = (normalized.get("allocations") or [None])[0] or {}
+    amount = float(alloc.get("payment_amount") or normalized.get("total_payment") or 0.0)
+    return {
+        "ok": True,
+        "review": False,
+        "accurate_po_id": po_id,
+        "invoice_no": inv.get("invoice_no") or alloc.get("invoice_no") or "",
+        "amount": amount,
+        "po_no": str((get_by_accurate_id(db, po_id) or {}).get("po_no") or ""),
+    }
+
+
+def sync_one_receipt(
+    db: Database,
+    accurate_id: str,
+    *,
+    client: AccurateReadClient,
+    owner_token: str,
+) -> dict[str, Any]:
+    require_owns_job_lock(db, job="receipt", owner_token=owner_token)
+    payload = client.fetch_sales_receipt_detail(accurate_id)
+    require_owns_job_lock(db, job="receipt", owner_token=owner_token)
+    normalized = normalize_sales_receipt(payload)
+    mapping = _resolve_po_for_receipt(db, normalized)
+
+    if not mapping["ok"]:
+        # Simpan jejak review tanpa membuka gate spekulatif.
+        payments.upsert_receipt(
+            db,
+            accurate_receipt_id=normalized["accurate_receipt_id"],
+            accurate_po_id=str(mapping.get("accurate_po_id") or "UNMAPPED"),
+            po_no="",
+            invoice_no=mapping.get("invoice_no") or None,
+            amount=mapping.get("amount") or 0.0,
+            receipt_date=normalized.get("trans_date"),
+            raw_ref={
+                "source": "accurate_auto_sync",
+                "review_required": True,
+                "review_reason": mapping.get("reason"),
+                "receipt_no": normalized.get("receipt_no"),
+                "invoice_ids": normalized.get("invoice_ids") or [],
+                "gate_mutation": False,
+            },
+        )
+        return {
+            "outcome": "review_required",
+            "accurate_receipt_id": normalized["accurate_receipt_id"],
+            "gate_mutations": 0,
+        }
+
+    before = payments.receipts_collection(db).find_one(
+        {"accurate_receipt_id": normalized["accurate_receipt_id"]}
+    )
+    payment_service.ingest_receipts(
+        db,
+        _SYSTEM_USER,
+        accurate_po_id=mapping["accurate_po_id"],
+        po_no=mapping.get("po_no") or "",
+        receipts=[
+            {
+                "id": normalized["accurate_receipt_id"],
+                "invoiceNo": mapping.get("invoice_no"),
+                "amount": mapping.get("amount"),
+                "transDate": normalized.get("trans_date"),
+            }
+        ],
+    )
+    outcome = "created" if before is None else "updated"
+    return {
+        "outcome": outcome,
+        "accurate_receipt_id": normalized["accurate_receipt_id"],
+        "accurate_po_id": mapping["accurate_po_id"],
+        "gate_mutations": 1,
+    }
+
+
+def run_receipt_auto_sync(
+    db: Database,
+    *,
+    client: AccurateReadClient | None = None,
+    page_size: int = DEFAULT_PAGE_SIZE,
+    max_pages: int = DEFAULT_MAX_PAGES,
+    max_rows: int = DEFAULT_MAX_ROWS,
+    timeout_seconds: float = DEFAULT_TIMEOUT_SECONDS,
+) -> dict[str, Any]:
     if not is_receipt_auto_sync_enabled():
-        # ZERO WRITE: tanpa lock, status mutation, Accurate HTTP.
         return {
             "ok": True,
             "job": "receipt",
             "enabled": False,
-            "blocked": True,
+            "blocked": False,
             "accurate_requests": 0,
             "writes": 0,
             "gate_mutations": 0,
             "status": disabled_status_view(
                 "receipt",
-                blocked=True,
                 detail={
                     "contract": RECEIPT_CONTRACT_STATUS,
                     "message": "Kill switch OFF — zero Accurate / zero write.",
-                    "blocker": RECEIPT_CONTRACT_BLOCKER,
                 },
             ),
         }
 
-    mark_running(db, "receipt")
-    started = time.monotonic()
-    token: str | None = None
-    try:
-        token = acquire_job_lock(db, job="receipt")
-        # Tetap fail-closed: tidak memanggil Accurate tanpa kontrak.
-        if not receipt_contract_ready():
-            status = record_job_result(
-                db,
-                "receipt",
-                enabled=True,
-                ok=False,
-                blocked=True,
-                error=RECEIPT_CONTRACT_BLOCKER,
-                error_code="receipt_contract_unverified",
-                duration_seconds=time.monotonic() - started,
-                complete=False,
-                detail={
-                    "contract": RECEIPT_CONTRACT_STATUS,
-                    "accurate_requests": 0,
-                    "parser": None,
-                    "payment_gate_auto_open": False,
-                },
-            )
-            return {
-                "ok": False,
-                "job": "receipt",
-                "enabled": True,
-                "blocked": True,
-                "accurate_requests": 0,
-                "writes": 0,
-                "gate_mutations": 0,
-                "error": "receipt_contract_unverified",
-                "status": status,
-            }
-
+    if not receipt_contract_ready():
+        mark_running(db, "receipt")
         status = record_job_result(
             db,
             "receipt",
             enabled=True,
             ok=False,
             blocked=True,
-            error="receipt_parser_not_implemented",
-            error_code="receipt_parser_not_implemented",
-            duration_seconds=time.monotonic() - started,
+            error="receipt_contract_unverified",
+            error_code="receipt_contract_unverified",
             complete=False,
         )
         return {
@@ -121,13 +251,159 @@ def run_receipt_auto_sync(db: Database) -> dict[str, Any]:
             "gate_mutations": 0,
             "status": status,
         }
+
+    mark_running(db, "receipt")
+    started = time.monotonic()
+    token: str | None = None
+    counters = {
+        "listed": 0,
+        "fetched": 0,
+        "created": 0,
+        "updated": 0,
+        "unchanged": 0,
+        "skipped": 0,
+        "review_required": 0,
+        "failed": 0,
+    }
+    failures: list[dict[str, Any]] = []
+    stopped_reason: str | None = None
+    gate_mutations = 0
+    reader = client or AccurateReadClient.from_settings()
+    accurate_requests = 0
+
+    try:
+        token = acquire_job_lock(db, job="receipt")
+        page_size = max(1, min(int(page_size), 100))
+        max_pages = max(1, min(int(max_pages), 50))
+        max_rows = max(1, min(int(max_rows), 500))
+        timeout_seconds = max(0.001, float(timeout_seconds))
+
+        for page in range(1, max_pages + 1):
+            if time.monotonic() - started > timeout_seconds:
+                stopped_reason = "timeout"
+                break
+            if counters["listed"] >= max_rows:
+                stopped_reason = "max_rows"
+                break
+            if not refresh_job_lock(db, job="receipt", owner_token=token):
+                raise AutoSyncLockError("Lease receipt hilang.")
+
+            try:
+                rows = reader.fetch_sales_receipt_list(
+                    params=_list_page_params(page, page_size)
+                )
+                accurate_requests += 1
+            except (AccurateAuthError, TimeoutError, ConnectionError, RuntimeError) as exc:
+                stopped_reason = "list_failed"
+                counters["failed"] += 1
+                failures.append(
+                    {
+                        "stage": "list",
+                        "page": page,
+                        "error": type(exc).__name__,
+                        "code": getattr(exc, "code", "list_failed"),
+                    }
+                )
+                break
+
+            if not rows:
+                break
+
+            for row in rows:
+                if time.monotonic() - started > timeout_seconds:
+                    stopped_reason = "timeout"
+                    break
+                if counters["listed"] >= max_rows:
+                    stopped_reason = "max_rows"
+                    break
+                counters["listed"] += 1
+                rid = as_text(row.get("id"))
+                if not rid:
+                    counters["failed"] += 1
+                    failures.append({"stage": "list_row", "code": "missing_receipt_id"})
+                    continue
+                try:
+                    if not refresh_job_lock(db, job="receipt", owner_token=token):
+                        raise AutoSyncLockError("Lease hilang mid-run.")
+                    result = sync_one_receipt(
+                        db, rid, client=reader, owner_token=token
+                    )
+                    accurate_requests += 1
+                    counters["fetched"] += 1
+                    gate_mutations += int(result.get("gate_mutations") or 0)
+                    key = str(result.get("outcome") or "failed")
+                    if key in counters:
+                        counters[key] += 1
+                    else:
+                        counters["failed"] += 1
+                except AutoSyncLockError:
+                    raise
+                except Exception as exc:  # noqa: BLE001
+                    counters["failed"] += 1
+                    failures.append(
+                        {
+                            "stage": "detail_or_upsert",
+                            "accurate_id": rid,
+                            "error": type(exc).__name__,
+                        }
+                    )
+
+            if stopped_reason:
+                break
+            if len(rows) < page_size:
+                break
+        else:
+            stopped_reason = "max_pages"
+
+        incomplete = stopped_reason in INCOMPLETE_STOP_REASONS
+        has_failures = counters["failed"] > 0 or bool(failures)
+        list_failed = stopped_reason == "list_failed"
+        complete = stopped_reason is None and not incomplete
+        ok = not list_failed and not has_failures
+
+        status = record_job_result(
+            db,
+            "receipt",
+            enabled=True,
+            ok=ok,
+            counters=counters,
+            error=None if ok and complete else (stopped_reason or "incomplete"),
+            error_code=stopped_reason,
+            duration_seconds=time.monotonic() - started,
+            partial=incomplete and not list_failed,
+            complete=complete and not has_failures,
+            blocked=False,
+            detail={
+                "contract": RECEIPT_CONTRACT_STATUS,
+                "stopped_reason": stopped_reason,
+                "failures": failures[:30],
+                "accurate_requests": accurate_requests,
+                "gate_mutations": gate_mutations,
+                "discovery_complete": complete,
+                "payment_threshold_changed": False,
+            },
+        )
+        return {
+            "ok": ok,
+            "job": "receipt",
+            "enabled": True,
+            "blocked": False,
+            "partial": incomplete and not list_failed,
+            "complete": complete and not has_failures,
+            "accurate_requests": accurate_requests,
+            "writes": counters["created"] + counters["updated"] + counters["review_required"],
+            "gate_mutations": gate_mutations,
+            "counters": counters,
+            "stopped_reason": stopped_reason,
+            "failures": failures[:30],
+            "status": status,
+        }
     except AutoSyncLockError as exc:
         status = record_job_result(
             db,
             "receipt",
             enabled=True,
             ok=False,
-            blocked=True,
             error=str(exc),
             error_code=exc.code,
             duration_seconds=time.monotonic() - started,
@@ -137,9 +413,10 @@ def run_receipt_auto_sync(db: Database) -> dict[str, Any]:
             "ok": False,
             "job": "receipt",
             "enabled": True,
-            "blocked": True,
-            "accurate_requests": 0,
+            "blocked": False,
+            "accurate_requests": accurate_requests,
             "writes": 0,
+            "gate_mutations": 0,
             "error": exc.code,
             "status": status,
         }

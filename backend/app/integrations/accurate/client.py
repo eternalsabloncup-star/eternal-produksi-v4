@@ -39,6 +39,11 @@ PATH_SO_DETAIL = "/accurate/api/sales-order/detail.do"
 # Delivery Order (Surat Jalan) — GET only; terbukti live di VPS Owner.
 PATH_DO_LIST = "/accurate/api/delivery-order/list.do"
 PATH_DO_DETAIL = "/accurate/api/delivery-order/detail.do"
+# Sales Invoice / Sales Receipt — GET only; path + shape diverifikasi live (read-only).
+PATH_SI_LIST = "/accurate/api/sales-invoice/list.do"
+PATH_SI_DETAIL = "/accurate/api/sales-invoice/detail.do"
+PATH_SR_LIST = "/accurate/api/sales-receipt/list.do"
+PATH_SR_DETAIL = "/accurate/api/sales-receipt/detail.do"
 
 _MAX_ATTEMPTS = 3
 _RETRYABLE = {408, 425, 429, 500, 502, 503, 504}
@@ -301,10 +306,18 @@ class AccurateReadClient:
             ):
                 return current
             next_inner: dict[str, Any] | None = None
-            for key in ("d", "data", "deliveryOrder", "salesOrder"):
+            for key in (
+                "d",
+                "data",
+                "deliveryOrder",
+                "salesOrder",
+                "salesInvoice",
+                "salesReceipt",
+            ):
                 inner = current.get(key)
                 if isinstance(inner, dict) and (
                     "detailItem" in inner
+                    or "detailInvoice" in inner
                     or "id" in inner
                     or "number" in inner
                     or "deliveryOrder" in inner
@@ -461,6 +474,42 @@ class AccurateReadClient:
         data = self._request_on_db_host(
             "GET",
             PATH_DO_DETAIL,
+            params={"id": str(accurate_id)},
+        )
+        return self._unwrap_detail(data)
+
+    def fetch_sales_invoice_list(
+        self,
+        *,
+        params: dict[str, Any] | None = None,
+    ) -> list[dict[str, Any]]:
+        """GET sales-invoice/list.do — read-only Faktur Penjualan."""
+        data = self._request_on_db_host("GET", PATH_SI_LIST, params=params or {})
+        return self._unwrap_list_rows(data)
+
+    def fetch_sales_invoice_detail(self, accurate_id: str | int) -> dict[str, Any]:
+        """GET sales-invoice/detail.do?id= — read-only Faktur Penjualan."""
+        data = self._request_on_db_host(
+            "GET",
+            PATH_SI_DETAIL,
+            params={"id": str(accurate_id)},
+        )
+        return self._unwrap_detail(data)
+
+    def fetch_sales_receipt_list(
+        self,
+        *,
+        params: dict[str, Any] | None = None,
+    ) -> list[dict[str, Any]]:
+        """GET sales-receipt/list.do — read-only Penerimaan Penjualan."""
+        data = self._request_on_db_host("GET", PATH_SR_LIST, params=params or {})
+        return self._unwrap_list_rows(data)
+
+    def fetch_sales_receipt_detail(self, accurate_id: str | int) -> dict[str, Any]:
+        """GET sales-receipt/detail.do?id= — read-only Penerimaan Penjualan."""
+        data = self._request_on_db_host(
+            "GET",
+            PATH_SR_DETAIL,
             params={"id": str(accurate_id)},
         )
         return self._unwrap_detail(data)
