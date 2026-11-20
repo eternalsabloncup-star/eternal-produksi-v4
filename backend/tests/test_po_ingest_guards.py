@@ -360,9 +360,10 @@ def test_existing_empty_branch_unchanged_header_fills_cas(
     assert result["counters"].get("unchanged", 0) == 0
 
 
-def test_accepted_empty_branch_fills_without_scope_steal(
+def test_accepted_empty_branch_cas_blocked(
     ingest_db: Database, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    """Accepted + branch kosong → fail-closed, tidak CAS otomatis."""
     monkeypatch.setenv("V4_PO_AUTO_SYNC_ENABLED", "1")
     from app.config import clear_settings_cache
 
@@ -410,15 +411,18 @@ def test_accepted_empty_branch_fills_without_scope_steal(
         ingest_db, client=client, page_size=20, max_pages=1, max_rows=5
     )
     doc = get_by_accurate_id(ingest_db, "88110")
-    assert doc["branch_id"] == "150"
+    assert doc.get("branch_id") in (None, "")
     assert doc["operational"]["custom_marker"] == "accepted-keep"
     assert doc["operational"]["acceptance"]["status"] == ACCEPTANCE_ACCEPTED
+    review = (doc.get("operational") or {}).get("branch_review") or {}
+    assert review.get("status") == "blocked"
+    assert review.get("reason") == "po_accepted"
 
 
-def test_dependency_present_empty_branch_cas_only(
+def test_dependency_empty_branch_cas_blocked(
     ingest_db: Database, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Dependency ada: boleh CAS kosong, tidak menimpa cabang manual."""
+    """Task/SJ/alokasi ada + branch kosong → CAS ditolak; cabang turunan tidak diubah."""
     monkeypatch.setenv("V4_PO_AUTO_SYNC_ENABLED", "1")
     from app.config import clear_settings_cache
 
@@ -437,21 +441,87 @@ def test_dependency_present_empty_branch_cas_only(
             "current_line_count": 2,
         },
         owner_token=token,
-        branch_id="150",
-        set_branch_on_insert=True,
+        branch_id=None,
+        set_branch_on_insert=False,
+    )
+    ingest_db["accurate_sales_orders"].update_one(
+        {"accurate_id": "88120"}, {"$unset": {"branch_id": ""}}
     )
     locks.release_job_lock(ingest_db, job="po", owner_token=token)
     ingest_db["operational_tasks"].insert_one(
-        {"accurate_po_id": "88120", "task_type": "print", "status": "open"}
+        {
+            "accurate_po_id": "88120",
+            "task_type": "print",
+            "status": "open",
+            "branch_id": "150",
+        }
+    )
+    ingest_db["production_allocations"].insert_one(
+        {"accurate_po_id": "88120", "allocation_id": "A-88120", "branch_id": "150"}
+    )
+    ingest_db["accurate_delivery_notes"].insert_one(
+        {"accurate_po_id": "88120", "accurate_sj_id": "SJ-88120", "branch_id": "150"}
     )
     client = FakeAccurateClient(
         list_rows=[{"id": 88120}],
-        details={"88120": _detail("88120", trans_date="05/11/2026", branch_id="50")},
+        details={"88120": payload},
     )
     po_job.run_po_auto_sync(
         ingest_db, client=client, page_size=20, max_pages=1, max_rows=5
     )
     doc = get_by_accurate_id(ingest_db, "88120")
+    assert doc.get("branch_id") in (None, "")
+    review = (doc.get("operational") or {}).get("branch_review") or {}
+    assert review.get("status") == "blocked"
+    assert review.get("reason") == "operational_dependency_present"
+    assert ingest_db["operational_tasks"].find_one({"accurate_po_id": "88120"})[
+        "branch_id"
+    ] == "150"
+    assert ingest_db["production_allocations"].find_one({"accurate_po_id": "88120"})[
+        "branch_id"
+    ] == "150"
+    assert ingest_db["accurate_delivery_notes"].find_one({"accurate_po_id": "88120"})[
+        "branch_id"
+    ] == "150"
+
+
+def test_manual_override_with_deps_not_overwritten(
+    ingest_db: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Cabang manual + dependency: konflik source tidak menimpa."""
+    monkeypatch.setenv("V4_PO_AUTO_SYNC_ENABLED", "1")
+    from app.config import clear_settings_cache
+
+    clear_settings_cache()
+    token = locks.acquire_job_lock(ingest_db, job="po")
+    payload = _detail("88121", trans_date="05/11/2026", branch_id="50")
+    po = normalize_sales_order(payload)
+    po_job._upsert_unaccepted(
+        ingest_db,
+        po,
+        line_diff={
+            "added_line_ids": [],
+            "removed_line_ids": [],
+            "changed_line_ids": [],
+            "previous_line_count": 0,
+            "current_line_count": 2,
+        },
+        owner_token=token,
+        branch_id="150",
+        set_branch_on_insert=True,
+    )
+    locks.release_job_lock(ingest_db, job="po", owner_token=token)
+    ingest_db["operational_tasks"].insert_one(
+        {"accurate_po_id": "88121", "task_type": "print", "status": "open", "branch_id": "150"}
+    )
+    client = FakeAccurateClient(
+        list_rows=[{"id": 88121}],
+        details={"88121": _detail("88121", trans_date="05/11/2026", branch_id="50")},
+    )
+    po_job.run_po_auto_sync(
+        ingest_db, client=client, page_size=20, max_pages=1, max_rows=5
+    )
+    doc = get_by_accurate_id(ingest_db, "88121")
     assert doc["branch_id"] == "150"
     assert (doc.get("operational") or {}).get("branch_review", {}).get("status") == "conflict"
 
@@ -524,7 +594,7 @@ def test_cas_branch_fill_concurrent_no_overwrite(ingest_db: Database) -> None:
     """P1: race CAS — cabang manual tidak tertimpa; kosong hanya terisi sekali."""
     from concurrent.futures import ThreadPoolExecutor, as_completed
 
-    from app.repositories.po_repository import set_branch_id_if_empty
+    from app.services.po_ingest_guards import fill_empty_branch_id_cas
 
     ingest_db["accurate_sales_orders"].insert_one(
         {
@@ -537,7 +607,9 @@ def test_cas_branch_fill_concurrent_no_overwrite(ingest_db: Database) -> None:
     )
 
     def _fill(code: str) -> str | None:
-        doc = set_branch_id_if_empty(ingest_db, "88300", code)
+        doc = fill_empty_branch_id_cas(
+            ingest_db, accurate_id="88300", branch_id=code
+        )
         return None if doc is None else doc.get("branch_id")
 
     with ThreadPoolExecutor(max_workers=8) as pool:
@@ -549,9 +621,79 @@ def test_cas_branch_fill_concurrent_no_overwrite(ingest_db: Database) -> None:
     final = get_by_accurate_id(ingest_db, "88300")["branch_id"]
     assert final in {"50", "150"}
     assert winners[0] == final
-    # Re-CAS tidak menimpa.
-    assert set_branch_id_if_empty(ingest_db, "88300", "999") is None
+    assert fill_empty_branch_id_cas(
+        ingest_db, accurate_id="88300", branch_id="999"
+    ) is None
     assert get_by_accurate_id(ingest_db, "88300")["branch_id"] == final
+
+
+def test_accept_race_blocks_cas_empty_branch(ingest_db: Database) -> None:
+    """Race accept vs CAS: setelah accepted, gate menolak fill otomatis."""
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+
+    from app.services.po_ingest_guards import fill_empty_branch_id_cas
+
+    ingest_db["accurate_sales_orders"].insert_one(
+        {
+            "accurate_id": "88310",
+            "po_no": "PO/CAS/RACE",
+            "header": {"items": []},
+            "operational": {},
+            "created_at": datetime.now(timezone.utc),
+        }
+    )
+
+    def _accept() -> None:
+        ingest_db["accurate_sales_orders"].update_one(
+            {"accurate_id": "88310"},
+            {
+                "$set": {
+                    "operational.acceptance": {
+                        "status": ACCEPTANCE_ACCEPTED,
+                        "accepted_by": "race@example.com",
+                    }
+                }
+            },
+        )
+
+    def _cas() -> dict[str, Any] | None:
+        return fill_empty_branch_id_cas(
+            ingest_db, accurate_id="88310", branch_id="50"
+        )
+
+    with ThreadPoolExecutor(max_workers=4) as pool:
+        futs = []
+        for i in range(8):
+            futs.append(pool.submit(_accept if i % 2 == 0 else _cas))
+        for f in as_completed(futs):
+            f.result()
+
+    # Pastikan accepted, lalu CAS ulang tidak boleh melewati gate.
+    ingest_db["accurate_sales_orders"].update_one(
+        {"accurate_id": "88310"},
+        {
+            "$set": {
+                "operational.acceptance": {
+                    "status": ACCEPTANCE_ACCEPTED,
+                    "accepted_by": "race@example.com",
+                }
+            }
+        },
+    )
+    before_branch = get_by_accurate_id(ingest_db, "88310").get("branch_id")
+    assert (
+        fill_empty_branch_id_cas(ingest_db, accurate_id="88310", branch_id="150")
+        is None
+    )
+    doc = get_by_accurate_id(ingest_db, "88310")
+    assert doc.get("branch_id") == before_branch
+    assert (doc.get("operational") or {}).get("acceptance", {}).get(
+        "status"
+    ) == ACCEPTANCE_ACCEPTED
+    if not before_branch:
+        review = (doc.get("operational") or {}).get("branch_review") or {}
+        assert review.get("status") == "blocked"
+        assert review.get("reason") == "po_accepted"
 
 
 def test_dry_run_verification_levels_no_false_ready() -> None:

@@ -213,11 +213,17 @@ def _upsert_unaccepted(
     if result is None:
         return {"outcome": "skipped", "reason": "acceptance_race", "accurate_id": accurate_id}
 
-    # Dokumen lama tanpa branch_id: isi sekali secara CAS (tidak menimpa).
+    # Dokumen lama tanpa branch_id: CAS ber-gate (tolak accepted/dependensi).
     if branch_id and not result.get("branch_id"):
-        from app.repositories.po_repository import set_branch_id_if_empty
+        from app.services.po_ingest_guards import fill_empty_branch_id_cas
 
-        filled = set_branch_id_if_empty(db, accurate_id, branch_id)
+        filled = fill_empty_branch_id_cas(
+            db,
+            accurate_id=accurate_id,
+            branch_id=branch_id,
+            owner_token=owner_token,
+            existing=result,
+        )
         if filled is not None:
             result = filled
 
@@ -269,7 +275,6 @@ def sync_one_listed_sales_order(
     from app.services.po_ingest_guards import (
         fill_empty_branch_id_cas,
         mark_branch_conflict_review,
-        po_has_operational_dependencies,
         resolve_branch_for_ingest,
     )
 
@@ -311,17 +316,20 @@ def sync_one_listed_sales_order(
             source_branch_id=str(branch_res.get("source_branch_id")),
         )
 
-    def _try_fill_empty_branch() -> dict[str, Any] | None:
-        """CAS cabang kosong — termasuk sebelum early-return unchanged / accepted."""
+    def _try_fill_empty_branch(
+        existing_doc: dict[str, Any] | None = None,
+    ) -> dict[str, Any] | None:
+        """CAS cabang kosong ber-gate — sebelum early-return unchanged / accepted."""
         if branch_action != "set" or not branch_id:
             return None
         aid = str(po.accurate_id or accurate_id)
-        # Gate aman: dependency ada tetap boleh CAS kosong (bukan overwrite),
-        # tetapi catat review bila race mengisi gagal setelah accept.
-        filled = fill_empty_branch_id_cas(
-            db, accurate_id=aid, branch_id=str(branch_id), owner_token=owner_token
+        return fill_empty_branch_id_cas(
+            db,
+            accurate_id=aid,
+            branch_id=str(branch_id),
+            owner_token=owner_token,
+            existing=existing_doc if existing_doc is not None else before,
         )
-        return filled
 
     if before is None:
         if branch_action != "set" or not branch_id:
@@ -352,8 +360,8 @@ def sync_one_listed_sales_order(
                         po=po,
                         owner_token=owner_token,
                     )
-                # Accepted menang race: isi cabang kosong bila masih kosong.
-                _try_fill_empty_branch()
+                # Accepted menang race: jangan CAS otomatis tanpa gate integritas.
+                _try_fill_empty_branch(before2)
                 return _apply_safe_accepted_metadata(
                     db,
                     accurate_id=str(po.accurate_id),
@@ -374,7 +382,7 @@ def sync_one_listed_sales_order(
         }
 
     if is_po_accepted(before):
-        filled = _try_fill_empty_branch()
+        filled = _try_fill_empty_branch(before)
         if _material_line_change(line_diff):
             return _mark_material_review(
                 db,
@@ -399,12 +407,9 @@ def sync_one_listed_sales_order(
                 "branch_filled": True,
             }
             if meta_out.get("outcome") == "updated" and not _material_line_change(line_diff):
-                # Hanya cabang yang diisi; header aman.
                 meta_out["outcome"] = "updated"
-        elif branch_action == "set" and branch_id and po_has_operational_dependencies(
-            db, str(po.accurate_id or accurate_id)
-        ):
-            # CAS gagal (race mengisi) — jangan geser scope; catat saja.
+        elif branch_action == "set" and branch_id:
+            # Accepted/dependensi: CAS ditolak fail-closed — jangan geser scope.
             meta_out = {**meta_out, "branch_fill_skipped": True}
         return meta_out
 
@@ -461,7 +466,7 @@ def sync_one_listed_sales_order(
                     po=po,
                     owner_token=owner_token,
                 )
-            _try_fill_empty_branch()
+            _try_fill_empty_branch(before2)
             return _apply_safe_accepted_metadata(
                 db,
                 accurate_id=str(po.accurate_id),

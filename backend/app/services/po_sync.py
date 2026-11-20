@@ -109,9 +109,9 @@ def sync_sales_order_payload(
     Guard sama dengan auto-sync: date floor transDate + cabang kanonis Master.
     Cabang existing/manual tidak ditimpa; konflik ditandai review.
     """
-    from app.repositories.po_repository import set_branch_id_if_empty
     from app.services.po_ingest_guards import (
         date_floor_reject_or_none,
+        fill_empty_branch_id_cas,
         mark_branch_conflict_review,
         resolve_branch_for_ingest,
     )
@@ -178,12 +178,17 @@ def sync_sales_order_payload(
             ),
         )
         if branch_action == "set" and branch_id and not stored.get("branch_id"):
-            filled = set_branch_id_if_empty(db, po.accurate_id or "", str(branch_id))
+            filled = fill_empty_branch_id_cas(
+                db,
+                accurate_id=po.accurate_id or "",
+                branch_id=str(branch_id),
+                existing=stored,
+            )
             if filled is not None:
                 stored = filled
                 branch_apply = "set_from_accurate"
             else:
-                branch_apply = "preserve_existing"
+                branch_apply = "blocked_or_preserve"
         elif branch_action == "set" and branch_id:
             branch_apply = "set_from_accurate"
         elif branch_action == "conflict":

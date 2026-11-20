@@ -48,10 +48,17 @@ def canonical_branch_id_field(doc: dict[str, Any] | None) -> str | None:
 
 
 def po_has_operational_dependencies(db: Database, accurate_id: str) -> bool:
-    """Task / alokasi / SJ terkait — gate aman sebelum mengisi cabang kosong."""
+    """Task / alokasi / jadwal / SJ terkait — gate aman sebelum mengisi cabang kosong."""
     aid = str(accurate_id)
     if db["operational_tasks"].find_one(
-        {"$or": [{"accurate_po_id": aid}, {"accurate_id": aid}]}, {"_id": 1}
+        {
+            "$or": [
+                {"accurate_po_id": aid},
+                {"accurate_id": aid},
+                {"ref.accurate_po_id": aid},
+            ]
+        },
+        {"_id": 1},
     ):
         return True
     if db["production_allocations"].find_one(
@@ -62,7 +69,56 @@ def po_has_operational_dependencies(db: Database, accurate_id: str) -> bool:
         {"$or": [{"accurate_po_id": aid}, {"accurate_po_ids": aid}]}, {"_id": 1}
     ):
         return True
+    if db["schedule_commands"].find_one({"accurate_po_id": aid}, {"_id": 1}):
+        return True
     return False
+
+
+def cas_empty_branch_blocked_reason(
+    db: Database,
+    *,
+    accurate_id: str,
+    existing: dict[str, Any] | None = None,
+) -> str | None:
+    """None = CAS kosong diizinkan; string = fail-closed (jangan isi otomatis)."""
+    from app.repositories.po_repository import get_by_accurate_id
+    from app.services.po_acceptance import is_po_accepted
+
+    doc = existing if isinstance(existing, dict) else get_by_accurate_id(db, accurate_id)
+    if doc is None:
+        # Insert baru ditangani $setOnInsert — bukan jalur CAS existing.
+        return None
+    if is_po_accepted(doc):
+        return "po_accepted"
+    if po_has_operational_dependencies(db, str(accurate_id)):
+        return "operational_dependency_present"
+    return None
+
+
+def mark_branch_fill_blocked_review(
+    db: Database,
+    *,
+    accurate_id: str,
+    source_branch_id: str,
+    reason: str,
+) -> None:
+    """Catat blokir CAS tanpa mengubah ``branch_id`` / field workflow lain."""
+    from app.repositories.po_repository import po_collection, require_po_indexes
+
+    require_po_indexes(db)
+    po_collection(db).update_one(
+        {"accurate_id": str(accurate_id)},
+        {
+            "$set": {
+                "operational.branch_review": {
+                    "status": "blocked",
+                    "reason": reason,
+                    "source_branch_id": source_branch_id,
+                    "detail": "auto_fill_empty_branch_denied",
+                }
+            }
+        },
+    )
 
 
 def fill_empty_branch_id_cas(
@@ -71,13 +127,30 @@ def fill_empty_branch_id_cas(
     accurate_id: str,
     branch_id: str,
     owner_token: str | None = None,
+    existing: dict[str, Any] | None = None,
 ) -> dict[str, Any] | None:
-    """CAS isi ``branch_id`` hanya jika kosong. Memerlukan lease bila ``owner_token`` diberikan."""
+    """CAS isi ``branch_id`` hanya jika kosong dan tanpa accepted/dependensi.
+
+    Accepted atau transaksi turunan → fail-closed + review; tidak CAS.
+    Memerlukan lease bila ``owner_token`` diberikan.
+    """
     from app.repositories.po_repository import set_branch_id_if_empty
     from app.services.accurate_auto_sync.locks import require_owns_job_lock
 
     if owner_token is not None:
         require_owns_job_lock(db, job="po", owner_token=owner_token)
+
+    blocked = cas_empty_branch_blocked_reason(
+        db, accurate_id=str(accurate_id), existing=existing
+    )
+    if blocked:
+        mark_branch_fill_blocked_review(
+            db,
+            accurate_id=str(accurate_id),
+            source_branch_id=str(branch_id),
+            reason=blocked,
+        )
+        return None
     return set_branch_id_if_empty(db, accurate_id, branch_id)
 
 
