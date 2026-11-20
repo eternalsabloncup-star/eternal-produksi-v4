@@ -4,6 +4,7 @@ import {
   TERIMA_PO_SUCCESS_FEEDBACK,
   TERIMA_PO_UNCERTAIN_FEEDBACK,
   isTerimaPoAcceptDisabled,
+  shouldResetTerimaPoOverlay,
   terimaPoErrorFeedback,
   terimaPoFeedbackMessage,
   terimaPoOverlayAutoCloseMs,
@@ -169,6 +170,51 @@ describe("network uncertain / timeout reconcile contract", () => {
     expect(fetchStatus).toHaveBeenCalledTimes(1);
     expect(feedback).toEqual(TERIMA_PO_SUCCESS_FEEDBACK);
     expect(onAccepted).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("overlay reset key (production animation parity)", () => {
+  it("does not change when only acceptanceStatus would change", () => {
+    const before = shouldResetTerimaPoOverlay({
+      open: true,
+      rowId: "SO/1",
+      accurateId: "95106",
+    });
+    const afterAccept = shouldResetTerimaPoOverlay({
+      open: true,
+      rowId: "SO/1",
+      accurateId: "95106",
+    });
+    expect(afterAccept).toBe(before);
+  });
+
+  it("changes when open/id/accurateId changes", () => {
+    const base = shouldResetTerimaPoOverlay({
+      open: true,
+      rowId: "SO/1",
+      accurateId: "95106",
+    });
+    expect(
+      shouldResetTerimaPoOverlay({
+        open: false,
+        rowId: "SO/1",
+        accurateId: "95106",
+      }),
+    ).not.toBe(base);
+    expect(
+      shouldResetTerimaPoOverlay({
+        open: true,
+        rowId: "SO/2",
+        accurateId: "95106",
+      }),
+    ).not.toBe(base);
+    expect(
+      shouldResetTerimaPoOverlay({
+        open: true,
+        rowId: "SO/1",
+        accurateId: "99999",
+      }),
+    ).not.toBe(base);
   });
 });
 

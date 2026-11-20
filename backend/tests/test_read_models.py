@@ -149,6 +149,30 @@ def test_buffer_stock_excludes_non_buffer_po(db: Database) -> None:
     assert read_models.buffer_stock_rows(db)["items"] == []
 
 
+def test_buffer_stock_branch_scope_isolates_rows(db: Database) -> None:
+    """Monitoring Buffer wajib terisolasi cabang — tanpa ubah stok fisik."""
+    from app.repositories.po_repository import set_po_branch_id
+
+    po_doc = _seed(db, "Buffer")
+    set_po_branch_id(db, PO_ID, branch_id="50", expected_previous=None)
+    # Cabang lain: tidak melihat baris.
+    foreign = read_models.buffer_stock_rows(
+        db, branch_ids=["150"], branch_scope=True
+    )
+    assert foreign["items"] == []
+    # Cabang pemilik: melihat baris Buffer.
+    own = read_models.buffer_stock_rows(db, branch_ids=["50"], branch_scope=True)
+    assert len(own["items"]) == 2
+    assert all(r["accurate_po_id"] == PO_ID for r in own["items"])
+    # Fail-closed daftar cabang kosong.
+    empty = read_models.buffer_stock_rows(db, branch_ids=[], branch_scope=True)
+    assert empty["items"] == []
+    # Elevated (tanpa branch_scope) tetap melihat semua — sama sebelum harden.
+    elevated = read_models.buffer_stock_rows(db, branch_scope=False)
+    assert len(elevated["items"]) >= 2
+    assert po_doc.get("accurate_id") == PO_ID
+
+
 def test_buffer_stock_rows_use_real_po_number(db: Database) -> None:
     po_doc = _seed(db, "Buffer")
     _open_gates(db)

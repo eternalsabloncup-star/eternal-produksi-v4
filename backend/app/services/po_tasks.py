@@ -192,9 +192,8 @@ def _derive_tasks_under_writer_lease(
             )
             created.append(design["task_key"])
         else:
+            # Gate Design Non-Cetak di-sync SETELAH txn (set_gate punya preflight indeks).
             skipped.append("design:semua-item-non-cetak")
-            if sess is None and is_po_accepted(po_doc):
-                sync_design_gate_for_non_print_po(db, po_doc)
 
         scheduling_open = gates.both_gates_open(
             db, accurate_po_id, session=sess
@@ -277,7 +276,19 @@ def _derive_tasks_under_writer_lease(
         }
 
     # Sudah di dalam txn pemanggil (accept): renew di session yang sama.
+    # Accept path memanggil sync_design_gate_for_non_print_po di luar txn.
     if session is not None:
         return _body(session)
     # Standalone: commit boundary = renew + upsert dalam satu txn.
-    return mutate_under_writer_fence(db, writer_fence, _body)
+    result = mutate_under_writer_fence(db, writer_fence, _body)
+    # set_gate tidak aman di dalam txn writer — sync Gate Design Non-Cetak di sini.
+    if is_po_accepted(po_doc):
+        sync_design_gate_for_non_print_po(db, po_doc)
+        accurate_po_id = str(result.get("accurate_po_id") or po_doc.get("accurate_id") or "")
+        if accurate_po_id:
+            result = {
+                **result,
+                "gates": gates.get_gates(db, accurate_po_id),
+                "scheduling_unlocked": gates.both_gates_open(db, accurate_po_id),
+            }
+    return result

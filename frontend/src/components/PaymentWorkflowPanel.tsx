@@ -7,6 +7,7 @@ import {
   WorkflowApiError,
 } from "../api/workflow";
 import { useAuth } from "../auth";
+import { ConfirmationSuccessOverlay } from "./ConfirmationSuccessOverlay";
 
 type Props = {
   accuratePoId: string;
@@ -31,6 +32,11 @@ export function PaymentWorkflowPanel({ accuratePoId, poNo, onChanged }: Props) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
+  const [feedback, setFeedback] = useState<{
+    tone: "success" | "error";
+    title: string;
+    message: string;
+  } | null>(null);
 
   const [receiptId, setReceiptId] = useState("");
   const [invoiceNo, setInvoiceNo] = useState("");
@@ -62,6 +68,16 @@ export function PaymentWorkflowPanel({ accuratePoId, poNo, onChanged }: Props) {
     setNotice(null);
   }, [load]);
 
+  function showOk(message: string) {
+    setNotice(message);
+    setFeedback({ tone: "success", title: "Berhasil", message });
+  }
+
+  function showFail(message: string) {
+    setError(message);
+    setFeedback({ tone: "error", title: "Gagal", message });
+  }
+
   async function onIngest() {
     const id = receiptId.trim();
     const value = Number(amount);
@@ -73,9 +89,11 @@ export function PaymentWorkflowPanel({ accuratePoId, poNo, onChanged }: Props) {
       setError("Nominal penerimaan tidak valid.");
       return;
     }
+    if (busy) return;
     setBusy(true);
     setError(null);
     setNotice(null);
+    setFeedback(null);
     try {
       const res = await ingestPaymentReceipts(accuratePoId, [
         {
@@ -85,7 +103,7 @@ export function PaymentWorkflowPanel({ accuratePoId, poNo, onChanged }: Props) {
           receipt_date: receiptDate.trim() || null,
         },
       ]);
-      setNotice(
+      showOk(
         `Penerimaan tersimpan · gate payment: ${gateLabel(res.gates?.payment?.state)}.`,
       );
       setReceiptId("");
@@ -95,7 +113,7 @@ export function PaymentWorkflowPanel({ accuratePoId, poNo, onChanged }: Props) {
       await load();
       onChanged?.();
     } catch (err) {
-      setError(
+      showFail(
         err instanceof Error ? err.message : "Gagal menyimpan penerimaan.",
       );
     } finally {
@@ -117,9 +135,11 @@ export function PaymentWorkflowPanel({ accuratePoId, poNo, onChanged }: Props) {
       "Bypass Payment akan membuka gate pembayaran dan tercatat di audit. Lanjutkan?",
     );
     if (!confirmed) return;
+    if (busy) return;
     setBusy(true);
     setError(null);
     setNotice(null);
+    setFeedback(null);
     try {
       const gates = await bypassPaymentGate(accuratePoId, reason);
       const label = gateLabel(
@@ -127,7 +147,7 @@ export function PaymentWorkflowPanel({ accuratePoId, poNo, onChanged }: Props) {
           ? (gates.payment as { state?: string }).state
           : undefined,
       );
-      setNotice(
+      showOk(
         gates.duplicate
           ? `Sudah di-bypass · gate: ${label}.`
           : `Bypass disimpan · gate: ${label}.`,
@@ -137,12 +157,12 @@ export function PaymentWorkflowPanel({ accuratePoId, poNo, onChanged }: Props) {
       onChanged?.();
     } catch (err) {
       if (err instanceof WorkflowApiError && err.status === 403) {
-        setError("Akses ditolak: tidak memiliki izin Bypass Payment (Master).");
+        showFail("Akses ditolak: tidak memiliki izin Bypass Payment (Master).");
       } else if (err instanceof WorkflowApiError && err.status === 409) {
-        setError(err.message || "Gate payment sudah terbuka — bypass ditolak.");
+        showFail(err.message || "Gate payment sudah terbuka — bypass ditolak.");
         await load();
       } else {
-        setError(err instanceof Error ? err.message : "Bypass ditolak.");
+        showFail(err instanceof Error ? err.message : "Bypass ditolak.");
       }
     } finally {
       setBusy(false);
@@ -303,6 +323,16 @@ export function PaymentWorkflowPanel({ accuratePoId, poNo, onChanged }: Props) {
           )}
         </>
       ) : null}
+
+      <ConfirmationSuccessOverlay
+        open={Boolean(feedback)}
+        global
+        tone={feedback?.tone || "success"}
+        title={feedback?.title || ""}
+        message={feedback?.message || ""}
+        autoCloseMs={feedback?.tone === "success" ? 1800 : 2600}
+        onClose={() => setFeedback(null)}
+      />
     </div>
   );
 }

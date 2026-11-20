@@ -5,6 +5,7 @@ import {
   submitPublicApproval,
   type PublicApprovalContext,
 } from "../api/scheduling";
+import { ConfirmationSuccessOverlay } from "../components/ConfirmationSuccessOverlay";
 
 function canvasToBase64Png(canvas: HTMLCanvasElement): string {
   const dataUrl = canvas.toDataURL("image/png");
@@ -21,6 +22,11 @@ export function DesignApprovalPage() {
   const [submitting, setSubmitting] = useState(false);
   const [done, setDone] = useState(false);
   const [hasSignature, setHasSignature] = useState(false);
+  const [feedback, setFeedback] = useState<{
+    tone: "success" | "error";
+    title: string;
+    message: string;
+  } | null>(null);
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const drawing = useRef(false);
 
@@ -94,13 +100,22 @@ export function DesignApprovalPage() {
       setError("Tanda tangan digital wajib diisi.");
       return;
     }
+    if (submitting) return;
     setSubmitting(true);
     setError(null);
+    setFeedback(null);
     try {
       await submitPublicApproval(token, signerName.trim(), canvasToBase64Png(canvas));
       setDone(true);
+      setFeedback({
+        tone: "success",
+        title: "Approval tersimpan",
+        message: "Terima kasih. Approval desain sudah tercatat.",
+      });
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Approval gagal.");
+      const message = err instanceof Error ? err.message : "Approval gagal.";
+      setError(message);
+      setFeedback({ tone: "error", title: "Gagal", message });
     } finally {
       setSubmitting(false);
     }
@@ -194,6 +209,16 @@ export function DesignApprovalPage() {
           {error ? <p className="ep-error">{error}</p> : null}
         </div>
       )}
+
+      <ConfirmationSuccessOverlay
+        open={Boolean(feedback)}
+        global
+        tone={feedback?.tone || "success"}
+        title={feedback?.title || ""}
+        message={feedback?.message || ""}
+        autoCloseMs={feedback?.tone === "success" ? 1800 : 2600}
+        onClose={() => setFeedback(null)}
+      />
     </div>
   );
 }

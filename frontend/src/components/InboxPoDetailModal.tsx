@@ -97,6 +97,18 @@ export function isTerimaPoAcceptDisabled(
   return phase === "loading" || phase === "success" || accepted || !mayAccept;
 }
 
+/**
+ * Reset overlay hanya saat modal dibuka/ditutup atau ganti PO.
+ * Perubahan acceptanceStatus dari onAccepted tidak boleh menghapus animasi sukses.
+ */
+export function shouldResetTerimaPoOverlay(deps: {
+  open: boolean;
+  rowId: string | null | undefined;
+  accurateId: string | null | undefined;
+}): string {
+  return `${deps.open ? 1 : 0}:${deps.rowId || ""}:${deps.accurateId || ""}`;
+}
+
 /** Popup rincian PO Inbox + gate Terima PO (backend). */
 export function InboxPoDetailModal({ row, open, onClose, onAccepted }: Props) {
   const { user } = useAuth();
@@ -104,11 +116,22 @@ export function InboxPoDetailModal({ row, open, onClose, onAccepted }: Props) {
   const [feedback, setFeedback] = useState<TerimaPoFeedback | null>(null);
   const [localRow, setLocalRow] = useState<PoRow | null>(row);
 
+  // Sinkronkan baris dari parent tanpa menghapus overlay.
+  // Jangan ikutkan acceptanceStatus di reset — onAccepted meng-update
+  // selected di parent dan sebelumnya menghapus feedback sukses sebelum animasi tampil.
   useEffect(() => {
     setLocalRow(row);
+  }, [row]);
+
+  const overlayResetKey = shouldResetTerimaPoOverlay({
+    open,
+    rowId: row?.id,
+    accurateId: row?.accurateId,
+  });
+  useEffect(() => {
     setPhase("idle");
     setFeedback(null);
-  }, [open, row?.id, row?.accurateId, row?.acceptanceStatus]);
+  }, [overlayResetKey]);
 
   useEffect(() => {
     if (!open) return;
