@@ -138,46 +138,26 @@ def list_po(
     sort_dir: Literal["asc", "desc"] = Query("desc", alias="sortDir"),
 ) -> dict[str, Any]:
     """List PO Accurate dari Mongo V4 — tidak memanggil Accurate Online."""
-    from app.services.object_auth import bypasses_branch, object_branch_code, user_branch_ids
+    from app.services.object_auth import bypasses_branch, user_branch_ids
 
     db = get_db()
     direction = -1 if sort_dir == "desc" else 1
     skip = (page - 1) * page_size
     elevated = bypasses_branch(auth.user)
-    if elevated:
-        rows, total = list_sales_orders(
-            db,
-            origin="accurate",
-            limit=page_size,
-            skip=skip,
-            q=q,
-            urgent=urgent,
-            sort_by=sort_by,
-            sort_dir=direction,
-        )
-        page_rows = rows
-    else:
-        allowed = user_branch_ids(auth.user)
-        # Akun terbatas: scan terbatasi + filter fail-closed (tanpa cabang = hilang).
-        rows, _ = list_sales_orders(
-            db,
-            origin="accurate",
-            limit=500,
-            skip=0,
-            q=q,
-            urgent=urgent,
-            sort_by=sort_by,
-            sort_dir=direction,
-        )
-        scoped: list[dict[str, Any]] = []
-        if allowed:
-            for row in rows:
-                ob = object_branch_code(row)
-                if ob is not None and ob in allowed:
-                    scoped.append(row)
-        total = len(scoped)
-        page_rows = scoped[skip : skip + page_size]
-    items = [_serialize_po_doc(row, db) for row in page_rows]
+    scope_ids = None if elevated else user_branch_ids(auth.user)
+    rows, total = list_sales_orders(
+        db,
+        origin="accurate",
+        limit=page_size,
+        skip=skip,
+        q=q,
+        urgent=urgent,
+        sort_by=sort_by,
+        sort_dir=direction,
+        branch_ids=scope_ids,
+        branch_scope=not elevated,
+    )
+    items = [_serialize_po_doc(row, db) for row in rows]
     return {
         "items": items,
         "total": total,
@@ -193,9 +173,17 @@ def list_po(
 def po_metrics(
     auth: AuthContext = Depends(require_session),
 ) -> dict[str, Any]:
-    """KPI Inbox Accurate — agregasi seluruh PO, bukan sample halaman list."""
-    del auth
-    metrics = aggregate_inbox_metrics(get_db(), origin="accurate")
+    """KPI Inbox Accurate — agregasi scoped; akun terbatas tidak lihat angka global."""
+    from app.services.object_auth import bypasses_branch, user_branch_ids
+
+    elevated = bypasses_branch(auth.user)
+    scope_ids = None if elevated else user_branch_ids(auth.user)
+    metrics = aggregate_inbox_metrics(
+        get_db(),
+        origin="accurate",
+        branch_ids=scope_ids,
+        branch_scope=not elevated,
+    )
     return {
         **metrics,
         "source": "mongodb",
@@ -210,6 +198,7 @@ def accept_po(
 ) -> dict[str, Any]:
     """Kepala Produksi menerima PO → aktifkan workflow Eternal (idempotent)."""
     from app.services import po_acceptance
+    from app.services.object_auth import ObjectAuthError
     from app.services.task_engine import TaskPermissionError
 
     db = get_db()
@@ -219,7 +208,7 @@ def accept_po(
         )
     except LookupError as exc:
         raise HTTPException(status.HTTP_404_NOT_FOUND, str(exc)) from exc
-    except TaskPermissionError as exc:
+    except (TaskPermissionError, ObjectAuthError) as exc:
         raise HTTPException(status.HTTP_403_FORBIDDEN, str(exc)) from exc
     except po_acceptance.PoAcceptanceError as exc:
         raise HTTPException(status.HTTP_409_CONFLICT, str(exc)) from exc
@@ -248,6 +237,7 @@ def patch_po_branch(
 ) -> dict[str, Any]:
     """Ubah identitas cabang PO (Accurate branchId). Tidak menulis Accurate."""
     from app.services import po_branch_service as pbs
+    from app.services.object_auth import ObjectAuthError
     from app.services.task_engine import TaskPermissionError
 
     db = get_db()
@@ -261,7 +251,7 @@ def patch_po_branch(
         )
     except LookupError as exc:
         raise HTTPException(status.HTTP_404_NOT_FOUND, str(exc)) from exc
-    except TaskPermissionError as exc:
+    except (TaskPermissionError, ObjectAuthError) as exc:
         raise HTTPException(status.HTTP_403_FORBIDDEN, str(exc)) from exc
     except pbs.PoBranchConflictError as exc:
         raise HTTPException(status.HTTP_409_CONFLICT, str(exc)) from exc

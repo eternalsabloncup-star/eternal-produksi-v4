@@ -234,6 +234,30 @@ def count_by_accurate_id(db: Database, accurate_id: str | int) -> int:
     return po_collection(db).count_documents({"accurate_id": str(accurate_id)})
 
 
+def branch_scope_query(branch_ids: list[str] | set[str] | None) -> dict[str, Any]:
+    """Filter Mongo untuk identitas cabang kanonis + legacy.
+
+    Fail-closed: daftar kosong → tidak match dokumen apa pun.
+    Tanpa membuat index baru.
+    """
+    from app.services.branch_identity import normalize_branch_identity
+
+    ids = [
+        nid
+        for nid in (normalize_branch_identity(x) for x in (branch_ids or []))
+        if nid
+    ]
+    if not ids:
+        return {"_id": {"$exists": False}}
+    return {
+        "$or": [
+            {"branch_id": {"$in": ids}},
+            {"branch_code": {"$in": ids}},
+            {"header.raw_sync_meta.accurate_branch_id": {"$in": ids}},
+        ]
+    }
+
+
 def list_sales_orders(
     db: Database,
     *,
@@ -244,8 +268,13 @@ def list_sales_orders(
     urgent: bool | None = None,
     sort_by: str = "updated_at",
     sort_dir: int = -1,
+    branch_ids: list[str] | set[str] | None = None,
+    branch_scope: bool = False,
 ) -> tuple[list[dict[str, Any]], int]:
-    """Baca dari Mongo saja (bukan Accurate live). Return (rows, total)."""
+    """Baca dari Mongo saja (bukan Accurate live). Return (rows, total).
+
+    ``branch_scope=True`` menerapkan filter cabang sebelum pagination.
+    """
     query: dict[str, Any] = {}
     if origin:
         query["origin"] = origin
@@ -262,6 +291,13 @@ def list_sales_orders(
         query["header.urgent"] = True
     elif urgent is False:
         query["header.urgent"] = {"$ne": True}
+    if branch_scope:
+        scope = branch_scope_query(branch_ids)
+        # Gabungkan dengan filter teks ($and) agar tidak menimpa $or pencarian.
+        if "$or" in query:
+            query = {"$and": [query, scope]}
+        else:
+            query.update(scope)
 
     allowed_sort = {
         "updated_at": "updated_at",
@@ -288,14 +324,19 @@ def aggregate_inbox_metrics(
     db: Database,
     *,
     origin: str = "accurate",
+    branch_ids: list[str] | set[str] | None = None,
+    branch_scope: bool = False,
 ) -> dict[str, int]:
     """KPI Inbox Accurate via agregasi Mongo — tanpa fetch seluruh dokumen.
 
     Tidak membuat indeks; memakai data nyata di ``header.items`` /
     ``header.urgent``. Field operasional/produksi tidak dikarang.
     """
+    match: dict[str, Any] = {"origin": origin}
+    if branch_scope:
+        match = {"$and": [match, branch_scope_query(branch_ids)]}
     pipeline: list[dict[str, Any]] = [
-        {"$match": {"origin": origin}},
+        {"$match": match},
         {
             "$project": {
                 "urgent_flag": {

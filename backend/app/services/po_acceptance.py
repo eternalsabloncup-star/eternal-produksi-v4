@@ -98,6 +98,11 @@ def accept_po(
     if po_doc is None:
         raise LookupError(f"PO tidak ditemukan: {po_id}")
 
+    # Branch scope wajib sebelum accept — termasuk jalur idempotent/duplicate.
+    from app.services.object_auth import assert_branch_access
+
+    assert_branch_access(user, scope_object=po_doc)
+
     if is_po_accepted(po_doc):
         derived = derive_tasks_for_po(db, po_doc)
         return {

@@ -14,7 +14,14 @@ from app.repositories.po_repository import (
 )
 from app.services.audit_log import append_audit_event
 from app.services.branch_identity import normalize_branch_identity
-from app.services.object_auth import actor_email, object_branch_code
+from app.services.object_auth import (
+    ObjectAuthError,
+    actor_email,
+    assert_branch_access,
+    bypasses_branch,
+    object_branch_code,
+    user_branch_ids,
+)
 from app.services.task_engine import TaskPermissionError
 
 
@@ -27,43 +34,44 @@ def _require_edit_perm(user: dict[str, Any]) -> None:
         raise TaskPermissionError("Akses ditolak — memerlukan po.branch.edit")
 
 
+def _assert_target_branch_access(user: dict[str, Any], target: str) -> None:
+    """Tanpa lintas cabang, tujuan harus termasuk branch_ids akun."""
+    if bypasses_branch(user):
+        return
+    allowed = user_branch_ids(user)
+    if not allowed or target not in allowed:
+        raise ObjectAuthError(
+            "Cabang tujuan di luar izin akun ini — akses ditolak."
+        )
+
+
 def _related_conflict(db: Database, po_doc: dict[str, Any], new_id: str) -> str | None:
-    """Tolak bila alokasi/task/SJ punya identitas cabang berbeda yang eksplisit."""
+    """Tolak bila transaksi turunan sudah terbentuk (tidak ada migrate atomik).
+
+    Tidak memindahkan data turunan diam-diam. Perubahan cabang hanya aman
+    bila belum ada alokasi/task/SJ terkait.
+    """
+    del new_id  # target tidak dipakai — keberadaan turunan saja sudah konflik
     accurate_id = str(po_doc.get("accurate_id") or "")
-    current = object_branch_code(po_doc)
+    if not accurate_id:
+        return "accurate_po_id kosong"
 
-    allocs = list(
-        db["production_allocations"].find(
-            {"accurate_po_id": accurate_id},
-            {"_id": 0, "allocation_id": 1, "branch_code": 1, "branch_id": 1},
-        )
-    )
-    for alloc in allocs:
-        ab = object_branch_code(alloc)
-        if ab and ab != new_id and ab != current:
-            return f"alokasi {alloc.get('allocation_id')} cabang {ab}"
-
-    tasks = list(
-        db["operational_tasks"].find(
-            {"ref.accurate_po_id": accurate_id},
-            {"_id": 0, "task_id": 1, "branch_code": 1, "branch_id": 1, "ref": 1},
-        )
-    )
-    for task in tasks:
-        tb = object_branch_code(task)
-        if tb and tb != new_id and tb != current:
-            return f"task {task.get('task_id')} cabang {tb}"
-
-    notes = list(
-        db["accurate_delivery_notes"].find(
-            {"accurate_po_id": accurate_id},
-            {"_id": 0, "accurate_sj_id": 1, "branch_code": 1, "branch_id": 1},
-        )
-    )
-    for note in notes:
-        nb = object_branch_code(note)
-        if nb and nb != new_id and nb != current:
-            return f"SJ {note.get('accurate_sj_id')} cabang {nb}"
+    if db["production_allocations"].count_documents(
+        {"accurate_po_id": accurate_id}, limit=1
+    ):
+        return "alokasi produksi sudah terbentuk"
+    if db["operational_tasks"].count_documents(
+        {"ref.accurate_po_id": accurate_id}, limit=1
+    ):
+        return "task operasional sudah terbentuk"
+    if db["accurate_delivery_notes"].count_documents(
+        {"accurate_po_id": accurate_id}, limit=1
+    ):
+        return "surat jalan sudah terbentuk"
+    if db["schedule_commands"].count_documents(
+        {"accurate_po_id": accurate_id}, limit=1
+    ):
+        return "perintah jadwal sudah terbentuk"
     return None
 
 
@@ -92,6 +100,10 @@ def update_po_branch(
     if po is None:
         raise LookupError("PO tidak ditemukan.")
 
+    # Scope cabang asal (fail-closed) + otorisasi tujuan.
+    assert_branch_access(user, scope_object=po)
+    _assert_target_branch_access(user, target)
+
     before = object_branch_code(po)
     if before == target:
         return {"po": po, "unchanged": True, "before": before, "after": target}
@@ -99,7 +111,8 @@ def update_po_branch(
     conflict = _related_conflict(db, po, target)
     if conflict:
         raise PoBranchConflictError(
-            f"Perubahan cabang ditolak — konflik turunan: {conflict}"
+            f"Perubahan cabang ditolak — konflik turunan: {conflict}. "
+            "Perlu penanganan terpisah; data turunan tidak dipindahkan otomatis."
         )
 
     updated = set_po_branch_id(
