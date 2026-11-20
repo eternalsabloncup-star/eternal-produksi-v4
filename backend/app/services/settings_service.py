@@ -471,11 +471,13 @@ def list_branches(db: Database, actor: dict[str, Any]) -> list[dict[str, Any]]:
         or has_permission(actor, PERM_MANAGE_USERS)
     ):
         raise TaskPermissionError("Akses ditolak")
-    return org.list_docs(db, org.BRANCHES)
+    items = org.list_docs(db, org.BRANCHES)
+    return org.enrich_branches_with_mapping_status(items)
 
 
 def save_branch(db: Database, actor: dict[str, Any], body: dict[str, Any]) -> dict[str, Any]:
     _require(actor, PERM_MANAGE_SETTINGS)
+    before = org.get_branch(db, str(body["code"]))
     doc = org.upsert_branch(
         db,
         code=str(body["code"]),
@@ -487,9 +489,9 @@ def save_branch(db: Database, actor: dict[str, Any], body: dict[str, Any]) -> di
         action="settings.branch.upsert",
         actor_email=_actor(actor),
         target_email=None,
-        detail={"after": doc},
+        detail={"before": before, "after": doc},
     )
-    return doc
+    return org.enrich_branches_with_mapping_status([doc])[0]
 
 
 def set_branch_active(
@@ -502,15 +504,60 @@ def set_branch_active(
             raise SettingsDependencyError(
                 f"Cabang masih dipakai {n} pengguna aktif — sertakan reason."
             )
+    before = org.get_branch(db, code)
     doc = org.set_branch_active(db, code, is_active=is_active)
     append_audit_event(
         db,
         action="settings.branch.activate" if is_active else "settings.branch.deactivate",
         actor_email=_actor(actor),
         target_email=None,
-        detail={"after": doc, "reason": reason},
+        detail={"before": before, "after": doc, "reason": reason},
     )
-    return doc
+    return org.enrich_branches_with_mapping_status([doc])[0]
+
+
+def set_branch_accurate_mapping(
+    db: Database,
+    actor: dict[str, Any],
+    code: str,
+    *,
+    accurate_branch_id: str | None,
+    reason: str | None,
+) -> dict[str, Any]:
+    """Simpan/ganti mapping Accurate branchId pada Master Cabang."""
+    _require(actor, PERM_MANAGE_SETTINGS)
+    if not (reason or "").strip():
+        raise ValueError("Alasan perubahan mapping wajib.")
+    before = org.get_branch(db, code)
+    if before is None:
+        raise LookupError("Cabang tidak ditemukan.")
+    try:
+        doc = org.set_branch_accurate_mapping(
+            db, code, accurate_branch_id=accurate_branch_id
+        )
+    except ValueError as exc:
+        msg = str(exc)
+        if "sudah dipetakan" in msg:
+            raise SettingsConflictError(msg) from exc
+        raise
+    append_audit_event(
+        db,
+        action="settings.branch.accurate_mapping",
+        actor_email=_actor(actor),
+        target_email=None,
+        detail={
+            "before": {
+                "code": before.get("code"),
+                "accurate_branch_id": before.get("accurate_branch_id"),
+            },
+            "after": {
+                "code": doc.get("code"),
+                "accurate_branch_id": doc.get("accurate_branch_id"),
+            },
+            "reason": (reason or "").strip(),
+        },
+    )
+    return org.enrich_branches_with_mapping_status([doc])[0]
 
 
 def list_machines(db: Database, actor: dict[str, Any]) -> list[dict[str, Any]]:

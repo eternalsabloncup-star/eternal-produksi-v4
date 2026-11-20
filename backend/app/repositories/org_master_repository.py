@@ -149,6 +149,116 @@ def set_branch_active(db: Database, code: str, *, is_active: bool) -> dict[str, 
     return doc
 
 
+def find_branches_by_accurate_id(
+    db: Database, accurate_branch_id: str
+) -> list[dict[str, Any]]:
+    """Cari Master yang memetakan Accurate branchId (app-level uniqueness)."""
+    require_org_master_indexes(db)
+    aid = str(accurate_branch_id or "").strip()
+    if not aid:
+        return []
+    return list(
+        _coll(db, BRANCHES).find({"accurate_branch_id": aid}, {"_id": 0}).sort(
+            "code", ASCENDING
+        )
+    )
+
+
+def set_branch_accurate_mapping(
+    db: Database,
+    code: str,
+    *,
+    accurate_branch_id: str | None,
+) -> dict[str, Any]:
+    """Set/clear mapping Accurate → Master. Uniqueness dienforce di aplikasi.
+
+    Tidak membuat index baru (NO INDEX CREATE pada pekerjaan ini).
+    """
+    require_org_master_indexes(db)
+    c = validate_branch_code_format(code)
+    existing = get_branch(db, c)
+    if existing is None:
+        raise LookupError("Cabang tidak ditemukan.")
+
+    now = datetime.now(timezone.utc)
+    if accurate_branch_id is None or str(accurate_branch_id).strip() == "":
+        doc = _coll(db, BRANCHES).find_one_and_update(
+            {"code": c},
+            {
+                "$unset": {"accurate_branch_id": ""},
+                "$set": {
+                    "accurate_mapping_verified": False,
+                    "updated_at": now,
+                },
+            },
+            projection={"_id": 0},
+            return_document=ReturnDocument.AFTER,
+        )
+        assert doc is not None
+        return doc
+
+    aid = str(accurate_branch_id).strip()
+    if not aid.isdigit():
+        raise ValueError(
+            "Accurate branchId wajib numerik valid dari response Accurate."
+        )
+    if len(aid) > 32:
+        raise ValueError("Accurate branchId terlalu panjang.")
+
+    # Satu Accurate ID tidak boleh dipetakan ke dua cabang Eternal aktif berbeda.
+    for other in find_branches_by_accurate_id(db, aid):
+        other_code = str(other.get("code") or "").upper()
+        if other_code == c:
+            continue
+        if bool(other.get("is_active", False)):
+            raise ValueError(
+                f"Accurate branchId {aid} sudah dipetakan ke cabang aktif {other_code}."
+            )
+
+    doc = _coll(db, BRANCHES).find_one_and_update(
+        {"code": c},
+        {
+            "$set": {
+                "accurate_branch_id": aid,
+                # Tidak ada endpoint Master Cabang Accurate yang terbukti — Owner verify.
+                "accurate_mapping_verified": False,
+                "updated_at": now,
+            },
+        },
+        projection={"_id": 0},
+        return_document=ReturnDocument.AFTER,
+    )
+    assert doc is not None
+    return doc
+
+
+def enrich_branches_with_mapping_status(
+    items: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Hitung status Terhubung / Belum dipetakan / Konflik untuk UI."""
+    by_aid: dict[str, list[str]] = {}
+    for item in items:
+        aid = str(item.get("accurate_branch_id") or "").strip()
+        if not aid or not bool(item.get("is_active", False)):
+            continue
+        by_aid.setdefault(aid, []).append(str(item.get("code") or "").upper())
+
+    out: list[dict[str, Any]] = []
+    for item in items:
+        row = dict(item)
+        aid = str(row.get("accurate_branch_id") or "").strip() or None
+        row["accurate_branch_id"] = aid
+        if not aid:
+            row["mapping_status"] = "unmapped"
+        elif len(by_aid.get(aid, [])) > 1:
+            row["mapping_status"] = "conflict"
+        else:
+            row["mapping_status"] = "mapped"
+        row["accurate_verified"] = bool(row.get("accurate_mapping_verified", False))
+        out.append(row)
+    return out
+
+
 def upsert_machine(
     db: Database,
     *,

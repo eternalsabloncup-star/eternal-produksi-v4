@@ -810,6 +810,32 @@ export function handleSimRequest(
       code,
       name: code === "HQ" ? "Head Office" : code,
       is_active: Boolean(body.is_active),
+      accurate_branch_id: null,
+      mapping_status: "unmapped",
+      accurate_verified: false,
+    });
+  }
+  if (
+    path.startsWith("/api/settings/branches/") &&
+    path.endsWith("/accurate-mapping") &&
+    method === "PUT"
+  ) {
+    const code = decodeURIComponent(path.split("/")[4] || "HQ");
+    const body = (init?.body ? JSON.parse(String(init.body)) : {}) as {
+      accurate_branch_id?: string | null;
+      reason?: string;
+    };
+    const aid =
+      body.accurate_branch_id != null && String(body.accurate_branch_id).trim()
+        ? String(body.accurate_branch_id).trim()
+        : null;
+    return json({
+      code,
+      name: code === "HQ" ? "Head Office" : code === "YGY" ? "Yogyakarta" : code,
+      is_active: true,
+      accurate_branch_id: aid,
+      mapping_status: aid ? "mapped" : "unmapped",
+      accurate_verified: false,
     });
   }
   if (path === "/api/settings/roles" && method === "GET") {
@@ -835,7 +861,41 @@ export function handleSimRequest(
     });
   }
   if (path === "/api/settings/branches" && method === "GET") {
-    return json({ items: [{ code: "HQ", name: "Head Office", is_active: true }] });
+    return json({
+      items: [
+        {
+          code: "HQ",
+          name: "Head Office",
+          is_active: true,
+          accurate_branch_id: null,
+          mapping_status: "unmapped",
+          accurate_verified: false,
+        },
+        {
+          code: "YGY",
+          name: "Yogyakarta",
+          is_active: true,
+          accurate_branch_id: null,
+          mapping_status: "unmapped",
+          accurate_verified: false,
+        },
+      ],
+    });
+  }
+  if (path === "/api/settings/branches" && method === "PUT") {
+    const body = (init?.body ? JSON.parse(String(init.body)) : {}) as {
+      code?: string;
+      name?: string;
+      is_active?: boolean;
+    };
+    return json({
+      code: String(body.code || "HQ").toUpperCase(),
+      name: body.name || "Cabang",
+      is_active: body.is_active !== false,
+      accurate_branch_id: null,
+      mapping_status: "unmapped",
+      accurate_verified: false,
+    });
   }
   if (path === "/api/settings/machines" && method === "GET") {
     return json({

@@ -163,10 +163,15 @@ export async function saveRolePermissions(
   );
 }
 
+export type BranchMappingStatus = "mapped" | "unmapped" | "conflict";
+
 export type SettingsBranch = {
   code: string;
   name: string;
   is_active: boolean;
+  accurate_branch_id?: string | null;
+  mapping_status?: BranchMappingStatus;
+  accurate_verified?: boolean;
 };
 
 export async function fetchBranches() {
@@ -190,6 +195,20 @@ export async function setBranchActive(
     {
       method: "POST",
       body: JSON.stringify({ is_active, reason }),
+    },
+  );
+}
+
+export async function setBranchAccurateMapping(
+  code: string,
+  accurate_branch_id: string | null,
+  reason: string,
+) {
+  return request<SettingsBranch>(
+    `/api/settings/branches/${encodeURIComponent(code)}/accurate-mapping`,
+    {
+      method: "PUT",
+      body: JSON.stringify({ accurate_branch_id, reason }),
     },
   );
 }

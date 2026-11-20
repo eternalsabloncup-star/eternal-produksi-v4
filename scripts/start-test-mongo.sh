@@ -16,6 +16,7 @@ if docker ps -a --format '{{.Names}}' | grep -qx "$NAME"; then
 fi
 
 docker run -d --name "$NAME" \
+  --ulimit nofile=65535:65535 \
   -p "127.0.0.1:${PORT}:27017" \
   -e MONGO_INITDB_ROOT_USERNAME="$ROOT_USER" \
   -e MONGO_INITDB_ROOT_PASSWORD="$ROOT_PASS" \

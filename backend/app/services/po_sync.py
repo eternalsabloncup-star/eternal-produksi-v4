@@ -104,7 +104,17 @@ def sync_sales_order_payload(
     *,
     mongo_guard: MongoGuardMode = "test",
 ) -> dict[str, Any]:
-    """Normalisasi + upsert. Aman dijalankan berulang tanpa duplikasi header."""
+    """Normalisasi + upsert. Aman dijalankan berulang tanpa duplikasi header.
+
+    Cabang: isi ``branch_code`` dari Master mapping hanya jika dokumen belum punya
+    cabang. Re-ingest tidak menimpa cabang historis.
+    """
+    from app.repositories.po_repository import set_branch_code_if_empty
+    from app.services.branch_mapping import (
+        apply_branch_code_on_ingest,
+        extract_accurate_branch_id_from_po,
+    )
+
     _guard_db(db, mongo_guard=mongo_guard)
     po: PoHeaderModel = normalize_sales_order(payload)
     try:
@@ -112,6 +122,21 @@ def sync_sales_order_payload(
         before = 1 if before_doc else 0
         line_diff = diff_synced_lines(before_doc, po)
         stored = upsert_sales_order(db, po, line_diff=line_diff)
+        accurate_branch_id = extract_accurate_branch_id_from_po(stored)
+        if accurate_branch_id is None and isinstance(po.raw_sync_meta, dict):
+            accurate_branch_id = po.raw_sync_meta.get("accurate_branch_id")
+        decision = apply_branch_code_on_ingest(
+            db,
+            existing_doc=before_doc,
+            accurate_branch_id=accurate_branch_id,
+        )
+        branch_apply = decision.get("action")
+        if decision.get("action") == "set_from_mapping" and decision.get("branch_code"):
+            filled = set_branch_code_if_empty(
+                db, po.accurate_id or "", str(decision["branch_code"])
+            )
+            if filled is not None:
+                stored = filled
         after = count_by_accurate_id(db, po.accurate_id or "")
     except UnsafeMongoTargetError:
         raise
@@ -133,6 +158,7 @@ def sync_sales_order_payload(
         "count_after": after,
         "line_diff": line_diff,
         "operational_preserved": isinstance(stored.get("operational"), dict),
+        "branch_apply": branch_apply,
     }
 
 

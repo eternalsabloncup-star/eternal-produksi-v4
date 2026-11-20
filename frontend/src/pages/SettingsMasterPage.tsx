@@ -25,6 +25,7 @@ import {
   fetchShifts,
   saveProductScreenSize,
   saveRolePermissions,
+  setBranchAccurateMapping,
   setBranchActive,
   setUserActive,
   SettingsApiError,
@@ -262,6 +263,9 @@ export function SettingsMasterPage() {
   const [permReason, setPermReason] = useState("");
   const [confirmSensitive, setConfirmSensitive] = useState(false);
   const [branches, setBranches] = useState<SettingsBranch[]>([]);
+  const [mappingEditCode, setMappingEditCode] = useState<string | null>(null);
+  const [mappingEditValue, setMappingEditValue] = useState("");
+  const [savingMapping, setSavingMapping] = useState(false);
   const [machines, setMachines] = useState<
     Array<{ code: string; label: string; branch_code?: string }>
   >([]);
@@ -1617,6 +1621,11 @@ export function SettingsMasterPage() {
               <>
                 <section className="ep-settings-card">
                   <h3 className="ep-settings-card-title">Simpan cabang</h3>
+                  <p className="ep-settings-help">
+                    Master Cabang Eternal adalah sumber kebenaran internal. Accurate
+                    branchId dipetakan di sini — bukan di Pengaturan Pengguna. ID
+                    numerik Accurate tidak otomatis menjadi kode cabang.
+                  </p>
                   <form
                     className="ep-settings-form-grid"
                     onSubmit={(e) => {
@@ -1668,74 +1677,202 @@ export function SettingsMasterPage() {
                   </form>
                 </section>
                 <section className="ep-settings-card">
-                  <h3 className="ep-settings-card-title">Daftar cabang</h3>
+                  <h3 className="ep-settings-card-title">Daftar cabang &amp; mapping Accurate</h3>
                   <div className="ep-settings-table-wrap">
                     <table className="ep-settings-data-table is-compact">
                       <thead>
                         <tr>
-                          <th style={{ width: 140 }}>Kode</th>
+                          <th style={{ width: 100 }}>Kode</th>
                           <th>Nama</th>
                           <th className="is-status">Aktif</th>
+                          <th style={{ width: 120 }}>Accurate ID</th>
+                          <th className="is-status">Mapping</th>
                           <th className="is-actions">Aksi</th>
                         </tr>
                       </thead>
                       <tbody>
                         {branches.length === 0 ? (
                           <tr>
-                            <td colSpan={4}>
+                            <td colSpan={6}>
                               <div className="ep-settings-empty">Belum ada cabang / akses ditolak.</div>
                             </td>
                           </tr>
                         ) : (
-                          branches.map((b) => (
-                            <tr key={b.code}>
-                              <td>{b.code}</td>
-                              <td>{b.name}</td>
-                              <td className="is-status">
-                                <span
-                                  className={`ep-settings-pill${b.is_active ? "" : " is-off"}`}
-                                >
-                                  {b.is_active ? "Ya" : "Tidak"}
-                                </span>
-                              </td>
-                              <td className="is-actions">
-                                <button
-                                  type="button"
-                                  className="ep-btn"
-                                  disabled={savingOrg}
-                                  onClick={() => {
-                                    const next = !b.is_active;
-                                    const reason = next
-                                      ? ""
-                                      : window.prompt(
-                                          "Alasan nonaktif (wajib jika masih dipakai pengguna):",
-                                        ) || "";
-                                    setSavingOrg(true);
-                                    void setBranchActive(b.code, next, reason || undefined)
-                                      .then(async () => {
-                                        showFeedback(
-                                          "success",
-                                          "Berhasil",
-                                          "Pengaturan berhasil disimpan.",
-                                        );
-                                        await loadSettings();
-                                      })
-                                      .catch((err: unknown) => {
-                                        const msg =
-                                          err instanceof Error
-                                            ? err.message
-                                            : "Gagal ubah status cabang.";
-                                        setError(msg);
-                                        showFeedback("error", "Gagal", msg);
-                                      })
-                                      .finally(() => setSavingOrg(false));
-                                  }}
-                                >
-                                  {b.is_active ? "Nonaktifkan" : "Aktifkan"}
-                                </button>
-                              </td>
-                            </tr>
-                          ))
+                          branches.map((b) => {
+                            const status = b.mapping_status || "unmapped";
+                            const statusLabel =
+                              status === "mapped"
+                                ? "Terhubung"
+                                : status === "conflict"
+                                  ? "Konflik"
+                                  : "Belum dipetakan";
+                            const editing = mappingEditCode === b.code;
+                            return (
+                              <tr key={b.code}>
+                                <td>{b.code}</td>
+                                <td>{b.name}</td>
+                                <td className="is-status">
+                                  <span
+                                    className={`ep-settings-pill${b.is_active ? "" : " is-off"}`}
+                                  >
+                                    {b.is_active ? "Ya" : "Tidak"}
+                                  </span>
+                                </td>
+                                <td>
+                                  {editing ? (
+                                    <input
+                                      value={mappingEditValue}
+                                      onChange={(e) => setMappingEditValue(e.target.value)}
+                                      inputMode="numeric"
+                                      pattern="[0-9]*"
+                                      placeholder="branchId Accurate"
+                                      aria-label={`Accurate branchId untuk ${b.code}`}
+                                      disabled={savingMapping}
+                                      style={{ width: "100%", maxWidth: 120 }}
+                                    />
+                                  ) : (
+                                    b.accurate_branch_id || "—"
+                                  )}
+                                </td>
+                                <td className="is-status">
+                                  <span
+                                    className={`ep-settings-pill${
+                                      status === "mapped"
+                                        ? ""
+                                        : status === "conflict"
+                                          ? " is-warn"
+                                          : " is-off"
+                                    }`}
+                                  >
+                                    {statusLabel}
+                                  </span>
+                                  {!b.accurate_verified && status === "mapped" ? (
+                                    <div className="ep-settings-help" style={{ marginTop: 4 }}>
+                                      Belum diverifikasi
+                                    </div>
+                                  ) : null}
+                                </td>
+                                <td className="is-actions">
+                                  <div className="ep-settings-actions" style={{ flexWrap: "wrap" }}>
+                                    {editing ? (
+                                      <>
+                                        <button
+                                          type="button"
+                                          className={`ep-btn primary${savingMapping ? " is-busy" : ""}`}
+                                          disabled={savingMapping}
+                                          onClick={() => {
+                                            const trimmed = mappingEditValue.trim();
+                                            const reason =
+                                              window.prompt(
+                                                "Alasan perubahan mapping (wajib):",
+                                              ) || "";
+                                            if (!reason.trim()) {
+                                              showFeedback(
+                                                "error",
+                                                "Dibatalkan",
+                                                "Alasan mapping wajib diisi.",
+                                              );
+                                              return;
+                                            }
+                                            const ok = window.confirm(
+                                              trimmed
+                                                ? `Simpan mapping ${b.code} → Accurate ${trimmed}? Perubahan tidak menggeser branch_code PO historis.`
+                                                : `Hapus mapping Accurate untuk ${b.code}?`,
+                                            );
+                                            if (!ok) return;
+                                            setSavingMapping(true);
+                                            void setBranchAccurateMapping(
+                                              b.code,
+                                              trimmed ? trimmed : null,
+                                              reason.trim(),
+                                            )
+                                              .then(async () => {
+                                                setMappingEditCode(null);
+                                                setMappingEditValue("");
+                                                showFeedback(
+                                                  "success",
+                                                  "Berhasil",
+                                                  "Mapping Accurate disimpan.",
+                                                );
+                                                await loadSettings();
+                                              })
+                                              .catch((err: unknown) => {
+                                                const msg =
+                                                  err instanceof Error
+                                                    ? err.message
+                                                    : "Gagal simpan mapping.";
+                                                setError(msg);
+                                                showFeedback("error", "Gagal", msg);
+                                              })
+                                              .finally(() => setSavingMapping(false));
+                                          }}
+                                        >
+                                          {savingMapping ? "Menyimpan…" : "Konfirmasi"}
+                                        </button>
+                                        <button
+                                          type="button"
+                                          className="ep-btn"
+                                          disabled={savingMapping}
+                                          onClick={() => {
+                                            setMappingEditCode(null);
+                                            setMappingEditValue("");
+                                          }}
+                                        >
+                                          Batal
+                                        </button>
+                                      </>
+                                    ) : (
+                                      <button
+                                        type="button"
+                                        className="ep-btn"
+                                        disabled={savingOrg || savingMapping}
+                                        onClick={() => {
+                                          setMappingEditCode(b.code);
+                                          setMappingEditValue(b.accurate_branch_id || "");
+                                        }}
+                                      >
+                                        {b.accurate_branch_id ? "Ganti mapping" : "Set mapping"}
+                                      </button>
+                                    )}
+                                    <button
+                                      type="button"
+                                      className="ep-btn"
+                                      disabled={savingOrg || savingMapping}
+                                      onClick={() => {
+                                        const next = !b.is_active;
+                                        const reason = next
+                                          ? ""
+                                          : window.prompt(
+                                              "Alasan nonaktif (wajib jika masih dipakai pengguna):",
+                                            ) || "";
+                                        setSavingOrg(true);
+                                        void setBranchActive(b.code, next, reason || undefined)
+                                          .then(async () => {
+                                            showFeedback(
+                                              "success",
+                                              "Berhasil",
+                                              "Pengaturan berhasil disimpan.",
+                                            );
+                                            await loadSettings();
+                                          })
+                                          .catch((err: unknown) => {
+                                            const msg =
+                                              err instanceof Error
+                                                ? err.message
+                                                : "Gagal ubah status cabang.";
+                                            setError(msg);
+                                            showFeedback("error", "Gagal", msg);
+                                          })
+                                          .finally(() => setSavingOrg(false));
+                                      }}
+                                    >
+                                      {b.is_active ? "Nonaktifkan" : "Aktifkan"}
+                                    </button>
+                                  </div>
+                                </td>
+                              </tr>
+                            );
+                          })
                         )}
                       </tbody>
                     </table>

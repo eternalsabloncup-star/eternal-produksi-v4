@@ -15,56 +15,93 @@ mod = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(mod)
 
 
-def test_classify_missing_source() -> None:
+def test_classify_missing_accurate_id() -> None:
     row = mod.classify_po(
         {"accurate_id": "1", "header": {"po_no": "X"}},
-        master_codes={"HQ"},
-        name_to_codes={},
+        master_by_code={"HQ": {"code": "HQ", "is_active": True}},
     )
-    assert row["category"] == "missing_source"
+    assert row["category"] == "MISSING_ACCURATE_BRANCH_ID"
 
 
 def test_classify_already_valid() -> None:
     row = mod.classify_po(
         {"accurate_id": "2", "branch_code": "HQ"},
-        master_codes={"HQ"},
-        name_to_codes={},
+        master_by_code={"HQ": {"code": "HQ", "is_active": True}},
     )
-    assert row["category"] == "already_valid"
+    assert row["category"] == "ALREADY_VALID"
     assert row["proposed_code"] == "HQ"
 
 
-def test_classify_name_only_without_master_is_missing() -> None:
+def test_classify_invalid_master_existing() -> None:
     row = mod.classify_po(
-        {"accurate_id": "3", "branch": {"name": "Yogyakarta"}},
-        master_codes=set(),
-        name_to_codes={},
+        {"accurate_id": "3", "branch_code": "XYZ"},
+        master_by_code={"HQ": {"code": "HQ", "is_active": True}},
     )
-    assert row["category"] == "missing_source"
-    assert row["note"] == "name_without_master_mapping"
+    assert row["category"] == "INVALID_MASTER_BRANCH"
 
 
-def test_classify_authoritative_code_shaped() -> None:
-    row = mod.classify_po(
-        {"accurate_id": "4", "header": {"branchCode": "SMG"}},
-        master_codes={"SMG", "HQ"},
-        name_to_codes={},
-    )
-    assert row["category"] == "authoritative"
-    assert row["proposed_code"] == "SMG"
-
-
-def test_classify_accurate_branch_id_needs_owner_mapping() -> None:
+def test_classify_unmapped_without_db() -> None:
     row = mod.classify_po(
         {
             "accurate_id": "5",
             "header": {"raw_sync_meta": {"accurate_branch_id": "150"}},
         },
-        master_codes={"HQ"},
-        name_to_codes={},
+        master_by_code={"HQ": {"code": "HQ", "is_active": True}},
+        db=None,
     )
-    assert row["category"] == "ambiguous"
-    assert "master_mapping_required" in (row.get("note") or "")
+    assert row["category"] == "UNMAPPED_ACCURATE_BRANCH_ID"
+    assert row["accurate_branch_id"] == "150"
+    assert row["proposed_code"] is None
+
+
+def test_classify_ready_to_map_with_resolver(db) -> None:
+    from app.repositories import org_master_repository as org
+
+    org.upsert_branch(db, code="YGY", name="Yogyakarta", is_active=True)
+    org.set_branch_accurate_mapping(db, "YGY", accurate_branch_id="150")
+    row = mod.classify_po(
+        {
+            "accurate_id": "6",
+            "header": {"raw_sync_meta": {"accurate_branch_id": "150"}},
+        },
+        master_by_code={"YGY": {"code": "YGY", "is_active": True}},
+        db=db,
+    )
+    assert row["category"] == "READY_TO_MAP"
+    assert row["proposed_code"] == "YGY"
+
+
+def test_classify_stable_on_duplicate_execution(db) -> None:
+    from app.repositories import org_master_repository as org
+
+    org.upsert_branch(db, code="YGY", name="Yogyakarta", is_active=True)
+    org.set_branch_accurate_mapping(db, "YGY", accurate_branch_id="150")
+    doc = {
+        "accurate_id": "7",
+        "header": {"raw_sync_meta": {"accurate_branch_id": "150"}},
+    }
+    master = {"YGY": {"code": "YGY", "is_active": True}}
+    a = mod.classify_po(doc, master_by_code=master, db=db)
+    b = mod.classify_po(doc, master_by_code=master, db=db)
+    assert a == b
+    assert a["category"] == "READY_TO_MAP"
+
+
+def test_execute_flag_rejected(tmp_path, monkeypatch) -> None:
+    import subprocess
+    import sys
+
+    script = ROOT / "scripts" / "po_branch_backfill_dry_run.py"
+    env = {**dict(**{k: v for k, v in __import__("os").environ.items()}), "ETERNAL_V4_PO_BRANCH_BACKFILL_WRITE": "1"}
+    proc = subprocess.run(
+        [sys.executable, str(script), "--mongo-uri", "mongodb://127.0.0.1:27018", "--execute"],
+        capture_output=True,
+        text=True,
+        env=env,
+        cwd=str(ROOT),
+    )
+    assert proc.returncode == 3
+    assert "DISABLED" in proc.stderr or "tidak diaktifkan" in proc.stderr
 
 
 def test_normalize_sales_order_does_not_invent_branch() -> None:

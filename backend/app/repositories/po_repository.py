@@ -141,6 +141,28 @@ def upsert_sales_order(
     return result
 
 
+def set_branch_code_if_empty(
+    db: Database, accurate_id: str | int, branch_code: str
+) -> dict[str, Any] | None:
+    """Isi ``branch_code`` hanya jika belum ada (CAS). Tidak menimpa historis."""
+    require_po_indexes(db)
+    code = str(branch_code or "").strip().upper()
+    if not code:
+        return None
+    return po_collection(db).find_one_and_update(
+        {
+            "accurate_id": str(accurate_id),
+            "$or": [
+                {"branch_code": {"$exists": False}},
+                {"branch_code": None},
+                {"branch_code": ""},
+            ],
+        },
+        {"$set": {"branch_code": code, "updated_at": datetime.now(timezone.utc)}},
+        return_document=ReturnDocument.AFTER,
+    )
+
+
 def get_by_accurate_id(db: Database, accurate_id: str | int) -> dict[str, Any] | None:
     return po_collection(db).find_one({"accurate_id": str(accurate_id)})
 
