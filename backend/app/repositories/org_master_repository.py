@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from datetime import datetime, timezone
 from typing import Any
 
@@ -13,6 +14,9 @@ from pymongo.errors import DuplicateKeyError
 BRANCHES = "master_branches"
 MACHINES = "master_machines"
 SHIFTS = "master_shifts"
+
+# Kode cabang: huruf/angka, boleh _/-, max 16, tidak boleh spasi.
+_BRANCH_CODE_RE = re.compile(r"^[A-Z0-9][A-Z0-9_-]{0,15}$")
 
 REQUIRED_ORG_INDEX_SPECS: list[dict[str, Any]] = [
     {
@@ -65,14 +69,58 @@ def list_docs(db: Database, collection: str) -> list[dict[str, Any]]:
     return list(_coll(db, collection).find({}, {"_id": 0}).sort("code", ASCENDING))
 
 
+def normalize_branch_code(code: str) -> str:
+    return str(code or "").strip().upper()
+
+
+def validate_branch_code_format(code: str) -> str:
+    c = normalize_branch_code(code)
+    if not c:
+        raise ValueError("Kode cabang wajib.")
+    if not _BRANCH_CODE_RE.match(c):
+        raise ValueError(
+            "Kode cabang tidak valid — gunakan A-Z/0-9/_/- (max 16), tanpa spasi."
+        )
+    return c
+
+
+def get_branch(db: Database, code: str) -> dict[str, Any] | None:
+    require_org_master_indexes(db)
+    return _coll(db, BRANCHES).find_one(
+        {"code": normalize_branch_code(code)}, {"_id": 0}
+    )
+
+
+def validate_branch_ids_for_assignment(
+    db: Database, branch_ids: list[str] | None
+) -> list[str]:
+    """Normalisasi + dedupe; tolak kode tidak dikenal atau nonaktif."""
+    require_org_master_indexes(db)
+    raw = list(branch_ids or [])
+    out: list[str] = []
+    seen: set[str] = set()
+    for item in raw:
+        code = validate_branch_code_format(str(item))
+        if code in seen:
+            continue
+        doc = get_branch(db, code)
+        if doc is None:
+            raise ValueError(f"Cabang tidak dikenal: {code}")
+        if not bool(doc.get("is_active", False)):
+            raise ValueError(f"Cabang tidak aktif: {code}")
+        seen.add(code)
+        out.append(code)
+    return out
+
+
 def upsert_branch(
     db: Database, *, code: str, name: str, is_active: bool = True
 ) -> dict[str, Any]:
     require_org_master_indexes(db)
-    c = code.strip().upper()
+    c = validate_branch_code_format(code)
     n = name.strip()
-    if not c or not n:
-        raise ValueError("Kode dan nama cabang wajib.")
+    if not n:
+        raise ValueError("Nama cabang wajib.")
     now = datetime.now(timezone.utc)
     doc = _coll(db, BRANCHES).find_one_and_update(
         {"code": c},

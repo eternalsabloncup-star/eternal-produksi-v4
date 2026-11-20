@@ -761,15 +761,55 @@ export function handleSimRequest(
     });
   }
   if (path === "/api/settings/users" && method === "POST") {
+    const body = (init?.body ? JSON.parse(String(init.body)) : {}) as {
+      email?: string;
+      display_name?: string;
+      role?: string;
+      operational_role?: string | null;
+      branch_ids?: string[];
+    };
     return json({
       id: "sim-new-user",
-      email: "new@eternal.local",
-      display_name: "User Baru",
-      role: "user",
-      operational_role: "operator",
-      branch_ids: [],
+      email: body.email || "new@eternal.local",
+      display_name: body.display_name || "User Baru",
+      role: body.role || "user",
+      operational_role: body.operational_role ?? "operator",
+      branch_ids: Array.isArray(body.branch_ids) ? body.branch_ids : [],
       is_active: true,
       effective_module_permissions: [],
+    });
+  }
+  if (path.startsWith("/api/settings/users/") && method === "PATCH") {
+    const body = (init?.body ? JSON.parse(String(init.body)) : {}) as {
+      display_name?: string;
+      role?: string;
+      operational_role?: string | null;
+      branch_ids?: string[];
+    };
+    return json({
+      id: path.split("/").pop(),
+      email: SIM_USER.email,
+      display_name: body.display_name || SIM_USER.display_name,
+      role: body.role || SIM_USER.role,
+      operational_role: body.operational_role ?? null,
+      branch_ids: Array.isArray(body.branch_ids) ? body.branch_ids : ["HQ"],
+      is_active: true,
+      effective_module_permissions: SIM_USER.permissions,
+    });
+  }
+  if (
+    path.startsWith("/api/settings/branches/") &&
+    path.endsWith("/active") &&
+    method === "POST"
+  ) {
+    const code = decodeURIComponent(path.split("/")[4] || "HQ");
+    const body = (init?.body ? JSON.parse(String(init.body)) : {}) as {
+      is_active?: boolean;
+    };
+    return json({
+      code,
+      name: code === "HQ" ? "Head Office" : code,
+      is_active: Boolean(body.is_active),
     });
   }
   if (path === "/api/settings/roles" && method === "GET") {

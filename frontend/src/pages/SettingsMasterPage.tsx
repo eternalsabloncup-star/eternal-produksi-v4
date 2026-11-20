@@ -25,16 +25,24 @@ import {
   fetchShifts,
   saveProductScreenSize,
   saveRolePermissions,
+  setBranchActive,
   setUserActive,
   SettingsApiError,
+  updateSettingsUser,
   upsertBranch,
   upsertMachine,
   upsertShift,
   type AuditItem,
+  type SettingsBranch,
   type SettingsRole,
   type SettingsUser,
 } from "../api/settings";
 import { ConfirmationSuccessOverlay } from "../components/ConfirmationSuccessOverlay";
+import {
+  activeBranchOptions,
+  formatUserBranches,
+  toggleBranchId,
+} from "./settingsUsersUi";
 
 export type SettingsTabId =
   | "overview"
@@ -220,6 +228,7 @@ const EMPTY_USER = {
   password: "",
   role: "user",
   operational_role: "",
+  branch_ids: [] as string[],
 };
 
 /** Pengaturan V4 — Settings Center; draft lokal → Simpan eksplisit. */
@@ -252,7 +261,7 @@ export function SettingsMasterPage() {
   const [selectedRole, setSelectedRole] = useState<string>("");
   const [permReason, setPermReason] = useState("");
   const [confirmSensitive, setConfirmSensitive] = useState(false);
-  const [branches, setBranches] = useState<Array<{ code: string; name: string }>>([]);
+  const [branches, setBranches] = useState<SettingsBranch[]>([]);
   const [machines, setMachines] = useState<
     Array<{ code: string; label: string; branch_code?: string }>
   >([]);
@@ -270,6 +279,14 @@ export function SettingsMasterPage() {
   >([]);
 
   const [newUser, setNewUser] = useState(EMPTY_USER);
+  const [editingUser, setEditingUser] = useState<SettingsUser | null>(null);
+  const [editUserForm, setEditUserForm] = useState({
+    display_name: "",
+    role: "user",
+    operational_role: "",
+    branch_ids: [] as string[],
+  });
+  const [savingEditUser, setSavingEditUser] = useState(false);
   const [newRole, setNewRole] = useState({ role_key: "", label: "" });
   const [newBranch, setNewBranch] = useState({ code: "", name: "" });
   const [newMachine, setNewMachine] = useState({ code: "", label: "", branch_code: "" });
@@ -382,7 +399,33 @@ export function SettingsMasterPage() {
   const formDirtyUsers =
     Boolean(newUser.email.trim()) ||
     Boolean(newUser.display_name.trim()) ||
-    Boolean(newUser.password);
+    Boolean(newUser.password) ||
+    newUser.branch_ids.length > 0 ||
+    editingUser != null;
+  const assignableBranches = useMemo(
+    () => activeBranchOptions(branches),
+    [branches],
+  );
+  const editBranchOptions = useMemo(() => {
+    const selected = new Set(
+      (editUserForm.branch_ids || []).map((c) => c.toUpperCase()),
+    );
+    const byCode = new Map(branches.map((b) => [b.code.toUpperCase(), b]));
+    const rows = [...assignableBranches];
+    for (const code of selected) {
+      if (!rows.some((b) => b.code.toUpperCase() === code)) {
+        const existing = byCode.get(code);
+        rows.push(
+          existing || {
+            code,
+            name: "(nonaktif / tidak di master)",
+            is_active: false,
+          },
+        );
+      }
+    }
+    return rows;
+  }, [assignableBranches, branches, editUserForm.branch_ids]);
   const formDirtyRole = Boolean(newRole.role_key.trim()) || Boolean(newRole.label.trim());
   const formDirtyManual =
     Boolean(manualTask.task_type.trim()) || Boolean(manualTask.label.trim());
@@ -423,6 +466,7 @@ export function SettingsMasterPage() {
     switch (id) {
       case "users":
         setNewUser(EMPTY_USER);
+        setEditingUser(null);
         break;
       case "roles": {
         const role = roles.find((x) => x.role_key === selectedRole);
@@ -834,6 +878,7 @@ export function SettingsMasterPage() {
                           await createSettingsUser({
                             ...newUser,
                             operational_role: newUser.operational_role || null,
+                            branch_ids: newUser.branch_ids,
                           });
                           setNewUser(EMPTY_USER);
                           showFeedback("success", "Berhasil", "Pengaturan berhasil disimpan.");
@@ -890,6 +935,42 @@ export function SettingsMasterPage() {
                         ))}
                       </select>
                     </label>
+                    <fieldset className="ep-settings-field ep-settings-field-span">
+                      <legend className="ep-settings-field-label">Cabang</legend>
+                      {assignableBranches.length === 0 ? (
+                        <p className="ep-settings-hint">
+                          Belum ada cabang aktif di Master Cabang. Tambahkan cabang
+                          terlebih dahulu.
+                        </p>
+                      ) : (
+                        <div className="ep-settings-check-grid">
+                          {assignableBranches.map((b) => {
+                            const checked = newUser.branch_ids.includes(b.code);
+                            return (
+                              <label key={b.code} className="ep-settings-check">
+                                <input
+                                  type="checkbox"
+                                  checked={checked}
+                                  onChange={(e) =>
+                                    setNewUser({
+                                      ...newUser,
+                                      branch_ids: toggleBranchId(
+                                        newUser.branch_ids,
+                                        b.code,
+                                        e.target.checked,
+                                      ),
+                                    })
+                                  }
+                                />
+                                <span>
+                                  {b.code} — {b.name}
+                                </span>
+                              </label>
+                            );
+                          })}
+                        </div>
+                      )}
+                    </fieldset>
                     <div className="ep-settings-actions">
                       <button
                         type="submit"
@@ -901,6 +982,139 @@ export function SettingsMasterPage() {
                     </div>
                   </form>
                 </section>
+
+                {editingUser ? (
+                  <section className="ep-settings-card">
+                    <h3 className="ep-settings-card-title">
+                      Edit pengguna — {editingUser.email}
+                    </h3>
+                    <form
+                      className="ep-settings-form-grid"
+                      onSubmit={(e) => {
+                        e.preventDefault();
+                        if (savingEditUser || !editingUser) return;
+                        void (async () => {
+                          setSavingEditUser(true);
+                          setError(null);
+                          try {
+                            await updateSettingsUser(editingUser.id, {
+                              display_name: editUserForm.display_name,
+                              role: editUserForm.role,
+                              operational_role: editUserForm.operational_role || null,
+                              branch_ids: editUserForm.branch_ids,
+                              reason: "edit-pengguna-ui",
+                            });
+                            setEditingUser(null);
+                            showFeedback(
+                              "success",
+                              "Berhasil",
+                              "Pengaturan berhasil disimpan.",
+                            );
+                            await loadSettings();
+                          } catch (err) {
+                            const msg =
+                              err instanceof Error
+                                ? err.message
+                                : "Gagal menyimpan pengguna.";
+                            setError(msg);
+                            showFeedback("error", "Gagal", msg);
+                          } finally {
+                            setSavingEditUser(false);
+                          }
+                        })();
+                      }}
+                    >
+                      <label className="ep-settings-field">
+                        <span className="ep-settings-field-label">Nama</span>
+                        <input
+                          value={editUserForm.display_name}
+                          onChange={(e) =>
+                            setEditUserForm({
+                              ...editUserForm,
+                              display_name: e.target.value,
+                            })
+                          }
+                          required
+                        />
+                      </label>
+                      <label className="ep-settings-field">
+                        <span className="ep-settings-field-label">Role</span>
+                        <select
+                          value={editUserForm.role}
+                          onChange={(e) =>
+                            setEditUserForm({ ...editUserForm, role: e.target.value })
+                          }
+                          disabled={editingUser.role === "super_admin"}
+                        >
+                          {roles.map((r) => (
+                            <option key={r.role_key} value={r.role_key}>
+                              {r.label}
+                            </option>
+                          ))}
+                        </select>
+                      </label>
+                      <fieldset className="ep-settings-field ep-settings-field-span">
+                        <legend className="ep-settings-field-label">Cabang</legend>
+                        {editBranchOptions.length === 0 ? (
+                          <p className="ep-settings-hint">
+                            Belum ada cabang aktif di Master Cabang.
+                          </p>
+                        ) : (
+                          <div className="ep-settings-check-grid">
+                            {editBranchOptions.map((b) => {
+                              const checked = editUserForm.branch_ids
+                                .map((x) => x.toUpperCase())
+                                .includes(b.code.toUpperCase());
+                              const canAssign = b.is_active;
+                              return (
+                                <label key={b.code} className="ep-settings-check">
+                                  <input
+                                    type="checkbox"
+                                    checked={checked}
+                                    disabled={!canAssign && !checked}
+                                    onChange={(e) => {
+                                      if (!canAssign && e.target.checked) return;
+                                      setEditUserForm({
+                                        ...editUserForm,
+                                        branch_ids: toggleBranchId(
+                                          editUserForm.branch_ids,
+                                          b.code,
+                                          e.target.checked,
+                                        ),
+                                      });
+                                    }}
+                                  />
+                                  <span>
+                                    {b.code} — {b.name}
+                                    {!b.is_active ? " (nonaktif)" : ""}
+                                  </span>
+                                </label>
+                              );
+                            })}
+                          </div>
+                        )}
+                      </fieldset>
+                      <div className="ep-settings-actions">
+                        <button
+                          type="button"
+                          className="ep-btn"
+                          disabled={savingEditUser}
+                          onClick={() => setEditingUser(null)}
+                        >
+                          Batal
+                        </button>
+                        <button
+                          type="submit"
+                          className={`ep-btn primary${savingEditUser ? " is-busy" : ""}`}
+                          disabled={savingEditUser}
+                        >
+                          {savingEditUser ? "Menyimpan…" : "Simpan perubahan"}
+                        </button>
+                      </div>
+                    </form>
+                  </section>
+                ) : null}
+
                 <section className="ep-settings-card">
                   <h3 className="ep-settings-card-title">Daftar pengguna</h3>
                   <div className="ep-settings-table-wrap">
@@ -911,6 +1125,7 @@ export function SettingsMasterPage() {
                           <th>Nama</th>
                           <th className="is-role">Role</th>
                           <th className="is-role">Ops</th>
+                          <th>Cabang</th>
                           <th className="is-status">Aktif</th>
                           <th className="is-actions">Aksi</th>
                         </tr>
@@ -918,7 +1133,7 @@ export function SettingsMasterPage() {
                       <tbody>
                         {users.length === 0 ? (
                           <tr>
-                            <td colSpan={6}>
+                            <td colSpan={7}>
                               <div className="ep-settings-empty">
                                 Tidak ada data / akses ditolak.
                               </div>
@@ -931,6 +1146,9 @@ export function SettingsMasterPage() {
                               <td>{u.display_name}</td>
                               <td className="is-role">{u.role}</td>
                               <td className="is-role">{u.operational_role || "—"}</td>
+                              <td title={formatUserBranches(u.branch_ids, branches)}>
+                                {formatUserBranches(u.branch_ids, branches)}
+                              </td>
                               <td className="is-status">
                                 <span
                                   className={`ep-settings-pill${u.is_active ? "" : " is-off"}`}
@@ -939,6 +1157,21 @@ export function SettingsMasterPage() {
                                 </span>
                               </td>
                               <td className="is-actions">
+                                <button
+                                  type="button"
+                                  className="ep-btn"
+                                  onClick={() => {
+                                    setEditingUser(u);
+                                    setEditUserForm({
+                                      display_name: u.display_name,
+                                      role: u.role,
+                                      operational_role: u.operational_role || "",
+                                      branch_ids: [...(u.branch_ids || [])],
+                                    });
+                                  }}
+                                >
+                                  Edit
+                                </button>
                                 <button
                                   type="button"
                                   className="ep-btn"
@@ -1390,7 +1623,7 @@ export function SettingsMasterPage() {
                       e.preventDefault();
                       if (savingOrg) return;
                       setSavingOrg(true);
-                      void upsertBranch(newBranch.code, newBranch.name)
+                      void upsertBranch(newBranch.code, newBranch.name, true)
                         .then(async () => {
                           setNewBranch({ code: "", name: "" });
                           showFeedback("success", "Berhasil", "Pengaturan berhasil disimpan.");
@@ -1411,6 +1644,8 @@ export function SettingsMasterPage() {
                         value={newBranch.code}
                         onChange={(e) => setNewBranch({ ...newBranch, code: e.target.value })}
                         required
+                        pattern="[A-Za-z0-9][A-Za-z0-9_-]{0,15}"
+                        title="A-Z / 0-9 / _ / - (max 16), tanpa spasi"
                       />
                     </label>
                     <label className="ep-settings-field">
@@ -1440,12 +1675,14 @@ export function SettingsMasterPage() {
                         <tr>
                           <th style={{ width: 140 }}>Kode</th>
                           <th>Nama</th>
+                          <th className="is-status">Aktif</th>
+                          <th className="is-actions">Aksi</th>
                         </tr>
                       </thead>
                       <tbody>
                         {branches.length === 0 ? (
                           <tr>
-                            <td colSpan={2}>
+                            <td colSpan={4}>
                               <div className="ep-settings-empty">Belum ada cabang / akses ditolak.</div>
                             </td>
                           </tr>
@@ -1454,6 +1691,49 @@ export function SettingsMasterPage() {
                             <tr key={b.code}>
                               <td>{b.code}</td>
                               <td>{b.name}</td>
+                              <td className="is-status">
+                                <span
+                                  className={`ep-settings-pill${b.is_active ? "" : " is-off"}`}
+                                >
+                                  {b.is_active ? "Ya" : "Tidak"}
+                                </span>
+                              </td>
+                              <td className="is-actions">
+                                <button
+                                  type="button"
+                                  className="ep-btn"
+                                  disabled={savingOrg}
+                                  onClick={() => {
+                                    const next = !b.is_active;
+                                    const reason = next
+                                      ? ""
+                                      : window.prompt(
+                                          "Alasan nonaktif (wajib jika masih dipakai pengguna):",
+                                        ) || "";
+                                    setSavingOrg(true);
+                                    void setBranchActive(b.code, next, reason || undefined)
+                                      .then(async () => {
+                                        showFeedback(
+                                          "success",
+                                          "Berhasil",
+                                          "Pengaturan berhasil disimpan.",
+                                        );
+                                        await loadSettings();
+                                      })
+                                      .catch((err: unknown) => {
+                                        const msg =
+                                          err instanceof Error
+                                            ? err.message
+                                            : "Gagal ubah status cabang.";
+                                        setError(msg);
+                                        showFeedback("error", "Gagal", msg);
+                                      })
+                                      .finally(() => setSavingOrg(false));
+                                  }}
+                                >
+                                  {b.is_active ? "Nonaktifkan" : "Aktifkan"}
+                                </button>
+                              </td>
                             </tr>
                           ))
                         )}

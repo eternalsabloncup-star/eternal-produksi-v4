@@ -72,6 +72,7 @@ def create_user(db: Database, actor: dict[str, Any], body: dict[str, Any]) -> di
     _require(actor, PERM_MANAGE_USERS)
     role = str(body.get("role") or ROLE_USER)
     perms = _resolve_module_perms_for_role(db, role)
+    branch_ids = org.validate_branch_ids_for_assignment(db, body.get("branch_ids"))
     created = users.create_user(
         db,
         email=str(body["email"]),
@@ -79,7 +80,7 @@ def create_user(db: Database, actor: dict[str, Any], body: dict[str, Any]) -> di
         password=str(body["password"]),
         role=role,
         operational_role=body.get("operational_role"),
-        branch_ids=body.get("branch_ids"),
+        branch_ids=branch_ids,
         effective_module_permissions=perms,
     )
     append_audit_event(
@@ -87,7 +88,11 @@ def create_user(db: Database, actor: dict[str, Any], body: dict[str, Any]) -> di
         action="settings.user.create",
         actor_email=_actor(actor),
         target_email=created["email"],
-        detail={"after": {k: created[k] for k in created if k != "id"}, "user_id": created["id"]},
+        detail={
+            "after": {k: created[k] for k in created if k != "id"},
+            "user_id": created["id"],
+            "branch_ids": created.get("branch_ids") or [],
+        },
     )
     return created
 
@@ -101,13 +106,16 @@ def update_user(db: Database, actor: dict[str, Any], user_id: str, body: dict[st
     perms = None
     if role is not None:
         perms = _resolve_module_perms_for_role(db, str(role))
+    branch_ids = None
+    if "branch_ids" in body:
+        branch_ids = org.validate_branch_ids_for_assignment(db, body.get("branch_ids"))
     updated = users.update_user(
         db,
         user_id,
         display_name=body.get("display_name"),
         role=str(role) if role is not None else None,
         operational_role=body["operational_role"] if "operational_role" in body else ...,
-        branch_ids=body.get("branch_ids"),
+        branch_ids=branch_ids,
         effective_module_permissions=perms,
     )
     append_audit_event(
@@ -115,7 +123,13 @@ def update_user(db: Database, actor: dict[str, Any], user_id: str, body: dict[st
         action="settings.user.update",
         actor_email=_actor(actor),
         target_email=updated["email"],
-        detail={"before": before, "after": updated, "reason": body.get("reason")},
+        detail={
+            "before": before,
+            "after": updated,
+            "reason": body.get("reason"),
+            "branch_ids_before": before.get("branch_ids") or [],
+            "branch_ids_after": updated.get("branch_ids") or [],
+        },
     )
     return updated
 
@@ -451,7 +465,12 @@ def deactivate_task_type(
 
 
 def list_branches(db: Database, actor: dict[str, Any]) -> list[dict[str, Any]]:
-    _require(actor, PERM_MANAGE_SETTINGS)
+    # Pengaturan Pengguna perlu daftar cabang aktif tanpa wajib settings.manage.
+    if not (
+        has_permission(actor, PERM_MANAGE_SETTINGS)
+        or has_permission(actor, PERM_MANAGE_USERS)
+    ):
+        raise TaskPermissionError("Akses ditolak")
     return org.list_docs(db, org.BRANCHES)
 
 

@@ -245,6 +245,14 @@ def normalize_sales_order(payload: dict[str, Any]) -> PoHeaderModel:
         **seller_meta,
         **ship_zone_meta,
     }
+    # Accurate SO terbukti live mengirim branchId numerik — simpan sebagai jejak
+    # otoritatif Accurate. JANGAN mengarang branch_code Master dari ID ini.
+    branch_id_raw = payload.get("branchId")
+    if branch_id_raw is None and isinstance(payload.get("branch"), dict):
+        branch_id_raw = payload["branch"].get("id") or payload["branch"].get("no")
+    if branch_id_raw is not None and str(branch_id_raw).strip() not in {"", "None"}:
+        meta["accurate_branch_id"] = str(branch_id_raw).strip()
+        meta["accurate_branch_id_source"] = "branchId"
 
     return PoHeaderModel(
         origin="accurate",
