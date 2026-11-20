@@ -257,6 +257,28 @@ class Settings(BaseSettings):
 
     def safe_summary(self) -> dict[str, object]:
         """Non-secret config summary for diagnostics."""
+
+        def _safe_tracking_seal_preflight() -> dict[str, object]:
+            try:
+                from app.services.tracking_token_seal import preflight_tracking_seal_key
+
+                seal = preflight_tracking_seal_key()
+                return {
+                    "configured": bool(seal.get("configured")),
+                    "key_format_ok": bool(seal.get("key_format_ok")),
+                    "roundtrip_ok": bool(seal.get("roundtrip_ok")),
+                    "production_ready": bool(seal.get("production_ready")),
+                    "status": str(seal.get("status") or "unknown"),
+                }
+            except Exception:  # noqa: BLE001
+                return {
+                    "configured": bool(self.tracking_link_seal_key.strip()),
+                    "key_format_ok": False,
+                    "roundtrip_ok": False,
+                    "production_ready": False,
+                    "status": "error",
+                }
+
         return {
             "app_env": self.app_env,
             "mongodb_db": self.mongodb_db,
@@ -273,6 +295,7 @@ class Settings(BaseSettings):
             "tracking_link_seal_key_configured": bool(
                 self.tracking_link_seal_key.strip()
             ),
+            "tracking_seal_preflight": _safe_tracking_seal_preflight(),
             "accurate_db_id_configured": bool(self.accurate_db_id.strip()),
             "accurate_db_id_length": (
                 len(self.accurate_db_id.strip()) if self.accurate_db_id.strip() else 0

@@ -125,7 +125,7 @@ describe("liveTrackingCopy — generate + repeated copy", () => {
     expect(navigator.clipboard.writeText).toHaveBeenLastCalledWith(`http://x${path}`);
   });
 
-  it("3. clipboard fail → no success path (error clipboard)", async () => {
+  it("3. clipboard fail after async → error + absoluteUrl for manual fallback", async () => {
     Object.defineProperty(navigator, "clipboard", {
       configurable: true,
       value: {
@@ -134,16 +134,27 @@ describe("liveTrackingCopy — generate + repeated copy", () => {
         }),
       },
     });
-    activeUrlMock.mockRejectedValue(
-      new TrackingApiError(404, "Tidak ada link", "x"),
-    );
-    generateMock.mockResolvedValue(genResponse("10001"));
-
-    await expect(createOrCopyLiveTrackingLink("10001")).rejects.toMatchObject({
-      code: "clipboard",
-      linkCreated: true,
+    // Simulate mobile: user-activation lost after await — no execCommand doc either.
+    const path = "/t/pt-acme/po-10001/TOKCLIPFAILXXXXXXXXXX";
+    activeUrlMock.mockResolvedValue({
+      status: "ok",
+      path,
+      link_id: "link-10001",
+      accurate_po_id: "10001",
+      customer_slug: "pt-acme",
+      po_slug: "po-10001",
+      url_recoverable: true,
     });
-    expect(generateMock).toHaveBeenCalledTimes(1);
+
+    const err = await createOrCopyLiveTrackingLink(
+      "10001",
+      "http://127.0.0.1:5173",
+    ).catch((e) => e);
+    expect(err).toBeInstanceOf(LiveTrackingCopyError);
+    expect(err.code).toBe("clipboard");
+    expect(err.absoluteUrl).toBe(`http://127.0.0.1:5173${path}`);
+    expect(generateMock).not.toHaveBeenCalled();
+    expect(regenerateMock).not.toHaveBeenCalled();
   });
 
   it("4. generate API fail → no linkCreated", async () => {
@@ -206,20 +217,35 @@ describe("liveTrackingCopy — generate + repeated copy", () => {
     expect(regenerateMock).not.toHaveBeenCalled();
   });
 
-  it("7. recover only with confirmed true", async () => {
+  it("7. recover only with confirmed true + expectedLinkId", async () => {
     await expect(
-      recoverAndCopyLiveTrackingLink("10001", { confirmed: false }),
+      recoverAndCopyLiveTrackingLink("10001", {
+        confirmed: false,
+        expectedLinkId: "legacy-1",
+      }),
     ).rejects.toMatchObject({ code: "legacy_unrecoverable" });
     expect(regenerateMock).not.toHaveBeenCalled();
 
     regenerateMock.mockResolvedValue(genResponse("10001"));
     const out = await recoverAndCopyLiveTrackingLink(
       "10001",
-      { confirmed: true },
+      { confirmed: true, expectedLinkId: "legacy-1" },
       "http://x",
     );
     expect(out.mode).toBe("recover");
-    expect(regenerateMock).toHaveBeenCalledTimes(1);
+    expect(regenerateMock).toHaveBeenCalledWith("10001", {
+      expectedActiveLinkId: "legacy-1",
+    });
+  });
+
+  it("7b. recover without expectedLinkId rejected", async () => {
+    await expect(
+      recoverAndCopyLiveTrackingLink("10001", {
+        confirmed: true,
+        expectedLinkId: "",
+      }),
+    ).rejects.toMatchObject({ code: "api" });
+    expect(regenerateMock).not.toHaveBeenCalled();
   });
 
   it("8. generateAndCopy still works for absent PO", async () => {

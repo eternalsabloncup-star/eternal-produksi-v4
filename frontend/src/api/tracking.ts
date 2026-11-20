@@ -285,17 +285,29 @@ export async function generateTrackingLink(
 
 export async function regenerateTrackingLink(
   accuratePoId: string,
+  opts?: { expectedActiveLinkId?: string; ttlSeconds?: number },
 ): Promise<GenerateLinkResponse> {
+  const body: Record<string, unknown> = {};
+  if (opts?.ttlSeconds) body.ttl_seconds = opts.ttlSeconds;
+  if (opts?.expectedActiveLinkId) {
+    body.expected_active_link_id = opts.expectedActiveLinkId;
+  }
   const response = await fetch(
     `/api/tracking/${encodeURIComponent(accuratePoId)}/links/regenerate`,
     {
       method: "POST",
       credentials: "include",
       headers: { "Content-Type": "application/json", ...csrfHeader() },
-      body: "{}",
+      body: JSON.stringify(body),
     },
   );
-  if (!response.ok) throw new Error(await parseError(response));
+  if (!response.ok) {
+    throw new TrackingApiError(
+      response.status,
+      await parseErrorDetail(response),
+      "Gagal regenerate Live Tracking.",
+    );
+  }
   return (await response.json()) as GenerateLinkResponse;
 }
 

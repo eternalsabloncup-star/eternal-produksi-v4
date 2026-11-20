@@ -149,13 +149,54 @@ def regenerate_tracking_link(
     actor_email: str | None,
     scopes: list[str] | None = None,
     ttl_seconds: int | None = None,
+    expected_active_link_id: str | None = None,
 ) -> dict[str, Any]:
-    revoked = links.revoke_active_for_po(
-        db,
-        accurate_po_id=str(accurate_po_id),
-        actor_email=actor_email,
-        reason="regenerate",
-    )
+    """Regenerate link aktif.
+
+    Jika ``expected_active_link_id`` diisi (pemulihan legacy terkendali):
+    - aktif harus masih sama dengan yang dikonfirmasi operator;
+    - jika berubah → TrackingConflict tanpa mencabut link baru/lain;
+    - jika sudah sealed (bukan legacy) → Conflict (pakai reveal, bukan regenerate).
+    """
+    po_id = str(accurate_po_id)
+    expected = str(expected_active_link_id or "").strip() or None
+    if expected:
+        active = _lazy_expire_active_doc(
+            db, links.find_active_doc_for_po(db, po_id)
+        )
+        if active is None:
+            raise TrackingNotFound(
+                "Tidak ada link aktif untuk dipulihkan — mungkin sudah diganti."
+            )
+        current_id = str(active.get("_id") or "")
+        if current_id != expected:
+            raise TrackingConflict(
+                "Link aktif berubah sejak konfirmasi operator — pemulihan dibatalkan "
+                "tanpa mencabut link yang sekarang aktif."
+            )
+        if active.get("token_sealed"):
+            raise TrackingConflict(
+                "Link aktif sudah dapat disalin ulang (sealed). "
+                "Pemulihan regenerate tidak diperlukan."
+            )
+        revoked_doc = links.revoke_link(
+            db,
+            link_id=expected,
+            actor_email=actor_email,
+            reason="legacy_recovery",
+        )
+        revoked = 1 if revoked_doc else 0
+        if revoked == 0:
+            raise TrackingConflict(
+                "Link yang dikonfirmasi tidak lagi aktif — pemulihan dibatalkan."
+            )
+    else:
+        revoked = links.revoke_active_for_po(
+            db,
+            accurate_po_id=po_id,
+            actor_email=actor_email,
+            reason="regenerate",
+        )
     result = generate_tracking_link(
         db,
         accurate_po_id=accurate_po_id,
@@ -170,9 +211,11 @@ def regenerate_tracking_link(
         actor_email=actor_email,
         target_email=None,
         detail={
-            "accurate_po_id": str(accurate_po_id),
+            "accurate_po_id": po_id,
             "revoked_previous": revoked,
             "link_id": result["link"].get("id"),
+            "expected_active_link_id": expected,
+            # Jangan log raw token.
         },
     )
     return result

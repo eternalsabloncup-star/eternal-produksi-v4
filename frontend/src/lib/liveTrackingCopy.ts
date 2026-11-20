@@ -27,16 +27,26 @@ export class LiveTrackingCopyError extends Error {
   /** True when generate/regenerate succeeded but a later step (clipboard) failed. */
   readonly linkCreated: boolean;
   readonly linkId?: string;
+  /** Absolute URL for manual-copy fallback when Clipboard API rejects after async. */
+  readonly absoluteUrl?: string;
+  readonly path?: string;
   constructor(
     code: LiveTrackingCopyErrorCode,
     message: string,
-    opts?: { linkCreated?: boolean; linkId?: string },
+    opts?: {
+      linkCreated?: boolean;
+      linkId?: string;
+      absoluteUrl?: string;
+      path?: string;
+    },
   ) {
     super(message);
     this.name = "LiveTrackingCopyError";
     this.code = code;
     this.linkCreated = Boolean(opts?.linkCreated);
     this.linkId = opts?.linkId;
+    this.absoluteUrl = opts?.absoluteUrl;
+    this.path = opts?.path;
   }
 }
 
@@ -53,21 +63,46 @@ export async function fetchTrackingLinkActive(poKey: string): Promise<boolean> {
   return hasActiveTrackingLink(items);
 }
 
-export async function copyTextToClipboard(text: string): Promise<void> {
-  if (!navigator.clipboard?.writeText) {
-    throw new LiveTrackingCopyError(
-      "clipboard",
-      "Clipboard tidak tersedia di browser ini.",
-    );
-  }
+function tryExecCommandCopy(text: string): boolean {
+  if (typeof document === "undefined") return false;
+  const ta = document.createElement("textarea");
+  ta.value = text;
+  ta.setAttribute("readonly", "");
+  ta.style.position = "fixed";
+  ta.style.left = "-9999px";
+  ta.style.top = "0";
+  document.body.appendChild(ta);
+  ta.focus();
+  ta.select();
+  ta.setSelectionRange(0, text.length);
+  let ok = false;
   try {
-    await navigator.clipboard.writeText(text);
+    ok = Boolean(document.execCommand && document.execCommand("copy"));
   } catch {
-    throw new LiveTrackingCopyError(
-      "clipboard",
-      "Gagal menyalin link. Izinkan akses clipboard lalu coba lagi.",
-    );
+    ok = false;
   }
+  document.body.removeChild(ta);
+  return ok;
+}
+
+/**
+ * Copy text. After async awaits, mobile browsers often revoke user-activation —
+ * Clipboard API / execCommand may fail; callers must show selectable URL fallback.
+ */
+export async function copyTextToClipboard(text: string): Promise<void> {
+  if (navigator.clipboard?.writeText) {
+    try {
+      await navigator.clipboard.writeText(text);
+      return;
+    } catch {
+      // fall through — common after async GET when transient activation is gone
+    }
+  }
+  if (tryExecCommandCopy(text)) return;
+  throw new LiveTrackingCopyError(
+    "clipboard",
+    "Clipboard ditolak browser (sering di mobile setelah request async). Salin manual dari kolom URL.",
+  );
 }
 
 function mapApiError(err: unknown): LiveTrackingCopyError {
@@ -80,14 +115,20 @@ function mapApiError(err: unknown): LiveTrackingCopyError {
     if (err.status === 403 || /izin|forbidden|akses ditolak/i.test(msg)) {
       return new LiveTrackingCopyError("permission", msg);
     }
-    if (code === "legacy_unrecoverable" || err.status === 409) {
+    if (err.status === 409) {
       const linkId =
-        typeof detail === "object" ? detail.link_id : undefined;
-      if (code === "legacy_unrecoverable" || detail && typeof detail === "object" && detail.requires_explicit_recovery) {
+        typeof detail === "object" ? detail?.link_id : undefined;
+      if (
+        code === "legacy_unrecoverable" ||
+        (typeof detail === "object" && detail?.requires_explicit_recovery)
+      ) {
         return new LiveTrackingCopyError("legacy_unrecoverable", msg, {
           linkCreated: true,
           linkId,
         });
+      }
+      if (code === "conflict") {
+        return new LiveTrackingCopyError("api", msg, { linkCreated: true });
       }
       return new LiveTrackingCopyError("already_created", msg, {
         linkCreated: true,
@@ -151,6 +192,8 @@ async function copyPath(
     if (err instanceof LiveTrackingCopyError && err.code === "clipboard") {
       throw new LiveTrackingCopyError("clipboard", err.message, {
         linkCreated: opts?.linkCreated ?? mode !== "copy",
+        absoluteUrl,
+        path,
       });
     }
     throw err;
@@ -259,7 +302,7 @@ export async function generateAndCopyLiveTrackingLink(
  */
 export async function recoverAndCopyLiveTrackingLink(
   poKey: string,
-  opts: { confirmed: boolean },
+  opts: { confirmed: boolean; expectedLinkId: string },
   origin: string = typeof window !== "undefined" ? window.location.origin : "",
 ): Promise<GenerateAndCopyResult> {
   const key = String(poKey || "").trim();
@@ -273,6 +316,14 @@ export async function recoverAndCopyLiveTrackingLink(
     throw new LiveTrackingCopyError(
       "legacy_unrecoverable",
       "Pemulihan dibatalkan — regenerate memerlukan persetujuan eksplisit.",
+      { linkCreated: true, linkId: opts.expectedLinkId },
+    );
+  }
+  const expectedLinkId = String(opts.expectedLinkId || "").trim();
+  if (!expectedLinkId) {
+    throw new LiveTrackingCopyError(
+      "api",
+      "Pemulihan memerlukan identitas link yang dikonfirmasi.",
       { linkCreated: true },
     );
   }
@@ -280,7 +331,9 @@ export async function recoverAndCopyLiveTrackingLink(
   try {
     let path = "";
     try {
-      const gen = await regenerateTrackingLink(key);
+      const gen = await regenerateTrackingLink(key, {
+        expectedActiveLinkId: expectedLinkId,
+      });
       path = gen.path;
     } catch (err) {
       throw mapApiError(err);

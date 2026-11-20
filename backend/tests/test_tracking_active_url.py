@@ -155,11 +155,11 @@ def test_legacy_hash_only_requires_explicit_recovery(
         {"accurate_po_id": "95106", "status": "active"}
     ) == 1
 
-    # Explicit regenerate recovers.
+    # Explicit regenerate recovers only when expected link id matches.
     regen = app_client.post(
         "/api/tracking/95106/links/regenerate",
         headers={"X-CSRF-Token": csrf},
-        json={},
+        json={"expected_active_link_id": gen["link"]["id"]},
     )
     assert regen.status_code == 200, regen.text
     new_path = regen.json()["path"]
@@ -173,3 +173,114 @@ def test_legacy_hash_only_requires_explicit_recovery(
         f"/api/public/tracking/{gen['customer_slug']}/{gen['po_slug']}/{gen['token']}"
     )
     assert old_pub.status_code == 404
+
+
+def test_legacy_recovery_rejects_stale_expected_link_id(
+    app_client: TestClient, db: Database
+) -> None:
+    """Race: operator confirms legacy A, but active becomes B → conflict, no revoke of B."""
+    _sync_po(db)
+    _seed_admin(db)
+    csrf = _login(app_client)
+    gen = app_client.post(
+        "/api/tracking/95106/links",
+        headers={"X-CSRF-Token": csrf},
+        json={},
+    ).json()
+    legacy_id = gen["link"]["id"]
+    db["tracking_links"].update_one(
+        {"_id": __import__("bson").ObjectId(legacy_id)},
+        {"$unset": {"token_sealed": ""}},
+    )
+
+    # Another actor regenerates first (new sealed active).
+    other = app_client.post(
+        "/api/tracking/95106/links/regenerate",
+        headers={"X-CSRF-Token": csrf},
+        json={},
+    )
+    assert other.status_code == 200, other.text
+    new_id = other.json()["link"]["id"]
+    new_path = other.json()["path"]
+    assert new_id != legacy_id
+
+    stale = app_client.post(
+        "/api/tracking/95106/links/regenerate",
+        headers={"X-CSRF-Token": csrf},
+        json={"expected_active_link_id": legacy_id},
+    )
+    assert stale.status_code == 409, stale.text
+    detail = stale.json()["detail"]
+    assert detail["code"] == "conflict"
+    assert "berubah" in detail["message"].lower() or "dibatalkan" in detail["message"].lower()
+
+    # New active link intact.
+    assert (
+        db["tracking_links"].count_documents(
+            {"_id": __import__("bson").ObjectId(new_id), "status": "active"}
+        )
+        == 1
+    )
+    still = app_client.get("/api/tracking/95106/links/active-url")
+    assert still.status_code == 200
+    assert still.json()["path"] == new_path
+
+
+def test_seal_key_preflight_and_wrong_key_fail_closed(
+    app_client: TestClient, db: Database, monkeypatch
+) -> None:
+    from cryptography.fernet import Fernet
+
+    from app.config import clear_settings_cache
+    from app.services.tracking_token_seal import (
+        clear_seal_cache,
+        preflight_tracking_seal_key,
+        unseal_raw_token,
+    )
+
+    _sync_po(db)
+    _seed_admin(db)
+    csrf = _login(app_client)
+
+    key_a = Fernet.generate_key().decode()
+    monkeypatch.setenv("V4_TRACKING_LINK_SEAL_KEY", key_a)
+    clear_settings_cache()
+    clear_seal_cache()
+
+    pf = preflight_tracking_seal_key()
+    assert pf["configured"] is True
+    assert pf["key_format_ok"] is True
+    assert pf["roundtrip_ok"] is True
+    assert "key" not in str(pf).lower() or "configured" in str(pf)
+    # Never embed secret material.
+    assert key_a not in str(pf)
+
+    health = app_client.get("/api/health")
+    assert health.status_code == 200
+    seal = health.json()["tracking_seal"]
+    assert seal["roundtrip_ok"] is True
+    assert key_a not in health.text
+
+    gen = app_client.post(
+        "/api/tracking/95106/links",
+        headers={"X-CSRF-Token": csrf},
+        json={},
+    )
+    assert gen.status_code == 201, gen.text
+    stored = db["tracking_links"].find_one({"accurate_po_id": "95106", "status": "active"})
+    assert stored and stored.get("token_sealed")
+
+    # Wrong/missing key → cannot unseal (recovery = restore correct key, not regenerate auto).
+    key_b = Fernet.generate_key().decode()
+    monkeypatch.setenv("V4_TRACKING_LINK_SEAL_KEY", key_b)
+    clear_settings_cache()
+    clear_seal_cache()
+    try:
+        unseal_raw_token(stored["token_sealed"])
+        raise AssertionError("expected TrackingSealError")
+    except Exception as exc:
+        assert "TRACKING_SEAL" in getattr(exc, "code", "") or "kunci" in str(exc).lower() or "Ciphertext" in str(exc)
+
+    reveal = app_client.get("/api/tracking/95106/links/active-url")
+    assert reveal.status_code in (500, 503)
+    assert key_b not in reveal.text

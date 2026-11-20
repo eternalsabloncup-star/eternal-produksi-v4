@@ -1,6 +1,7 @@
 import {
   useCallback,
   useEffect,
+  useRef,
   useState,
   type MouseEvent,
   type ReactNode,
@@ -32,14 +33,32 @@ type Status = "loading" | "absent" | "created";
  * Belum ada → Buat & Salin Link.
  * Sudah aktif → Salin Link (reveal URL, tanpa regenerate).
  * Legacy hash-only → penjelasan + pemulihan terkendali (persetujuan eksplisit).
+ * Clipboard gagal (mobile async) → field URL selectable manual, tanpa regenerate.
  */
 export function InboxLiveTrackingButton({ row }: Props) {
   const poKey = resolveTrackingPoKey(row);
   const [status, setStatus] = useState<Status>(poKey ? "loading" : "absent");
   const [busy, setBusy] = useState(false);
   const [feedback, setFeedback] = useState<Feedback | null>(null);
+  const [manualUrl, setManualUrl] = useState<string | null>(null);
+  const manualRef = useRef<HTMLInputElement | null>(null);
 
   const closeFeedback = useCallback(() => setFeedback(null), []);
+
+  const showManualFallback = useCallback((url: string, message: string) => {
+    setManualUrl(url);
+    setFeedback({
+      tone: "error",
+      title: "Salin manual",
+      message,
+    });
+    queueMicrotask(() => {
+      const el = manualRef.current;
+      if (!el) return;
+      el.focus();
+      el.select();
+    });
+  }, []);
 
   const refreshStatus = useCallback(async () => {
     if (!poKey) {
@@ -64,6 +83,7 @@ export function InboxLiveTrackingButton({ row }: Props) {
     if (!poKey || busy || status === "loading") return;
     setBusy(true);
     setFeedback(null);
+    setManualUrl(null);
     try {
       await createOrCopyLiveTrackingLink(poKey);
       setStatus("created");
@@ -78,6 +98,7 @@ export function InboxLiveTrackingButton({ row }: Props) {
         err.code === "legacy_unrecoverable"
       ) {
         setStatus("created");
+        const expectedLinkId = err.linkId || "";
         const confirmed = window.confirm(
           `${err.message}\n\nPemulihan akan mencabut link lama dan membuat link baru. Lanjutkan?`,
         );
@@ -90,7 +111,10 @@ export function InboxLiveTrackingButton({ row }: Props) {
           return;
         }
         try {
-          await recoverAndCopyLiveTrackingLink(poKey, { confirmed: true });
+          await recoverAndCopyLiveTrackingLink(poKey, {
+            confirmed: true,
+            expectedLinkId,
+          });
           setStatus("created");
           setFeedback({
             tone: "success",
@@ -98,14 +122,23 @@ export function InboxLiveTrackingButton({ row }: Props) {
             message: `PO ${row.poNo || row.id} · link baru siap dibagikan.`,
           });
         } catch (recoverErr) {
-          setFeedback({
-            tone: "error",
-            title: "Gagal",
-            message:
-              recoverErr instanceof Error
-                ? recoverErr.message
-                : "Gagal memulihkan link.",
-          });
+          if (
+            recoverErr instanceof LiveTrackingCopyError &&
+            recoverErr.code === "clipboard" &&
+            recoverErr.absoluteUrl
+          ) {
+            setStatus("created");
+            showManualFallback(recoverErr.absoluteUrl, recoverErr.message);
+          } else {
+            setFeedback({
+              tone: "error",
+              title: "Gagal",
+              message:
+                recoverErr instanceof Error
+                  ? recoverErr.message
+                  : "Gagal memulihkan link.",
+            });
+          }
         }
         return;
       }
@@ -113,7 +146,11 @@ export function InboxLiveTrackingButton({ row }: Props) {
         if (err.linkCreated || err.code === "already_created") {
           setStatus("created");
         }
-        // Clipboard fail → never show success.
+        if (err.code === "clipboard" && err.absoluteUrl) {
+          showManualFallback(err.absoluteUrl, err.message);
+          return;
+        }
+        // Clipboard fail tanpa URL → error only; never success.
         setFeedback({
           tone: "error",
           title: "Gagal",
@@ -147,7 +184,7 @@ export function InboxLiveTrackingButton({ row }: Props) {
     );
   } else {
     cell = (
-      <span className="ep-cell-center">
+      <span className="ep-cell-center" style={{ display: "flex", flexDirection: "column", gap: 4 }}>
         <button
           type="button"
           className={`ep-btn${busy ? " is-busy" : ""}`}
@@ -169,6 +206,30 @@ export function InboxLiveTrackingButton({ row }: Props) {
         >
           {label}
         </button>
+        {manualUrl ? (
+          <input
+            ref={manualRef}
+            type="text"
+            readOnly
+            value={manualUrl}
+            data-testid="inbox-live-tracking-manual-url"
+            aria-label="URL Live Tracking untuk salin manual"
+            onFocus={(ev) => ev.currentTarget.select()}
+            onClick={(ev) => {
+              ev.stopPropagation();
+              ev.currentTarget.select();
+            }}
+            style={{
+              width: "100%",
+              maxWidth: 220,
+              fontSize: 10,
+              padding: "4px 6px",
+              border: "1px solid #9bb5a8",
+              borderRadius: 4,
+              background: "#f4faf7",
+            }}
+          />
+        ) : null}
       </span>
     );
   }
