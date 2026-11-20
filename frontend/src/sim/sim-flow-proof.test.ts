@@ -19,11 +19,20 @@ describe("sim production-flow by-stage", () => {
     expect(res?.status).toBe(200);
     const body = (await res!.json()) as {
       total: number;
-      items: Array<{ po_no: string; acceptance: { status: string } }>;
+      scan_capped?: boolean;
+      items: Array<{
+        po_no: string;
+        acceptance: { status: string };
+        monitoring_label?: string;
+        stage_status: string;
+      }>;
     };
     expect(body.total).toBe(1);
+    expect(body.scan_capped).toBe(false);
     expect(body.items[0].po_no).toBe("SO-2026/11/002");
     expect(body.items[0].acceptance.status).toBe("accepted");
+    expect(body.items[0].stage_status).toBe("selesai");
+    expect(body.items[0].monitoring_label).toBe("Aktif");
   });
 
   it("design empty while still order masuk frontier", async () => {

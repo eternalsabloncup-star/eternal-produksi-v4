@@ -2,7 +2,6 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   fetchProductionFlow,
   fetchProductionFlowByStage,
-  type FlowNode,
   type ProductionFlow,
   type ProductionFlowStageRow,
 } from "../api/analytics";
@@ -30,11 +29,13 @@ const DEFAULT_HIDDEN = [
   "expedition",
 ];
 
-function statusLabel(status: FlowNode["status"] | string): string {
-  if (status === "selesai") return "Selesai";
-  if (status === "berjalan") return "Berjalan";
-  if (status === "tidak_berlaku") return "Tidak Berlaku";
-  return "Menunggu";
+/** Label kolom monitoring — prefer backend; jangan tampilkan raw SoT "Selesai" di Order Masuk. */
+function monitoringDisplay(row: ProductionFlowStageRow): string {
+  const fromApi = (row.monitoring_label || "").trim();
+  if (fromApi) return fromApi;
+  if (row.node_id === "flow-selesai") return "Selesai";
+  if (row.stage_status === "berjalan") return "Dalam Proses";
+  return "Aktif";
 }
 
 type StageTableRow = {
@@ -302,9 +303,9 @@ export function ProductionFlowApiPanel({
         label: "Status tahap",
         hideable: true,
         filterType: "text",
-        defaultWidth: 120,
-        getFilterValue: (row) => statusLabel(row.stage.stage_status),
-        render: (row) => statusLabel(row.stage.stage_status),
+        defaultWidth: 130,
+        getFilterValue: (row) => monitoringDisplay(row.stage),
+        render: (row) => monitoringDisplay(row.stage),
       },
       {
         id: "stageDetail",
@@ -483,7 +484,7 @@ export function ProductionFlowApiPanel({
             <div className="ep-modalbody">
               <dl className="ep-kv">
                 <dt>Status tahap</dt>
-                <dd>{statusLabel(detail.stage.stage_status)}</dd>
+                <dd>{monitoringDisplay(detail.stage)}</dd>
                 <dt>Keterangan</dt>
                 <dd>{detail.stage.stage_detail || "—"}</dd>
                 <dt>Penerimaan</dt>

@@ -742,6 +742,12 @@ export function handleSimRequest(
       });
     const start = (page - 1) * pageSize;
     const slice = inStage.slice(start, start + pageSize);
+    const monLabel =
+      nodeId === "flow-selesai"
+        ? "Selesai"
+        : String(node.status) === "berjalan"
+          ? "Dalam Proses"
+          : "Aktif";
     return json({
       node_id: nodeId,
       stage_label: node.label,
@@ -754,6 +760,7 @@ export function handleSimRequest(
           stage_label: node.label,
           stage_status: node.status,
           stage_detail: node.detail,
+          monitoring_label: monLabel,
           active_stages: flowItem?.active_stages || ["flow-order-masuk"],
           has_print_items: true,
           acceptance: doc.acceptance,
@@ -768,6 +775,7 @@ export function handleSimRequest(
       total: inStage.length,
       page,
       pageSize,
+      scan_capped: false,
       accepted_only: true,
       source: "api-simulation",
     });

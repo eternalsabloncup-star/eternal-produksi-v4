@@ -250,8 +250,12 @@ _SERIAL_AFTER_PREP = (
     "flow-pengiriman",
 )
 
-# Batas aman scan accepted PO per request by-stage (tanpa index baru).
-PRODUCTION_FLOW_SCAN_CAP = 500
+# Batch cursor by-stage — tanpa memotong populasi accepted.
+PRODUCTION_FLOW_BATCH_SIZE = 100
+
+MONITOR_LABEL_AKTIF = "Aktif"
+MONITOR_LABEL_DALAM_PROSES = "Dalam Proses"
+MONITOR_LABEL_SELESAI = "Selesai"
 
 
 def _node(node_id: str, label: str, status: str, detail: str) -> dict[str, Any]:
@@ -286,26 +290,162 @@ def _track_frontier(track: tuple[str, ...], statuses: dict[str, str]) -> list[st
     return []
 
 
-def _parallel_frontier(
-    pair: tuple[str, ...], statuses: dict[str, str]
+def monitoring_label(*, node_id: str, node_status: str) -> str:
+    """Label tabel monitoring — bukan status SoT node."""
+    if node_id == FLOW_SELESAI_ID:
+        return MONITOR_LABEL_SELESAI
+    if node_status == NODE_RUNNING:
+        return MONITOR_LABEL_DALAM_PROSES
+    return MONITOR_LABEL_AKTIF
+
+
+def _line_print_active_stages(
+    db: Database,
+    *,
+    accurate_po_id: str,
+    line: dict[str, Any],
+    line_allocs: list[dict[str, Any]],
+) -> set[str]:
+    """Membership per item Cetak setelah penjadwalan — union di level PO."""
+    active: set[str] = set()
+    if not line_allocs:
+        active.add("flow-penjadwalan")
+        return active
+
+    line_id = str(line.get("accurate_line_id") or "")
+    line_qty = float(line.get("qty") or 0)
+    screened = [a for a in line_allocs if production.screen_confirmed_qty(db, a) > 0]
+    all_screened = bool(line_allocs) and len(screened) == len(line_allocs)
+
+    prep = tasks.get_task(db, production.prep_task_key(accurate_po_id, line_id)) or {}
+    prep_qty = float(prep.get("qty_confirmed") or 0)
+    prep_done = bool(line_qty) and prep_qty >= line_qty
+
+    # Screener || Persiapan
+    if not all_screened:
+        active.add("flow-screener")
+    if not prep_done:
+        active.add("flow-persiapan")
+    if not all_screened or not prep_done:
+        return active
+
+    uploaded = sum(
+        1 for a in line_allocs if samples.latest_sample(db, a["allocation_id"])
+    )
+    approved = sum(
+        1 for a in line_allocs if samples.approved_sample(db, a["allocation_id"])
+    )
+    all_uploaded = uploaded == len(line_allocs)
+    all_approved = approved == len(line_allocs)
+    if not all_uploaded:
+        active.add("flow-operator")
+        return active
+    if not all_approved:
+        active.add("flow-konfirmasi-sample")
+        return active
+
+    printed = production.printed_total_for_line(
+        db, accurate_po_id=accurate_po_id, accurate_line_id=line_id
+    )
+    if not line_qty or printed < line_qty:
+        active.add("flow-cetak")
+        return active
+
+    qc = tasks.get_task(db, production.qc_task_key(accurate_po_id, line_id)) or {}
+    packed = float(qc.get("qty_confirmed") or 0)
+    if packed < printed:
+        active.add("flow-packing")
+        return active
+    return active
+
+
+def active_stage_membership_from_facts(
+    db: Database,
+    *,
+    statuses: dict[str, str],
+    has_print: bool,
+    accurate_po_id: str,
+    print_lines: list[dict[str, Any]],
+    allocations_by_line: dict[str, list[dict[str, Any]]],
 ) -> list[str]:
-    """Kedua sisi paralel dapat aktif bersamaan jika belum selesai."""
-    out: list[str] = []
-    for node_id in pair:
-        st = statuses.get(node_id, NODE_WAITING)
-        if st in (NODE_RUNNING, NODE_WAITING):
-            out.append(node_id)
-    return out
+    """Membership tahap aktif dari fakta operasional (+ progres per line)."""
+    if not statuses:
+        return []
+
+    if all(_status_passed(statuses.get(nid, NODE_WAITING)) for nid, _ in PRODUCTION_FLOW_NODES):
+        return [FLOW_SELESAI_ID]
+
+    if not _order_masuk_left_entry(statuses):
+        return ["flow-order-masuk"]
+
+    active: set[str] = set()
+    active.update(_track_frontier(_TRACK_DESIGN, statuses))
+    active.update(_track_frontier(_TRACK_PAYMENT, statuses))
+
+    design_done = _status_passed(statuses.get("flow-approval-design", NODE_WAITING))
+    payment_done = _status_passed(statuses.get("flow-approval-payment", NODE_WAITING))
+    if not (design_done and payment_done):
+        return _stable_stage_list(active)
+
+    if not has_print:
+        for nid in ("flow-surat-jalan", "flow-loading", "flow-pengiriman"):
+            st = statuses.get(nid, NODE_WAITING)
+            if st in (NODE_RUNNING, NODE_WAITING):
+                active.add(nid)
+                break
+        return _stable_stage_list(active)
+
+    # Penjadwalan + union tahap produksi per line
+    any_unscheduled = False
+    for line in print_lines:
+        line_id = str(line.get("accurate_line_id") or "")
+        line_allocs = allocations_by_line.get(line_id) or []
+        if not line_allocs:
+            any_unscheduled = True
+            continue
+        active.update(
+            _line_print_active_stages(
+                db,
+                accurate_po_id=accurate_po_id,
+                line=line,
+                line_allocs=line_allocs,
+            )
+        )
+    if any_unscheduled:
+        active.add("flow-penjadwalan")
+
+    # Fulfillment PO-level setelah seluruh line cetak selesai packing
+    print_work_pending = bool(
+        active
+        & {
+            "flow-penjadwalan",
+            "flow-screener",
+            "flow-persiapan",
+            "flow-operator",
+            "flow-konfirmasi-sample",
+            "flow-cetak",
+            "flow-packing",
+        }
+    )
+    if not print_work_pending:
+        for nid in ("flow-surat-jalan", "flow-loading", "flow-pengiriman"):
+            st = statuses.get(nid, NODE_WAITING)
+            if st in (NODE_RUNNING, NODE_WAITING):
+                active.add(nid)
+                break
+
+    return _stable_stage_list(active)
+
+
+def _stable_stage_list(active: set[str]) -> list[str]:
+    order = [nid for nid, _ in PRODUCTION_FLOW_NODES] + [FLOW_SELESAI_ID]
+    return [nid for nid in order if nid in active]
 
 
 def active_stage_membership(flow: dict[str, Any]) -> list[str]:
-    """Membership tahap aktif — bukan salinan status node.
+    """Fallback dari node status saja (tes/unit tanpa fakta line).
 
-    Aturan Owner:
-    - selesai/tidak_berlaku → bukan aktif pada tahap itu
-    - menunggu hanya aktif jika frontier (bukan semua menunggu)
-    - paralel design||payment dan screener||persiapan
-    - seluruh workflow selesai → flow-selesai
+    Prefer ``active_stage_membership_from_facts`` di jalur production_flow_state.
     """
     nodes = flow.get("nodes") or []
     statuses = {
@@ -315,61 +455,40 @@ def active_stage_membership(flow: dict[str, Any]) -> list[str]:
     }
     if not statuses:
         return []
-
     if all(_status_passed(statuses.get(nid, NODE_WAITING)) for nid, _ in PRODUCTION_FLOW_NODES):
         return [FLOW_SELESAI_ID]
-
-    # Order Masuk: membership terpisah dari status node (yang selalu selesai di SoT).
     if not _order_masuk_left_entry(statuses):
         return ["flow-order-masuk"]
-
-    active: list[str] = []
-    active.extend(_track_frontier(_TRACK_DESIGN, statuses))
-    active.extend(_track_frontier(_TRACK_PAYMENT, statuses))
-
+    active: set[str] = set()
+    active.update(_track_frontier(_TRACK_DESIGN, statuses))
+    active.update(_track_frontier(_TRACK_PAYMENT, statuses))
     design_done = _status_passed(statuses.get("flow-approval-design", NODE_WAITING))
     payment_done = _status_passed(statuses.get("flow-approval-payment", NODE_WAITING))
     if design_done and payment_done:
         sched = statuses.get("flow-penjadwalan", NODE_WAITING)
-        if sched == NODE_RUNNING:
-            active.append("flow-penjadwalan")
-        elif sched == NODE_WAITING:
-            active.append("flow-penjadwalan")
+        if sched in (NODE_WAITING, NODE_RUNNING):
+            active.add("flow-penjadwalan")
         elif sched == NODE_DONE:
-            pair = _parallel_frontier(_PARALLEL_AFTER_SCHEDULE, statuses)
-            if pair:
-                active.extend(pair)
-            elif all(
-                _status_passed(statuses.get(nid, NODE_WAITING))
-                for nid in _PARALLEL_AFTER_SCHEDULE
-            ):
-                for nid in _SERIAL_AFTER_PREP:
-                    st = statuses.get(nid, NODE_WAITING)
-                    if st == NODE_NOT_APPLICABLE or st == NODE_DONE:
-                        continue
-                    if st in (NODE_RUNNING, NODE_WAITING):
-                        active.append(nid)
-                        break
-        elif sched == NODE_NOT_APPLICABLE:
-            # Non-cetak: lompat ke SJ track
-            for nid in (
-                "flow-surat-jalan",
-                "flow-loading",
-                "flow-pengiriman",
-            ):
+            for nid in _PARALLEL_AFTER_SCHEDULE:
                 st = statuses.get(nid, NODE_WAITING)
                 if st in (NODE_RUNNING, NODE_WAITING):
-                    active.append(nid)
+                    active.add(nid)
+            if not (active & set(_PARALLEL_AFTER_SCHEDULE)):
+                for nid in _SERIAL_AFTER_PREP:
+                    st = statuses.get(nid, NODE_WAITING)
+                    if st in (NODE_RUNNING, NODE_WAITING):
+                        active.add(nid)
+                        # Multi-stage: lanjut jika RUNNING berikutnya juga aktif
+                        # (cetak berjalan + packing menunggu beda line → keduanya)
+                        if st == NODE_WAITING:
+                            break
+        elif sched == NODE_NOT_APPLICABLE:
+            for nid in ("flow-surat-jalan", "flow-loading", "flow-pengiriman"):
+                st = statuses.get(nid, NODE_WAITING)
+                if st in (NODE_RUNNING, NODE_WAITING):
+                    active.add(nid)
                     break
-
-    # Dedup jaga urutan stabil
-    seen: set[str] = set()
-    ordered: list[str] = []
-    for nid in active:
-        if nid not in seen:
-            seen.add(nid)
-            ordered.append(nid)
-    return ordered
+    return _stable_stage_list(active)
 
 
 def accepted_po_query(
@@ -428,14 +547,16 @@ def production_flow_state(db: Database, po_doc: dict[str, Any]) -> dict[str, Any
     )
 
     allocations: list[dict[str, Any]] = []
+    allocations_by_line: dict[str, list[dict[str, Any]]] = {}
     for line in print_lines:
-        allocations.extend(
-            schedules.list_allocations(
-                db,
-                accurate_line_id=str(line.get("accurate_line_id")),
-                include_released=True,
-            )
+        line_id = str(line.get("accurate_line_id") or "")
+        line_allocs = schedules.list_allocations(
+            db,
+            accurate_line_id=line_id,
+            include_released=True,
         )
+        allocations_by_line[line_id] = line_allocs
+        allocations.extend(line_allocs)
 
     screen_done = sum(
         1 for a in allocations if production.screen_confirmed_qty(db, a) > 0
@@ -629,6 +750,17 @@ def production_flow_state(db: Database, po_doc: dict[str, Any]) -> dict[str, Any
             f"{len(delivered)}/{len(notes)} SJ terkirim." if notes else "Menunggu SJ.",
         ),
     ]
+    statuses = {
+        str(n.get("id")): str(n.get("status") or NODE_WAITING) for n in nodes
+    }
+    active_stages = active_stage_membership_from_facts(
+        db,
+        statuses=statuses,
+        has_print=has_print,
+        accurate_po_id=accurate_po_id,
+        print_lines=print_lines,
+        allocations_by_line=allocations_by_line,
+    )
     flow = {
         "accurate_po_id": accurate_po_id,
         "po_no": po_doc.get("po_no"),
@@ -638,9 +770,9 @@ def production_flow_state(db: Database, po_doc: dict[str, Any]) -> dict[str, Any
             ["flow-design", "flow-payment"],
             ["flow-screener", "flow-persiapan"],
         ],
+        "active_stages": active_stages,
         "source": "mongodb",
     }
-    flow["active_stages"] = active_stage_membership(flow)
     return flow
 
 
@@ -666,10 +798,10 @@ def list_production_flow_by_stage(
     branch_scope: bool = False,
     serialize_po: Any = None,
 ) -> dict[str, Any]:
-    """PO accepted yang aktif pada ``node_id`` — pagination setelah membership.
+    """PO accepted aktif pada ``node_id`` — pagination penuh tanpa scan-cap.
 
-    Membership dihitung server-side dari ``production_flow_state`` (bukan filter FE).
-    Scan dibatasi ``PRODUCTION_FLOW_SCAN_CAP`` agar N+1 tidak tak terkendali.
+    Iterasi cursor deterministik atas seluruh accepted (+filter) dalam branch scope.
+    Membership dihitung server-side; frontend tidak memfilter populasi.
     """
     valid_ids = {nid for nid, _ in PRODUCTION_FLOW_NODES} | {FLOW_SELESAI_ID}
     if node_id not in valid_ids:
@@ -685,10 +817,9 @@ def list_production_flow_by_stage(
     if po_filter:
         query = {"$and": [query, {"accurate_id": po_filter}]}
     coll = po_collection(db)
-    cursor = (
-        coll.find(query, {"_id": 0})
-        .sort("updated_at", -1)
-        .limit(PRODUCTION_FLOW_SCAN_CAP)
+    # Sort deterministik: updated_at desc, accurate_id desc (tie-break).
+    cursor = coll.find(query, {"_id": 0}).sort(
+        [("updated_at", -1), ("accurate_id", -1)]
     )
 
     matched: list[dict[str, Any]] = []
@@ -711,6 +842,7 @@ def list_production_flow_by_stage(
             stage_status = str((node or {}).get("status") or NODE_WAITING)
             stage_detail = str((node or {}).get("detail") or "")
             stage_label = str((node or {}).get("label") or node_label(node_id))
+        mon_label = monitoring_label(node_id=node_id, node_status=stage_status)
 
         po_payload = serialize_po(doc, db) if callable(serialize_po) else {
             "accurate_id": doc.get("accurate_id"),
@@ -729,6 +861,7 @@ def list_production_flow_by_stage(
                 "stage_label": stage_label,
                 "stage_status": stage_status,
                 "stage_detail": stage_detail,
+                "monitoring_label": mon_label,
                 "active_stages": membership,
                 "has_print_items": bool(flow.get("has_print_items")),
                 "acceptance": po_payload.get("acceptance")
@@ -750,8 +883,8 @@ def list_production_flow_by_stage(
         "page": page,
         "pageSize": page_size,
         "scanned": scanned,
-        "scan_cap": PRODUCTION_FLOW_SCAN_CAP,
-        "scan_capped": scanned >= PRODUCTION_FLOW_SCAN_CAP,
+        "scan_capped": False,
+        "batch_size": PRODUCTION_FLOW_BATCH_SIZE,
         "source": "mongodb",
         "accepted_only": True,
         "supportedFilters": ["q", "urgent"],

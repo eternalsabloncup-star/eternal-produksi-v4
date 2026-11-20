@@ -58,6 +58,8 @@ export type ProductionFlowStageRow = {
   stage_label: string;
   stage_status: FlowNode["status"];
   stage_detail: string;
+  /** Label monitoring tabel: Aktif / Dalam Proses / Selesai — bukan SoT node. */
+  monitoring_label?: string;
   active_stages: string[];
   has_print_items: boolean;
   acceptance: {
@@ -79,6 +81,7 @@ export type ProductionFlowByStage = {
   scanned?: number;
   scan_cap?: number;
   scan_capped?: boolean;
+  batch_size?: number;
   accepted_only?: boolean;
   source: string;
 };
