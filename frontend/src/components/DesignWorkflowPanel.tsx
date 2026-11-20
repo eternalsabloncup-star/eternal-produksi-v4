@@ -9,6 +9,7 @@ import {
   type DesignStateResponse,
   WorkflowApiError,
 } from "../api/workflow";
+import { ConfirmationSuccessOverlay } from "./ConfirmationSuccessOverlay";
 import { EvidenceContentPreview } from "./EvidenceContentPreview";
 
 type Props = {
@@ -24,9 +25,12 @@ type Props = {
   onRegisterReload?: (reload: () => Promise<void>) => void;
 };
 
-function gateLabel(state: string | undefined): string {
+function gateLabel(state: string | undefined, reason?: string | null): string {
   if (state === "open") return "Terbuka";
   if (state === "review") return "Perlu Review";
+  if (state === "closed" && (reason || "").trim() === "Perlu Sinkronisasi") {
+    return "Perlu Sinkronisasi";
+  }
   if (state === "closed") return "Tertutup";
   return state || "—";
 }
@@ -45,6 +49,11 @@ export function DesignWorkflowPanel({
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
+  const [feedback, setFeedback] = useState<{
+    tone: "success" | "error";
+    title: string;
+    message: string;
+  } | null>(null);
   const [approvalUrl, setApprovalUrl] = useState<string | null>(null);
   const [previewEvidenceId, setPreviewEvidenceId] = useState<string | null>(
     null,
@@ -81,23 +90,35 @@ export function DesignWorkflowPanel({
     onRegisterReload?.(load);
   }, [onRegisterReload, load]);
 
+  function showOk(message: string) {
+    setNotice(message);
+    setFeedback({ tone: "success", title: "Berhasil", message });
+  }
+
+  function showFail(message: string) {
+    setError(message);
+    setFeedback({ tone: "error", title: "Gagal", message });
+  }
+
   async function onUpload() {
     const file = fileRef.current?.files?.[0];
     if (!file) {
       setError("Pilih file desain terlebih dahulu.");
       return;
     }
+    if (busy) return;
     setBusy(true);
     setError(null);
     setNotice(null);
+    setFeedback(null);
     try {
       const res = await submitDesignFile(accuratePoId, file);
-      setNotice(`Desain versi ${res.submission.version} diunggah.`);
+      showOk(`Desain versi ${res.submission.version} diunggah.`);
       if (fileRef.current) fileRef.current.value = "";
       await load();
       onChanged?.();
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Upload desain gagal.");
+      showFail(err instanceof Error ? err.message : "Upload desain gagal.");
     } finally {
       setBusy(false);
     }
@@ -113,36 +134,40 @@ export function DesignWorkflowPanel({
       setError("Versi terbaru sudah dikonfirmasi.");
       return;
     }
+    if (busy) return;
     setBusy(true);
     setError(null);
     setNotice(null);
+    setFeedback(null);
     try {
       await confirmDesignVersion(accuratePoId, version);
-      setNotice(`Desain versi ${version} dikonfirmasi Designer.`);
+      showOk(`Desain versi ${version} dikonfirmasi Designer.`);
       await load();
       onChanged?.();
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Konfirmasi desain gagal.");
+      showFail(err instanceof Error ? err.message : "Konfirmasi desain gagal.");
     } finally {
       setBusy(false);
     }
   }
 
   async function onCreateLink() {
+    if (busy) return;
     setBusy(true);
     setError(null);
     setNotice(null);
+    setFeedback(null);
     try {
       const res = await createDesignApprovalLink(accuratePoId);
       const path = customerApprovalPath(res.token);
       setApprovalUrl(path);
-      setNotice(
+      showOk(
         `Link approval dibuat untuk desain v${res.link.design_version}. Salin URL sekarang — token hanya ditampilkan sekali.`,
       );
       await load();
       onChanged?.();
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Gagal membuat link approval.");
+      showFail(err instanceof Error ? err.message : "Gagal membuat link approval.");
     } finally {
       setBusy(false);
     }
@@ -164,6 +189,7 @@ export function DesignWorkflowPanel({
 
   const latest = state?.latest;
   const designGate = state?.gates?.design?.state;
+  const designGateReason = state?.gates?.design?.reason;
   const canConfirm = Boolean(latest && !latest.confirmed_at);
   const canLink = Boolean(latest?.confirmed_at) && !state?.approval;
 
@@ -191,7 +217,7 @@ export function DesignWorkflowPanel({
             <div className="ep-design-status-strip" data-testid="design-status-strip">
               <div className="ep-design-status-item">
                 <span className="ep-design-status-lbl">Gate Design</span>
-                <strong>{gateLabel(designGate)}</strong>
+                <strong>{gateLabel(designGate, designGateReason)}</strong>
               </div>
               <div className="ep-design-status-item">
                 <span className="ep-design-status-lbl">Versi terbaru</span>
@@ -217,7 +243,7 @@ export function DesignWorkflowPanel({
           ) : (
             <dl className="ep-kv">
               <dt>Gate Design</dt>
-              <dd>{gateLabel(designGate)}</dd>
+              <dd>{gateLabel(designGate, designGateReason)}</dd>
               <dt>Versi terbaru</dt>
               <dd>
                 {latest
@@ -246,16 +272,18 @@ export function DesignWorkflowPanel({
             />
             <button
               type="button"
-              className="ep-btn primary"
+              className={`ep-btn primary${busy ? " is-busy" : ""}`}
               disabled={busy}
+              aria-busy={busy}
               onClick={() => void onUpload()}
             >
               {busy ? "Mengunggah…" : "Unggah Desain"}
             </button>
             <button
               type="button"
-              className="ep-btn"
+              className={`ep-btn${busy ? " is-busy" : ""}`}
               disabled={busy || !canConfirm}
+              aria-busy={busy}
               title={
                 canConfirm
                   ? "Konfirmasi versi terbaru"
@@ -263,12 +291,13 @@ export function DesignWorkflowPanel({
               }
               onClick={() => void onConfirm()}
             >
-              Konfirmasi Designer
+              {busy ? "Memproses…" : "Konfirmasi Designer"}
             </button>
             <button
               type="button"
-              className="ep-btn"
+              className={`ep-btn${busy ? " is-busy" : ""}`}
               disabled={busy || !canLink}
+              aria-busy={busy}
               title={
                 canLink
                   ? "Buat link approval customer"
@@ -276,7 +305,7 @@ export function DesignWorkflowPanel({
               }
               onClick={() => void onCreateLink()}
             >
-              Buat Link Approval
+              {busy ? "Memproses…" : "Buat Link Approval"}
             </button>
             {!hideReloadButton ? (
               <button
@@ -366,6 +395,16 @@ export function DesignWorkflowPanel({
           }}
         />
       ) : null}
+
+      <ConfirmationSuccessOverlay
+        open={Boolean(feedback)}
+        global
+        tone={feedback?.tone || "success"}
+        title={feedback?.title || ""}
+        message={feedback?.message || ""}
+        autoCloseMs={feedback?.tone === "success" ? 1800 : 2600}
+        onClose={() => setFeedback(null)}
+      />
     </div>
   );
 }

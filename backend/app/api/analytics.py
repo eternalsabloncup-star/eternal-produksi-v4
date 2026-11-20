@@ -26,7 +26,13 @@ def _branch_scope(auth: AuthContext) -> tuple[list[str] | None, bool]:
 
 @router.get("/buffer-stock")
 def get_buffer_stock(auth: AuthContext = Depends(require_session)) -> dict[str, Any]:
-    return read_models.buffer_stock_rows(get_db())
+    """Monitoring Buffer Stock — scoped cabang; tidak mengubah stok fisik."""
+    branch_ids, branch_scope = _branch_scope(auth)
+    return read_models.buffer_stock_rows(
+        get_db(),
+        branch_ids=branch_ids,
+        branch_scope=branch_scope,
+    )
 
 
 @router.get("/production-flow")

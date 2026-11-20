@@ -129,6 +129,8 @@ export function TeamTaskApiPanel({ role, roleLabel }: Props) {
     string | null
   >(null);
   const [successOpen, setSuccessOpen] = useState(false);
+  const [successTone, setSuccessTone] = useState<"success" | "error">("success");
+  const [successTitle, setSuccessTitle] = useState("Berhasil");
   const [successMsg, setSuccessMsg] = useState("");
   const [evidencePreview, setEvidencePreview] = useState<{
     title: string;
@@ -403,39 +405,38 @@ export function TeamTaskApiPanel({ role, roleLabel }: Props) {
         getFilterValue: (t) => t.ref.po_no || t.ref.sj_no || "",
         render: (t) => t.ref.po_no || t.ref.sj_no || "—",
       },
+      {
+        id: "outletName",
+        label: "Nama Customer",
+        sticky: "customer",
+        hideable: true,
+        filterType: "text",
+        defaultWidth: 160,
+        getFilterValue: (t) => t.outlet_name || "",
+        render: (t) => t.outlet_name?.trim() || "—",
+      },
       ];
       if (role === "production-head") {
-        base.push(
-          {
-            id: "outletName",
-            label: "Nama Outlet",
-            hideable: true,
-            filterType: "text",
-            defaultWidth: 160,
-            getFilterValue: (t) => t.outlet_name || "",
-            render: (t) => t.outlet_name?.trim() || "—",
+        base.push({
+          id: "shipDates",
+          label: "Tanggal Pengiriman",
+          hideable: true,
+          filterType: "date",
+          defaultWidth: 150,
+          getFilterValue: (t) => (t.ship_dates || []).join(" "),
+          getSortValue: (t) => (t.ship_dates && t.ship_dates[0]) || "",
+          render: (t) => {
+            const dates = t.ship_dates || [];
+            if (!dates.length) return "—";
+            const text = dates
+              .map((d) => formatDateDisplay(d, ""))
+              .filter(Boolean)
+              .join(", ");
+            return (
+              <span title={text || undefined}>{text || "—"}</span>
+            );
           },
-          {
-            id: "shipDates",
-            label: "Tanggal Pengiriman",
-            hideable: true,
-            filterType: "date",
-            defaultWidth: 150,
-            getFilterValue: (t) => (t.ship_dates || []).join(" "),
-            getSortValue: (t) => (t.ship_dates && t.ship_dates[0]) || "",
-            render: (t) => {
-              const dates = t.ship_dates || [];
-              if (!dates.length) return "—";
-              const text = dates
-                .map((d) => formatDateDisplay(d, ""))
-                .filter(Boolean)
-                .join(", ");
-              return (
-                <span title={text || undefined}>{text || "—"}</span>
-              );
-            },
-          },
-        );
+        });
       }
       base.push(
       {
@@ -559,9 +560,19 @@ export function TeamTaskApiPanel({ role, roleLabel }: Props) {
   }
 
   function showSuccess(message: string) {
+    setSuccessTone("success");
+    setSuccessTitle("Berhasil");
     setSuccessMsg(message);
     setSuccessOpen(true);
     window.dispatchEvent(new CustomEvent("eternal:tasks-changed"));
+  }
+
+  function showActionFailure(message: string) {
+    setActionError(message);
+    setSuccessTone("error");
+    setSuccessTitle("Gagal");
+    setSuccessMsg(message);
+    setSuccessOpen(true);
   }
 
   async function onUploadSampleDraft() {
@@ -585,7 +596,9 @@ export function TeamTaskApiPanel({ role, roleLabel }: Props) {
       if (fileRef.current) fileRef.current.value = "";
       await reloadAfterAction(selected);
     } catch (err) {
-      setActionError(err instanceof Error ? err.message : "Upload draft sampel gagal.");
+      showActionFailure(
+        err instanceof Error ? err.message : "Upload draft sampel gagal.",
+      );
     } finally {
       setBusy(false);
     }
@@ -614,7 +627,7 @@ export function TeamTaskApiPanel({ role, roleLabel }: Props) {
       showSuccess(msg);
       await reloadAfterAction(selected);
     } catch (err) {
-      setActionError(
+      showActionFailure(
         err instanceof Error ? err.message : "Konfirmasi sampel gagal.",
       );
     } finally {
@@ -692,7 +705,7 @@ export function TeamTaskApiPanel({ role, roleLabel }: Props) {
       setRecipientName("");
       await reloadAfterAction(selected!);
     } catch (err) {
-      setActionError(
+      showActionFailure(
         err instanceof Error ? err.message : "Konfirmasi pengiriman gagal.",
       );
     } finally {
@@ -723,7 +736,7 @@ export function TeamTaskApiPanel({ role, roleLabel }: Props) {
       setFailureReason("");
       await reloadAfterAction(selected!);
     } catch (err) {
-      setActionError(
+      showActionFailure(
         err instanceof Error ? err.message : "Gagal menyimpan kegagalan.",
       );
     } finally {
@@ -750,7 +763,7 @@ export function TeamTaskApiPanel({ role, roleLabel }: Props) {
       showSuccess(msg);
       await reloadAfterAction(selected);
     } catch (err) {
-      setActionError(
+      showActionFailure(
         err instanceof Error ? err.message : "Konfirmasi Loading gagal.",
       );
     } finally {
@@ -774,7 +787,7 @@ export function TeamTaskApiPanel({ role, roleLabel }: Props) {
       showSuccess("Tidak Sesuai — tugas koordinasi Kepala Produksi dibuat.");
       await reloadAfterAction(selected);
     } catch (err) {
-      setActionError(
+      showActionFailure(
         err instanceof Error ? err.message : "Gagal menandai Tidak Sesuai.",
       );
     } finally {
@@ -801,7 +814,7 @@ export function TeamTaskApiPanel({ role, roleLabel }: Props) {
       showSuccess(msg);
       await reloadAfterAction(selected);
     } catch (err) {
-      setActionError(
+      showActionFailure(
         err instanceof Error ? err.message : "Konfirmasi koordinasi gagal.",
       );
     } finally {
@@ -837,7 +850,7 @@ export function TeamTaskApiPanel({ role, roleLabel }: Props) {
       setRejectReason("");
       await reloadAfterAction(selected);
     } catch (err) {
-      setActionError(
+      showActionFailure(
         err instanceof Error ? err.message : "Keputusan sampel gagal.",
       );
     } finally {
@@ -887,7 +900,7 @@ export function TeamTaskApiPanel({ role, roleLabel }: Props) {
       setQtyInput("");
       await reloadAfterAction(res.task);
     } catch (err) {
-      setActionError(err instanceof Error ? err.message : "Konfirmasi gagal.");
+      showActionFailure(err instanceof Error ? err.message : "Konfirmasi gagal.");
     } finally {
       setBusy(false);
     }
@@ -1915,9 +1928,11 @@ export function TeamTaskApiPanel({ role, roleLabel }: Props) {
             </footer>
             <ConfirmationSuccessOverlay
               open={successOpen}
-              title="Berhasil"
+              global
+              tone={successTone}
+              title={successTitle}
               message={successMsg}
-              autoCloseMs={2200}
+              autoCloseMs={successTone === "success" ? 1800 : 2600}
               onClose={() => setSuccessOpen(false)}
             />
           </div>

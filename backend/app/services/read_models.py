@@ -86,8 +86,17 @@ def compute_ready_gudang(
     }
 
 
-def buffer_stock_rows(db: Database) -> dict[str, Any]:
-    """Satu baris per item line pada PO beratribut Buffer."""
+def buffer_stock_rows(
+    db: Database,
+    *,
+    branch_ids: list[str] | set[str] | None = None,
+    branch_scope: bool = False,
+) -> dict[str, Any]:
+    """Satu baris per item line pada PO beratribut Buffer.
+
+    ``branch_scope=True`` membatasi ke cabang aktor (fail-closed daftar kosong).
+    Tidak menulis stok/ledger — read model monitoring saja.
+    """
     rows: list[dict[str, Any]] = []
     totals = {
         "ordered": 0.0,
@@ -99,7 +108,14 @@ def buffer_stock_rows(db: Database) -> dict[str, Any]:
     ready_incomplete_rows = 0
     ready_mismatch_rows = 0
 
-    for po_doc in po_collection(db).find({"origin": "accurate"}, {"_id": 0}):
+    query: dict[str, Any] = {"origin": "accurate"}
+    if branch_scope:
+        from app.repositories.po_repository import branch_scope_query
+
+        scope = branch_scope_query(branch_ids)
+        query = {"$and": [query, scope]}
+
+    for po_doc in po_collection(db).find(query, {"_id": 0}):
         if not is_buffer_po(po_doc):
             continue
         header = _header(po_doc)

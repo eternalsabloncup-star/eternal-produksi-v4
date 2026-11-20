@@ -32,6 +32,7 @@ import {
 import { DataTable } from "./DataTable/DataTable";
 import { DEFAULT_TABLE_PAGE_SIZE } from "./DataTable/Pagination";
 import type { ColumnDef } from "./DataTable/types";
+import { ConfirmationSuccessOverlay } from "./ConfirmationSuccessOverlay";
 import { DeliveryPeriodModal } from "./DeliveryPeriodModal";
 import { DeliverySjDetailModal } from "./DeliverySjDetailModal";
 import { KpiSummary, type KpiItem } from "./KpiSummary";
@@ -66,6 +67,11 @@ export function DeliveryApiPanel() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
+  const [feedback, setFeedback] = useState<{
+    tone: "success" | "error";
+    title: string;
+    message: string;
+  } | null>(null);
   const [periodOpen, setPeriodOpen] = useState(false);
   const [selected, setSelected] = useState<DeliveryScheduleRow | null>(null);
   const [detail, setDetail] = useState<DeliveryDetail | null>(null);
@@ -161,14 +167,16 @@ export function DeliveryApiPanel() {
       const fresh = next.find((r) => r.accurate_sj_id === sjId);
       if (fresh) await openDetail(fresh, true);
       setNotice(message);
+      setFeedback({ tone: "success", title: "Berhasil", message });
     },
     [load, openDetail],
   );
 
   async function onConfirmLoading() {
-    if (!selected) return;
+    if (!selected || busy) return;
     setBusy(true);
     setError(null);
+    setFeedback(null);
     try {
       const res = await confirmLoading(
         selected.accurate_sj_id,
@@ -181,20 +189,24 @@ export function DeliveryApiPanel() {
           : "Loading dikonfirmasi; tugas Driver dibuat.",
       );
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Konfirmasi Loading gagal.");
+      const message =
+        err instanceof Error ? err.message : "Konfirmasi Loading gagal.";
+      setError(message);
+      setFeedback({ tone: "error", title: "Gagal", message });
     } finally {
       setBusy(false);
     }
   }
 
   async function onCancelLoading() {
-    if (!selected) return;
+    if (!selected || busy) return;
     if (!cancelReason.trim()) {
       setError("Alasan pembatalan Loading wajib diisi.");
       return;
     }
     setBusy(true);
     setError(null);
+    setFeedback(null);
     try {
       const res = await cancelLoading(selected.accurate_sj_id, cancelReason.trim());
       setCancelReason("");
@@ -205,31 +217,42 @@ export function DeliveryApiPanel() {
           : "Tidak ada Loading aktif untuk dibatalkan.",
       );
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Pembatalan Loading gagal.");
+      const message =
+        err instanceof Error ? err.message : "Pembatalan Loading gagal.";
+      setError(message);
+      setFeedback({ tone: "error", title: "Gagal", message });
     } finally {
       setBusy(false);
     }
   }
 
   async function onDiscrepancy() {
-    if (!selected) return;
+    if (!selected || busy) return;
     setBusy(true);
     setError(null);
+    setFeedback(null);
     try {
       await raiseDiscrepancy(selected.accurate_sj_id);
-      setNotice("Tugas Kepala Produksi “Qty Loading dan SJ Berbeda” dibuat.");
+      const message =
+        "Tugas Kepala Produksi “Qty Loading dan SJ Berbeda” dibuat.";
+      setNotice(message);
+      setFeedback({ tone: "success", title: "Berhasil", message });
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Gagal membuat tugas koordinasi.");
+      const message =
+        err instanceof Error ? err.message : "Gagal membuat tugas koordinasi.";
+      setError(message);
+      setFeedback({ tone: "error", title: "Gagal", message });
     } finally {
       setBusy(false);
     }
   }
 
   async function onSoftDeleteEvidence(evidenceId: string, reason: string) {
-    if (!selected) return;
+    if (!selected || busy) return;
     setBusy(true);
     setError(null);
     setNotice(null);
+    setFeedback(null);
     try {
       await softDeleteDeliveryEvidence(evidenceId, reason);
       await reopenAfterAction(
@@ -237,7 +260,9 @@ export function DeliveryApiPanel() {
         "Bukti di-soft-delete; file dan audit tetap tersimpan.",
       );
     } catch (err) {
-      setError(softDeleteEvidenceErrorMessage(err));
+      const message = softDeleteEvidenceErrorMessage(err);
+      setError(message);
+      setFeedback({ tone: "error", title: "Gagal", message });
     } finally {
       setBusy(false);
     }
@@ -624,6 +649,16 @@ export function DeliveryApiPanel() {
           }}
         />
       ) : null}
+
+      <ConfirmationSuccessOverlay
+        open={Boolean(feedback)}
+        global
+        tone={feedback?.tone || "success"}
+        title={feedback?.title || ""}
+        message={feedback?.message || ""}
+        autoCloseMs={feedback?.tone === "success" ? 1800 : 2600}
+        onClose={() => setFeedback(null)}
+      />
     </div>
   );
 }

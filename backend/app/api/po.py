@@ -257,10 +257,54 @@ def accept_po(
     except ValueError as exc:
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, str(exc)) from exc
 
+    sync_info = result.get("design_gate_sync") or {
+        "applicable": False,
+        "synced": True,
+        "status": "n_a",
+        "display": None,
+        "error": None,
+    }
     return {
         "accurate_po_id": result["accurate_po_id"],
         "duplicate": result["duplicate"],
         "acceptance": result["acceptance"],
+        "workflow": result["workflow"],
+        "design_gate_sync": sync_info,
+        "po": _serialize_po_doc(result["po"], db),
+    }
+
+
+@router.post("/{accurate_po_id}/design-gate/sync")
+def sync_design_gate(
+    accurate_po_id: str,
+    auth: AuthContext = Depends(require_csrf),
+) -> dict[str, Any]:
+    """Retry idempotent Gate Design Non-Cetak — tidak accept ulang / tidak buka payment."""
+    from app.services import po_acceptance
+    from app.services.object_auth import ObjectAuthError
+    from app.services.task_engine import TaskPermissionError
+
+    db = get_db()
+    try:
+        result = po_acceptance.retry_design_gate_sync(
+            db, auth.user, accurate_po_id=accurate_po_id
+        )
+    except LookupError as exc:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, str(exc)) from exc
+    except (TaskPermissionError, ObjectAuthError) as exc:
+        raise HTTPException(status.HTTP_403_FORBIDDEN, str(exc)) from exc
+    except po_acceptance.PoAcceptanceError as exc:
+        raise HTTPException(status.HTTP_409_CONFLICT, str(exc)) from exc
+    except po_acceptance.DesignGateSyncError as exc:
+        raise HTTPException(status.HTTP_409_CONFLICT, str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, str(exc)) from exc
+
+    return {
+        "accurate_po_id": result["accurate_po_id"],
+        "design_gate_sync": result["design_gate_sync"],
+        "acceptance": result["acceptance"],
+        "gates": result["gates"],
         "workflow": result["workflow"],
         "po": _serialize_po_doc(result["po"], db),
     }

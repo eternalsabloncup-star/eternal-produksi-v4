@@ -106,6 +106,12 @@ def _assigned_role(
     return master.require_task_type_assigned_role(db, task_type)
 
 
+DESIGN_GATE_SYNC_NEEDED_REASON = "Perlu Sinkronisasi"
+DESIGN_GATE_NON_PRINT_OPEN_REASON = (
+    "Seluruh item Non-Cetak — tidak memerlukan desain."
+)
+
+
 def sync_design_gate_for_non_print_po(
     db: Database, po_doc: dict[str, Any]
 ) -> dict[str, Any] | None:
@@ -121,10 +127,135 @@ def sync_design_gate_for_non_print_po(
         accurate_po_id=accurate_po_id,
         gate="design",
         state=gates.GATE_OPEN,
-        reason="Seluruh item Non-Cetak — tidak memerlukan desain.",
+        reason=DESIGN_GATE_NON_PRINT_OPEN_REASON,
         actor_email=None,
         detail={"auto": True},
     )
+
+
+def _mark_design_gate_sync_needed(
+    db: Database,
+    *,
+    accurate_po_id: str,
+    error: str,
+    actor_email: str | None = None,
+) -> None:
+    """Gate tetap closed; reason tampilan = Perlu Sinkronisasi. Fail-soft bila set_gate gagal."""
+    try:
+        gates.set_gate(
+            db,
+            accurate_po_id=accurate_po_id,
+            gate="design",
+            state=gates.GATE_CLOSED,
+            reason=DESIGN_GATE_SYNC_NEEDED_REASON,
+            actor_email=actor_email,
+            detail={
+                "sync_failed": True,
+                "error": (error or "")[:500],
+                "auto": True,
+            },
+        )
+    except Exception:
+        # Jangan menggagalkan acceptance hanya karena penanda UI gagal.
+        return
+
+
+def attempt_sync_design_gate_for_non_print_po(
+    db: Database,
+    po_doc: dict[str, Any],
+    *,
+    actor_email: str | None = None,
+) -> dict[str, Any]:
+    """Sync Gate Design Non-Cetak di luar txn accept.
+
+    Tidak membuka Payment Gate. Tidak membuat tugas.
+    Kegagalan → Gate tetap closed + status ``needed`` (Perlu Sinkronisasi).
+    """
+    from app.services.audit_log import append_audit_event
+
+    accurate_po_id = str(po_doc.get("accurate_id") or "")
+    if has_print_items(po_doc):
+        return {
+            "applicable": False,
+            "synced": True,
+            "status": "n_a",
+            "display": None,
+            "error": None,
+            "accurate_po_id": accurate_po_id,
+        }
+    if not accurate_po_id:
+        return {
+            "applicable": True,
+            "synced": False,
+            "status": "needed",
+            "display": DESIGN_GATE_SYNC_NEEDED_REASON,
+            "error": "accurate_po_id kosong",
+            "accurate_po_id": "",
+        }
+
+    current = gates.get_gates(db, accurate_po_id).get("design", {})
+    if current.get("state") == gates.GATE_OPEN:
+        return {
+            "applicable": True,
+            "synced": True,
+            "status": "ok",
+            "display": None,
+            "error": None,
+            "accurate_po_id": accurate_po_id,
+            "duplicate": True,
+        }
+
+    try:
+        sync_design_gate_for_non_print_po(db, po_doc)
+        after = gates.get_gates(db, accurate_po_id).get("design", {})
+        if after.get("state") != gates.GATE_OPEN:
+            raise RuntimeError("Gate Design masih tertutup setelah sync.")
+        append_audit_event(
+            db,
+            action="design.gate.sync_ok",
+            actor_email=actor_email,
+            target_email=None,
+            detail={
+                "accurate_po_id": accurate_po_id,
+                "reason": DESIGN_GATE_NON_PRINT_OPEN_REASON,
+            },
+        )
+        return {
+            "applicable": True,
+            "synced": True,
+            "status": "ok",
+            "display": None,
+            "error": None,
+            "accurate_po_id": accurate_po_id,
+            "duplicate": False,
+        }
+    except Exception as exc:
+        err_text = str(exc) or exc.__class__.__name__
+        _mark_design_gate_sync_needed(
+            db,
+            accurate_po_id=accurate_po_id,
+            error=err_text,
+            actor_email=actor_email,
+        )
+        append_audit_event(
+            db,
+            action="design.gate.sync_failed",
+            actor_email=actor_email,
+            target_email=None,
+            detail={
+                "accurate_po_id": accurate_po_id,
+                "error": err_text[:500],
+                "display": DESIGN_GATE_SYNC_NEEDED_REASON,
+            },
+        )
+        return {
+            "applicable": True,
+            "synced": False,
+            "status": "needed",
+            "display": DESIGN_GATE_SYNC_NEEDED_REASON,
+            "error": err_text[:500],
+            "accurate_po_id": accurate_po_id,
+        }
 
 
 def derive_tasks_for_po(
@@ -192,9 +323,8 @@ def _derive_tasks_under_writer_lease(
             )
             created.append(design["task_key"])
         else:
+            # Gate Design Non-Cetak di-sync SETELAH txn (set_gate punya preflight indeks).
             skipped.append("design:semua-item-non-cetak")
-            if sess is None and is_po_accepted(po_doc):
-                sync_design_gate_for_non_print_po(db, po_doc)
 
         scheduling_open = gates.both_gates_open(
             db, accurate_po_id, session=sess
@@ -277,7 +407,20 @@ def _derive_tasks_under_writer_lease(
         }
 
     # Sudah di dalam txn pemanggil (accept): renew di session yang sama.
+    # Accept path memanggil attempt_sync_design_gate_for_non_print_po di luar txn.
     if session is not None:
         return _body(session)
     # Standalone: commit boundary = renew + upsert dalam satu txn.
-    return mutate_under_writer_fence(db, writer_fence, _body)
+    result = mutate_under_writer_fence(db, writer_fence, _body)
+    # set_gate tidak aman di dalam txn writer — sync Gate Design Non-Cetak di sini.
+    if is_po_accepted(po_doc):
+        sync_info = attempt_sync_design_gate_for_non_print_po(db, po_doc)
+        accurate_po_id = str(result.get("accurate_po_id") or po_doc.get("accurate_id") or "")
+        if accurate_po_id:
+            result = {
+                **result,
+                "gates": gates.get_gates(db, accurate_po_id),
+                "scheduling_unlocked": gates.both_gates_open(db, accurate_po_id),
+                "design_gate_sync": sync_info,
+            }
+    return result

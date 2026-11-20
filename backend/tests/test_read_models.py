@@ -149,6 +149,71 @@ def test_buffer_stock_excludes_non_buffer_po(db: Database) -> None:
     assert read_models.buffer_stock_rows(db)["items"] == []
 
 
+def test_buffer_stock_excludes_empty_buffer_label(db: Database) -> None:
+    _seed(db, "")
+    assert read_models.buffer_stock_rows(db)["items"] == []
+    # Label hilang dari payload Accurate → tidak masuk monitoring Buffer.
+    payload = copy.deepcopy(SAMPLE_SALES_ORDER_STRUCTURE)
+    payload.pop("charField5", None)
+    payload.pop("searchCharField5", None)
+    upsert_sales_order(db, normalize_sales_order(payload))
+    from tests.po_accept_helpers import mark_po_accepted
+
+    mark_po_accepted(db)
+    assert read_models.buffer_stock_rows(db)["items"] == []
+
+
+def test_buffer_stock_keeps_cetak_and_non_cetak_rows_without_fiction(
+    db: Database,
+) -> None:
+    """PO Buffer: baris Cetak + Non-Cetak; status/outlet tidak dikarang."""
+    po_doc = _seed(db, "Buffer")
+    _open_gates(db)
+    _run_production(db, po_doc, 200)
+    result = read_models.buffer_stock_rows(db)
+    assert len(result["items"]) == 2
+    by_line = {r["accurate_line_id"]: r for r in result["items"]}
+    cetak = by_line[LINE_PRINT]
+    non_cetak = by_line[LINE_NON_PRINT]
+    assert cetak["process_kind"] == "Cetak"
+    assert cetak["qty_printed"] == 200
+    assert cetak["qty_ready_warehouse"] == 200
+    assert non_cetak["process_kind"] == "Non-Cetak"
+    assert non_cetak["qty_printed"] == 0
+    assert non_cetak["qty_ready_warehouse"] == 0
+    for row in (cetak, non_cetak):
+        assert row["buffer_status"] == read_models.NOT_CONFIGURED
+        assert row["outlet_warehouse"] == read_models.NOT_CONFIGURED
+        assert row["buffer_status"] != 0
+        assert row["outlet_warehouse"] != 0
+    assert "buffer_status" in result["not_configured"]
+    assert "outlet_warehouse" in result["not_configured"]
+
+
+def test_buffer_stock_branch_scope_isolates_rows(db: Database) -> None:
+    """Monitoring Buffer wajib terisolasi cabang — tanpa ubah stok fisik."""
+    from app.repositories.po_repository import set_po_branch_id
+
+    po_doc = _seed(db, "Buffer")
+    set_po_branch_id(db, PO_ID, branch_id="50", expected_previous=None)
+    # Cabang lain: tidak melihat baris.
+    foreign = read_models.buffer_stock_rows(
+        db, branch_ids=["150"], branch_scope=True
+    )
+    assert foreign["items"] == []
+    # Cabang pemilik: melihat baris Buffer.
+    own = read_models.buffer_stock_rows(db, branch_ids=["50"], branch_scope=True)
+    assert len(own["items"]) == 2
+    assert all(r["accurate_po_id"] == PO_ID for r in own["items"])
+    # Fail-closed daftar cabang kosong.
+    empty = read_models.buffer_stock_rows(db, branch_ids=[], branch_scope=True)
+    assert empty["items"] == []
+    # Elevated (tanpa branch_scope) tetap melihat semua — sama sebelum harden.
+    elevated = read_models.buffer_stock_rows(db, branch_scope=False)
+    assert len(elevated["items"]) >= 2
+    assert po_doc.get("accurate_id") == PO_ID
+
+
 def test_buffer_stock_rows_use_real_po_number(db: Database) -> None:
     po_doc = _seed(db, "Buffer")
     _open_gates(db)

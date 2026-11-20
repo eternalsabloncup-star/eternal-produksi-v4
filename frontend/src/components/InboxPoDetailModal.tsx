@@ -2,7 +2,9 @@ import { useEffect, useState } from "react";
 import {
   acceptPo,
   fetchPoAcceptanceStatus,
+  syncDesignGate,
   PoAcceptError,
+  type DesignGateSyncInfo,
 } from "../api/poAcceptance";
 import { useAuth } from "../auth";
 import type { PoRow } from "../demo/types";
@@ -40,6 +42,23 @@ export const TERIMA_PO_SUCCESS_FEEDBACK: TerimaPoFeedback = {
   title: "PO berhasil diterima",
   message: "PO berhasil diterima.",
 };
+
+/** Accept sukses tetapi Gate Design Non-Cetak masih perlu sync — bukan gagal terima. */
+export const TERIMA_PO_SUCCESS_SYNC_NEEDED_FEEDBACK: TerimaPoFeedback = {
+  tone: "success",
+  title: "PO berhasil diterima",
+  message:
+    "PO diterima. Gate Design: Perlu Sinkronisasi — gunakan tombol Sinkronkan Gate Design.",
+};
+
+export function terimaPoSuccessFeedback(
+  sync?: DesignGateSyncInfo | null,
+): TerimaPoFeedback {
+  if (sync?.status === "needed") {
+    return { ...TERIMA_PO_SUCCESS_SYNC_NEEDED_FEEDBACK };
+  }
+  return { ...TERIMA_PO_SUCCESS_FEEDBACK };
+}
 
 /** Timeout/network uncertain — bukan sukses; minta refresh status. */
 export const TERIMA_PO_UNCERTAIN_FEEDBACK: TerimaPoFeedback = {
@@ -97,18 +116,45 @@ export function isTerimaPoAcceptDisabled(
   return phase === "loading" || phase === "success" || accepted || !mayAccept;
 }
 
+/**
+ * Reset overlay hanya saat modal dibuka/ditutup atau ganti PO.
+ * Perubahan acceptanceStatus dari onAccepted tidak boleh menghapus animasi sukses.
+ */
+export function shouldResetTerimaPoOverlay(deps: {
+  open: boolean;
+  rowId: string | null | undefined;
+  accurateId: string | null | undefined;
+}): string {
+  return `${deps.open ? 1 : 0}:${deps.rowId || ""}:${deps.accurateId || ""}`;
+}
+
 /** Popup rincian PO Inbox + gate Terima PO (backend). */
 export function InboxPoDetailModal({ row, open, onClose, onAccepted }: Props) {
   const { user } = useAuth();
   const [phase, setPhase] = useState<AcceptPhase>("idle");
   const [feedback, setFeedback] = useState<TerimaPoFeedback | null>(null);
   const [localRow, setLocalRow] = useState<PoRow | null>(row);
+  const [designSyncNeeded, setDesignSyncNeeded] = useState(false);
+  const [syncBusy, setSyncBusy] = useState(false);
 
+  // Sinkronkan baris dari parent tanpa menghapus overlay.
+  // Jangan ikutkan acceptanceStatus di reset — onAccepted meng-update
+  // selected di parent dan sebelumnya menghapus feedback sukses sebelum animasi tampil.
   useEffect(() => {
     setLocalRow(row);
+  }, [row]);
+
+  const overlayResetKey = shouldResetTerimaPoOverlay({
+    open,
+    rowId: row?.id,
+    accurateId: row?.accurateId,
+  });
+  useEffect(() => {
     setPhase("idle");
     setFeedback(null);
-  }, [open, row?.id, row?.accurateId, row?.acceptanceStatus]);
+    setDesignSyncNeeded(false);
+    setSyncBusy(false);
+  }, [overlayResetKey]);
 
   useEffect(() => {
     if (!open) return;
@@ -167,6 +213,7 @@ export function InboxPoDetailModal({ row, open, onClose, onAccepted }: Props) {
       accepted_at?: string | null;
       inbox_status?: string;
     },
+    sync?: DesignGateSyncInfo | null,
   ) {
     if (!localRow) return;
     const next: PoRow = {
@@ -180,9 +227,49 @@ export function InboxPoDetailModal({ row, open, onClose, onAccepted }: Props) {
     };
     setLocalRow(next);
     setPhase("success");
-    setFeedback(TERIMA_PO_SUCCESS_FEEDBACK);
+    const needed = sync?.status === "needed";
+    setDesignSyncNeeded(needed);
+    setFeedback(terimaPoSuccessFeedback(sync));
     onAccepted?.(next);
     if (next.accurateId) notifyPoAccepted(next.accurateId);
+  }
+
+  async function onSyncDesignGate() {
+    if (!localRow?.accurateId || syncBusy || phase === "loading") return;
+    setSyncBusy(true);
+    setFeedback(null);
+    try {
+      const res = await syncDesignGate(localRow.accurateId);
+      if (res.design_gate_sync?.synced) {
+        setDesignSyncNeeded(false);
+        setFeedback({
+          tone: "success",
+          title: "Gate Design tersinkron",
+          message: "Gate Design Non-Cetak berhasil dibuka.",
+        });
+      } else {
+        setDesignSyncNeeded(true);
+        setFeedback({
+          tone: "error",
+          title: "Perlu Sinkronisasi",
+          message:
+            res.design_gate_sync?.error ||
+            "Sinkronisasi Gate Design masih gagal. Coba lagi.",
+        });
+      }
+    } catch (err) {
+      setDesignSyncNeeded(true);
+      setFeedback({
+        tone: "error",
+        title: "Perlu Sinkronisasi",
+        message:
+          err instanceof Error
+            ? err.message
+            : "Sinkronisasi Gate Design gagal.",
+      });
+    } finally {
+      setSyncBusy(false);
+    }
   }
 
   async function refreshAcceptanceStatus() {
@@ -210,7 +297,10 @@ export function InboxPoDetailModal({ row, open, onClose, onAccepted }: Props) {
     setFeedback(null);
     try {
       const res = await acceptPo(localRow.accurateId);
-      applyAccepted(res.acceptance);
+      applyAccepted(
+        res.acceptance,
+        res.design_gate_sync || res.workflow?.design_gate_sync,
+      );
     } catch (err) {
       // Timeout/network: jangan auto-retry accept; reconcile GET status.
       if (err instanceof PoAcceptError && err.uncertain) {
@@ -331,7 +421,9 @@ export function InboxPoDetailModal({ row, open, onClose, onAccepted }: Props) {
           <span className="ep-po-confirm-hint">
             {localRow.origin === "accurate"
               ? accepted
-                ? "PO sudah diterima — workflow Eternal aktif"
+                ? designSyncNeeded
+                  ? "PO diterima · Gate Design: Perlu Sinkronisasi"
+                  : "PO sudah diterima — workflow Eternal aktif"
                 : "Accurate read-only · Terima PO mengaktifkan workflow Eternal"
               : "Sumber DEMO — Terima PO hanya untuk PO Accurate"}
           </span>
@@ -339,6 +431,18 @@ export function InboxPoDetailModal({ row, open, onClose, onAccepted }: Props) {
             <button type="button" className="ep-btn" onClick={onClose}>
               Tutup
             </button>
+            {showAccept && accepted && designSyncNeeded ? (
+              <button
+                type="button"
+                className={`ep-btn${syncBusy ? " is-busy" : ""}`}
+                disabled={syncBusy || phase === "loading"}
+                aria-busy={syncBusy}
+                data-testid="sync-design-gate-btn"
+                onClick={() => void onSyncDesignGate()}
+              >
+                {syncBusy ? "Menyinkronkan…" : "Sinkronkan Gate Design"}
+              </button>
+            ) : null}
             {showAccept &&
             phase === "error" &&
             feedback?.title === TERIMA_PO_UNCERTAIN_FEEDBACK.title ? (

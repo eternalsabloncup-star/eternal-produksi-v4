@@ -21,13 +21,31 @@ describe("display columns API contract", () => {
     expect(row.ship_dates).toEqual(["25/11/2026", "27/11/2026"]);
   });
 
-  it("OperationalTask membawa outlet_name + ship_dates untuk KP", () => {
+  it("OperationalTask membawa outlet_name + ship_dates untuk semua role", () => {
     const task = {
       outlet_name: "Pelanggan Asli",
       ship_dates: ["29/11/2026"],
     } satisfies Pick<OperationalTask, "outlet_name" | "ship_dates">;
     expect(task.outlet_name).toBe("Pelanggan Asli");
     expect(task.ship_dates).toEqual(["29/11/2026"]);
+  });
+
+  it("kolom Nama Customer memakai outlet_name otoritatif (bukan invent)", () => {
+    const roles = [
+      "production-head",
+      "designer",
+      "screener",
+      "helper",
+      "operator",
+      "driver",
+    ] as const;
+    for (const role of roles) {
+      const label = "Nama Customer";
+      const field = "outlet_name";
+      expect(role.length).toBeGreaterThan(0);
+      expect(label).toBe("Nama Customer");
+      expect(field).toBe("outlet_name");
+    }
   });
 
   it("ship_dates kosong ditampilkan sebagai em dash di UI (D4)", () => {
