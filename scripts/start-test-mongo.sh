@@ -3,10 +3,13 @@
 set -euo pipefail
 
 NAME="${TEST_MONGO_NAME:-eternal-v4-test-mongo}"
-PORT="${TEST_MONGO_PORT:-27017}"
+# Default 27018 — hindari bentrok dengan docker-compose yang publish 27017.
+PORT="${TEST_MONGO_PORT:-27018}"
 ROOT_USER="${MONGO_ROOT_USERNAME:-eternal}"
 ROOT_PASS="${MONGO_ROOT_PASSWORD:-eternal_dev_password}"
 ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
+# Cache kecil + memori index terbatas → lebih stabil di Cloud Agent.
+WT_CACHE_GB="${TEST_MONGO_WT_CACHE_GB:-0.5}"
 
 if docker ps -a --format '{{.Names}}' | grep -qx "$NAME"; then
   docker rm -f "$NAME" >/dev/null
@@ -18,7 +21,7 @@ docker run -d --name "$NAME" \
   -e MONGO_INITDB_ROOT_PASSWORD="$ROOT_PASS" \
   -v "$ROOT_DIR/scripts/mongo-dev.key:/tmp/mongo-dev.key:ro" \
   mongo:7.0.16 \
-  bash -c 'cp /tmp/mongo-dev.key /data/configdb/keyfile && chmod 400 /data/configdb/keyfile && chown mongodb:mongodb /data/configdb/keyfile && exec docker-entrypoint.sh mongod --replSet rs0 --bind_ip_all --auth --keyFile /data/configdb/keyfile'
+  bash -c "cp /tmp/mongo-dev.key /data/configdb/keyfile && chmod 400 /data/configdb/keyfile && chown mongodb:mongodb /data/configdb/keyfile && exec docker-entrypoint.sh mongod --replSet rs0 --bind_ip_all --auth --keyFile /data/configdb/keyfile --wiredTigerCacheSizeGB ${WT_CACHE_GB} --setParameter maxIndexBuildMemoryUsageMegabytes=100"
 
 echo "Waiting for MongoDB on 127.0.0.1:${PORT}..."
 for _ in $(seq 1 60); do

@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import Any
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile, status
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
 from app.auth.deps import AuthContext, require_csrf, require_session
@@ -12,9 +13,14 @@ from app.auth.permissions import PERM_OPERATIONS_FULL, has_permission
 from app.db import get_db
 from app.db_guard import UnsafeMongoTargetError
 from app.repositories import delivery_repository as deliveries
+from app.repositories import evidence_repository as evidence
 from app.repositories.task_repository import TaskQuantityError
 from app.services import delivery_service
 from app.services import delivery_sync
+from app.services.evidence_access import (
+    EvidenceAccessDenied,
+    assert_delivery_evidence_access,
+)
 from app.services.task_engine import TaskPermissionError
 
 router = APIRouter(prefix="/api/delivery", tags=["delivery"])
@@ -161,6 +167,69 @@ def get_delivery_note(
         "events": deliveries.list_delivery_events(db, accurate_sj_id),
         "evidence": delivery_service.active_delivery_evidence(db, accurate_sj_id),
     }
+
+
+@router.get("/{accurate_sj_id}/evidence/{evidence_id}/content")
+def get_delivery_evidence_content(
+    accurate_sj_id: str,
+    evidence_id: str,
+    auth: AuthContext = Depends(require_session),
+) -> StreamingResponse:
+    """Read-only stream foto/tanda tangan pengiriman — scope SJ; soft-delete → 404."""
+    db = get_db()
+    note = deliveries.get_delivery_note(db, accurate_sj_id)
+    if note is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Surat Jalan tidak ditemukan")
+    try:
+        assert_delivery_evidence_access(db, auth.user, note=note)
+    except EvidenceAccessDenied as exc:
+        raise HTTPException(status.HTTP_403_FORBIDDEN, str(exc)) from exc
+    active = delivery_service.active_delivery_evidence(db, accurate_sj_id)
+    allowed = {
+        str(item.get("evidence_id"))
+        for item in (active.get("photos") or []) + (active.get("signatures") or [])
+        if isinstance(item, dict) and item.get("evidence_id")
+    }
+    # Juga izinkan evidence yang tertaut ke event (meski daftar active berbeda bentuk).
+    for ev in deliveries.list_delivery_events(db, accurate_sj_id):
+        for eid in ev.get("photo_evidence_ids") or []:
+            allowed.add(str(eid))
+        if ev.get("signature_evidence_id"):
+            allowed.add(str(ev["signature_evidence_id"]))
+    if evidence_id not in allowed:
+        raise HTTPException(
+            status.HTTP_404_NOT_FOUND,
+            "Bukti tidak terkait Surat Jalan ini.",
+        )
+    meta = evidence.get_evidence(db, evidence_id)
+    if meta is None or meta.get("deleted_at") is not None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Bukti tidak ditemukan")
+    scope = str(meta.get("scope") or "")
+    if scope not in (
+        delivery_service.DELIVERY_PHOTO_SCOPE,
+        delivery_service.DELIVERY_SIGNATURE_SCOPE,
+    ):
+        raise HTTPException(status.HTTP_403_FORBIDDEN, "Bukti bukan file pengiriman.")
+    if str(meta.get("scope_id")) != str(accurate_sj_id):
+        raise HTTPException(
+            status.HTTP_403_FORBIDDEN,
+            "Bukti di luar scope Surat Jalan yang diminta.",
+        )
+    try:
+        _doc, stream = evidence.open_evidence_stream(db, evidence_id)
+    except LookupError as exc:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, str(exc)) from exc
+    filename = str(meta.get("filename") or "delivery.bin")
+    content_type = str(meta.get("content_type") or "application/octet-stream")
+    return StreamingResponse(
+        stream,
+        media_type=content_type,
+        headers={
+            "Content-Disposition": f'inline; filename="{filename}"',
+            "Cache-Control": "private, no-store",
+            "X-Content-Type-Options": "nosniff",
+        },
+    )
 
 
 @router.get("/{accurate_sj_id}/loading-validation")

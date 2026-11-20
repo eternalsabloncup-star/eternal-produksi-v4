@@ -242,45 +242,44 @@ def test_index_cache_isolated_across_clients(mongo_client: MongoClient) -> None:
         mongo_client.drop_database(name)
 
 
-def test_submit_sample_fails_before_evidence_when_master_missing(db: Database) -> None:
+def test_confirm_sample_fails_when_approval_master_missing(db: Database) -> None:
+    """Draft tetap boleh tersimpan; confirm gagal tanpa master approval-sampel."""
     po = _seed_po(db)
     alloc = _schedule_one(db, po, "hard-orphan-alloc")
     _prep_screen(db, alloc, "hard-orphan")
 
+    prod.upload_sample_draft(
+        db,
+        OPERATOR,
+        allocation_id=alloc,
+        filename="orphan.png",
+        content_type="image/png",
+        content=PNG,
+    )
     db["master_task_types"].delete_many({"task_type": "approval-sampel"})
-    before = evidence.evidence_collection(db).count_documents(
-        {"scope": "operator-sample", "scope_id": alloc}
-    )
     with pytest.raises(master.MissingMasterConfigError):
-        prod.submit_sample(
-            db,
-            OPERATOR,
-            allocation_id=alloc,
-            filename="orphan.png",
-            content_type="image/png",
-            content=PNG,
-        )
-    after = evidence.evidence_collection(db).count_documents(
-        {"scope": "operator-sample", "scope_id": alloc}
-    )
-    assert after == before
+        prod.confirm_sample_submission(db, OPERATOR, allocation_id=alloc)
+    sample = samples.latest_sample(db, alloc)
+    assert sample is not None
+    assert sample["status"] == samples.STATUS_DRAFT
 
 
 def test_sample_approval_no_partial_when_print_master_missing(db: Database) -> None:
     po = _seed_po(db)
     alloc = _schedule_one(db, po, "hard-partial-alloc")
     _prep_screen(db, alloc, "hard-partial")
-    prod.submit_sample(
-        db,
-        OPERATOR,
-        allocation_id=alloc,
-        filename="s.png",
-        content_type="image/png",
-        content=PNG,
-    )
+    from tests.sample_flow_helpers import draft_and_confirm
+
+    submitted = draft_and_confirm(db, OPERATOR, alloc)
     db["master_task_types"].delete_many({"task_type": "cetak"})
     with pytest.raises(master.MissingMasterConfigError):
-        prod.decide_sample(db, HEAD, allocation_id=alloc, version=1, approved=True)
+        prod.decide_sample(
+            db,
+            HEAD,
+            allocation_id=alloc,
+            version=int(submitted["version"]),
+            approved=True,
+        )
     sample = samples.latest_sample(db, alloc)
     assert sample is not None
     assert sample["status"] == samples.STATUS_PENDING
@@ -290,15 +289,9 @@ def test_confirm_print_idempotent(db: Database) -> None:
     po = _seed_po(db)
     alloc = _schedule_one(db, po, "hard-print-alloc")
     _prep_screen(db, alloc, "hard-print")
-    prod.submit_sample(
-        db,
-        OPERATOR,
-        allocation_id=alloc,
-        filename="s.png",
-        content_type="image/png",
-        content=PNG,
-    )
-    prod.decide_sample(db, HEAD, allocation_id=alloc, version=1, approved=True)
+    from tests.sample_flow_helpers import approve_sample
+
+    approve_sample(db, OPERATOR, HEAD, alloc)
     first = prod.confirm_print(
         db, OPERATOR, allocation_id=alloc, qty=10, idempotency_key="print-hard-a"
     )
@@ -313,15 +306,9 @@ def test_qc_packing_consistent_after_print(db: Database) -> None:
     po = _seed_po(db)
     alloc = _schedule_one(db, po, "hard-qc-alloc")
     _prep_screen(db, alloc, "hard-qc")
-    prod.submit_sample(
-        db,
-        OPERATOR,
-        allocation_id=alloc,
-        filename="s.png",
-        content_type="image/png",
-        content=PNG,
-    )
-    prod.decide_sample(db, HEAD, allocation_id=alloc, version=1, approved=True)
+    from tests.sample_flow_helpers import approve_sample
+
+    approve_sample(db, OPERATOR, HEAD, alloc)
     prod.confirm_print(
         db, OPERATOR, allocation_id=alloc, qty=20, idempotency_key="print-hard-qc"
     )

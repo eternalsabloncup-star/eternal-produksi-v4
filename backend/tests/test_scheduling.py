@@ -236,7 +236,7 @@ def test_revision_keeps_history_and_frees_qty(db: Database) -> None:
     assert schedules.active_allocated_qty(db, LINE_A) == 1000
 
 
-def test_allocation_with_confirmed_print_cannot_be_revised(db: Database) -> None:
+def test_allocation_revise_rejects_below_confirmed_print(db: Database) -> None:
     po_doc = _seed_po(db)
     _open_gates(db)
     created = scheduling_service.create_allocations(
@@ -250,19 +250,60 @@ def test_allocation_with_confirmed_print_cannot_be_revised(db: Database) -> None
     alloc_id = created["allocations"][0]["allocation_id"]
     _confirm_print(db, alloc_id, 300)
 
-    with pytest.raises(scheduling_service.AllocationLockedError):
+    with pytest.raises(scheduling_service.AllocationBelowConfirmedPrintError):
         scheduling_service.revise_allocation_qty(
             db,
             HEAD,
             po_doc=po_doc,
             allocation_id=alloc_id,
             qty=100,
-            reason="coba ubah",
+            reason="coba ubah di bawah cetak",
         )
-    # Riwayat hasil cetak tetap utuh.
+    # Riwayat hasil cetak tetap utuh; Qty alokasi tidak berubah.
     state = scheduling_service.line_schedule_state(db, po_doc, LINE_A)
     assert state["qty_printed"] == 300
     assert state["allocations"][0]["qty"] == 800
+
+
+def test_allocation_revise_allows_at_or_above_confirmed_print(db: Database) -> None:
+    po_doc = _seed_po(db)
+    _open_gates(db)
+    created = scheduling_service.create_allocations(
+        db,
+        HEAD,
+        po_doc=po_doc,
+        accurate_line_id=LINE_A,
+        allocations=[{"operator_email": "op1@eternal.local", "qty": 800}],
+        idempotency_key="sched-revise-print-ok",
+    )
+    alloc_id = created["allocations"][0]["allocation_id"]
+    _confirm_print(db, alloc_id, 300)
+
+    scheduling_service.revise_allocation_qty(
+        db,
+        HEAD,
+        po_doc=po_doc,
+        allocation_id=alloc_id,
+        qty=300,
+        reason="turun ke batas cetak",
+    )
+    state = scheduling_service.line_schedule_state(db, po_doc, LINE_A)
+    assert state["allocations"][0]["qty"] == 300
+    assert state["qty_printed"] == 300
+    assert state["qty_allocated"] == 300
+    assert state["qty_unallocated"] == state["qty_target"] - 300
+
+    scheduling_service.revise_allocation_qty(
+        db,
+        HEAD,
+        po_doc=po_doc,
+        allocation_id=alloc_id,
+        qty=500,
+        reason="naik lagi di atas cetak",
+    )
+    state = scheduling_service.line_schedule_state(db, po_doc, LINE_A)
+    assert state["allocations"][0]["qty"] == 500
+    assert state["qty_printed"] == 300
 
 
 def test_reschedule_created_once_for_shortfall(db: Database) -> None:

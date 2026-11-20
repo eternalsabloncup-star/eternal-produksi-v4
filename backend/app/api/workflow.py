@@ -6,6 +6,7 @@ import base64
 from typing import Any
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile, status
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
 from app.auth.deps import AuthContext, require_csrf, require_session
@@ -17,6 +18,10 @@ from app.repositories import gate_repository as gates
 from app.repositories import payment_repository as payments
 from app.repositories.po_repository import get_by_accurate_id
 from app.services import design_service, payment_service, po_tasks
+from app.services.evidence_access import (
+    EvidenceAccessDenied,
+    assert_design_evidence_access,
+)
 from app.services.task_engine import TaskPermissionError
 
 router = APIRouter(prefix="/api", tags=["workflow"])
@@ -120,6 +125,62 @@ def get_design_state(
         "approval": approval,
         "gates": gates.get_gates(db, accurate_po_id),
     }
+
+
+@router.get("/design/{accurate_po_id}/evidence/{evidence_id}/content")
+def get_design_evidence_content(
+    accurate_po_id: str,
+    evidence_id: str,
+    auth: AuthContext = Depends(require_session),
+) -> StreamingResponse:
+    """Read-only stream bukti desain PO — sesi wajib; tidak membuka Gate/approval."""
+    db = get_db()
+    po_doc = get_by_accurate_id(db, accurate_po_id)
+    if po_doc is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "PO Accurate tidak ditemukan")
+    try:
+        assert_design_evidence_access(db, auth.user, po_doc=po_doc)
+    except EvidenceAccessDenied as exc:
+        raise HTTPException(status.HTTP_403_FORBIDDEN, str(exc)) from exc
+    submissions = design.list_submissions(db, accurate_po_id)
+    allowed_ids = {
+        str(s.get("evidence_id"))
+        for s in submissions
+        if isinstance(s, dict) and s.get("evidence_id")
+    }
+    if evidence_id not in allowed_ids:
+        raise HTTPException(
+            status.HTTP_404_NOT_FOUND,
+            "Bukti desain tidak terkait PO ini.",
+        )
+    meta = evidence.get_evidence(db, evidence_id)
+    if meta is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Bukti tidak ditemukan")
+    if meta.get("deleted_at") is not None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Bukti sudah dihapus")
+    if str(meta.get("scope")) != design_service.DESIGN_SCOPE:
+        raise HTTPException(status.HTTP_403_FORBIDDEN, "Bukti bukan file desain.")
+    if str(meta.get("scope_id")) != str(accurate_po_id):
+        raise HTTPException(
+            status.HTTP_403_FORBIDDEN,
+            "Bukti di luar scope PO yang diminta.",
+        )
+    try:
+        _doc, stream = evidence.open_evidence_stream(db, evidence_id)
+    except LookupError as exc:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, str(exc)) from exc
+
+    filename = str(meta.get("filename") or "design.bin")
+    content_type = str(meta.get("content_type") or "application/octet-stream")
+    return StreamingResponse(
+        stream,
+        media_type=content_type,
+        headers={
+            "Content-Disposition": f'inline; filename="{filename}"',
+            "Cache-Control": "private, no-store",
+            "X-Content-Type-Options": "nosniff",
+        },
+    )
 
 
 @router.post("/design/{accurate_po_id}/submission")

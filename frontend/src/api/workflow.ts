@@ -139,6 +139,16 @@ export async function fetchDesignState(
   return request(`/api/design/${encodeURIComponent(accuratePoId)}`);
 }
 
+/** URL stream bukti desain (sesi cookie) — jangan spekulasi path lain. */
+export function designEvidenceContentUrl(
+  accuratePoId: string,
+  evidenceId: string,
+): string {
+  return `/api/design/${encodeURIComponent(accuratePoId)}/evidence/${encodeURIComponent(
+    evidenceId,
+  )}/content`;
+}
+
 /** POST /api/design/{accurate_po_id}/submission — multipart file */
 export async function submitDesignFile(
   accuratePoId: string,

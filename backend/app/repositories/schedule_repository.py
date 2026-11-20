@@ -13,6 +13,7 @@ from pymongo.errors import DuplicateKeyError
 ALLOCATIONS_COLLECTION = "production_allocations"
 ALLOCATION_HISTORY_COLLECTION = "production_allocation_history"
 SCHEDULE_COMMANDS_COLLECTION = "schedule_commands"
+LINE_GUARDS_COLLECTION = "schedule_line_guards"
 
 STATUS_ACTIVE = "active"
 STATUS_RELEASED = "released"
@@ -40,6 +41,12 @@ REQUIRED_SCHEDULE_INDEX_SPECS: list[dict[str, Any]] = [
         "collection": SCHEDULE_COMMANDS_COLLECTION,
         "keys": [("idempotency_key", ASCENDING)],
         "name": "uniq_schedule_command",
+        "unique": True,
+    },
+    {
+        "collection": LINE_GUARDS_COLLECTION,
+        "keys": [("accurate_line_id", ASCENDING)],
+        "name": "uniq_schedule_line_guard",
         "unique": True,
     },
 ]
@@ -108,21 +115,47 @@ def list_allocations(
     )
 
 
-def get_allocation(db: Database, allocation_id: str) -> dict[str, Any] | None:
-    _ensure_once(db)
-    return allocations_collection(db).find_one({"allocation_id": allocation_id}, {"_id": 0})
+def get_allocation(
+    db: Database, allocation_id: str, *, session: Any | None = None
+) -> dict[str, Any] | None:
+    if session is None:
+        _ensure_once(db)
+    return allocations_collection(db).find_one(
+        {"allocation_id": allocation_id}, {"_id": 0}, session=session
+    )
 
 
-def active_allocated_qty(db: Database, accurate_line_id: str) -> float:
+def active_allocated_qty(
+    db: Database, accurate_line_id: str, *, session: Any | None = None
+) -> float:
     rows = allocations_collection(db).aggregate(
         [
             {"$match": {"accurate_line_id": accurate_line_id, "status": STATUS_ACTIVE}},
             {"$group": {"_id": None, "total": {"$sum": "$qty"}}},
-        ]
+        ],
+        session=session,
     )
     for row in rows:
         return float(row.get("total") or 0)
     return 0.0
+
+
+def touch_line_guard(
+    db: Database, accurate_line_id: str, *, session: Any | None = None
+) -> None:
+    """Serialize concurrent capacity changes for one PO item line inside a txn."""
+    if session is None:
+        _ensure_once(db)
+    db[LINE_GUARDS_COLLECTION].find_one_and_update(
+        {"accurate_line_id": accurate_line_id},
+        {
+            "$inc": {"seq": 1},
+            "$set": {"updated_at": datetime.now(timezone.utc)},
+            "$setOnInsert": {"accurate_line_id": accurate_line_id},
+        },
+        upsert=True,
+        session=session,
+    )
 
 
 def next_sequence(db: Database, accurate_line_id: str) -> int:
@@ -147,10 +180,12 @@ def insert_allocation(
     qty: float,
     schedule_date: str,
     created_by: str,
+    print_color: str | None = None,
+    screen_kind: str | None = None,
 ) -> dict[str, Any]:
     _ensure_once(db)
     now = datetime.now(timezone.utc)
-    doc = {
+    doc: dict[str, Any] = {
         "allocation_id": allocation_id,
         "accurate_po_id": accurate_po_id,
         "po_no": po_no,
@@ -164,6 +199,11 @@ def insert_allocation(
         "created_at": now,
         "updated_at": now,
     }
+    # Opsional — record lama tanpa field tetap valid; jangan isi default palsu.
+    if print_color is not None:
+        doc["print_color"] = print_color
+    if screen_kind is not None:
+        doc["screen_kind"] = screen_kind
     try:
         allocations_collection(db).insert_one(dict(doc))
     except DuplicateKeyError as exc:
@@ -188,14 +228,21 @@ def update_allocation_qty(
     qty: float,
     actor_email: str,
     reason: str,
-) -> dict[str, Any]:
-    _ensure_once(db)
-    current = get_allocation(db, allocation_id)
+    expected_qty: float | None = None,
+    session: Any | None = None,
+) -> dict[str, Any] | None:
+    """Update Qty alokasi. None = gagal CAS (expected_qty tidak cocok)."""
+    if session is None:
+        _ensure_once(db)
+    current = get_allocation(db, allocation_id, session=session)
     if current is None:
         raise LookupError(f"Alokasi tidak ditemukan: {allocation_id}")
     now = datetime.now(timezone.utc)
+    filt: dict[str, Any] = {"allocation_id": allocation_id}
+    if expected_qty is not None:
+        filt["qty"] = float(expected_qty)
     updated = allocations_collection(db).find_one_and_update(
-        {"allocation_id": allocation_id},
+        filt,
         {
             "$set": {
                 "qty": float(qty),
@@ -205,7 +252,10 @@ def update_allocation_qty(
         },
         projection={"_id": 0},
         return_document=ReturnDocument.AFTER,
+        session=session,
     )
+    if updated is None:
+        return None
     append_history(
         db,
         allocation_id=allocation_id,
@@ -214,6 +264,7 @@ def update_allocation_qty(
         qty_before=float(current["qty"]),
         qty_after=float(qty),
         reason=reason,
+        session=session,
     )
     return updated
 
@@ -227,8 +278,10 @@ def append_history(
     qty_before: float | None,
     qty_after: float | None,
     reason: str,
+    session: Any | None = None,
 ) -> dict[str, Any]:
-    _ensure_once(db)
+    if session is None:
+        _ensure_once(db)
     doc = {
         "allocation_id": allocation_id,
         "action": action,
@@ -238,7 +291,7 @@ def append_history(
         "reason": reason,
         "created_at": datetime.now(timezone.utc),
     }
-    allocation_history_collection(db).insert_one(dict(doc))
+    allocation_history_collection(db).insert_one(dict(doc), session=session)
     doc.pop("_id", None)
     return doc
 

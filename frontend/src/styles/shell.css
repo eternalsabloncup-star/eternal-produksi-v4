@@ -3272,3 +3272,867 @@
   }
 }
 
+
+/* --- Tugas Tim / modal API panels (aliases + utilities) --- */
+.ep-modalhead {
+  flex: 0 0 auto;
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 12px;
+  padding: 14px 16px;
+  border-bottom: 1px solid var(--ep-line);
+  background: linear-gradient(180deg, #f7fbf8, #eef5f1);
+}
+
+.ep-modalbody {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: auto;
+  padding: 14px 16px;
+  scrollbar-width: thin;
+}
+
+.ep-modal-submeta {
+  margin-top: 4px;
+  font-size: 11px;
+  color: #5a6b78;
+  font-weight: 500;
+}
+
+.ep-taskpanel {
+  min-width: 0;
+}
+
+.ep-error {
+  margin: 0 0 10px;
+  padding: 8px 10px;
+  border: 1px solid #f0b4b4;
+  border-radius: 8px;
+  background: #fff5f5;
+  color: #9b1c1c;
+  font-size: 12px;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+.ep-notice {
+  margin: 0 0 10px;
+  padding: 8px 10px;
+  border: 1px solid #c5d9cc;
+  border-radius: 8px;
+  background: #f3faf6;
+  color: #1f4d3a;
+  font-size: 12px;
+}
+
+.ep-kv {
+  display: grid;
+  grid-template-columns: minmax(120px, 160px) 1fr;
+  gap: 6px 12px;
+  margin: 0 0 14px;
+  font-size: 12px;
+}
+
+.ep-kv dt {
+  color: #6b7c8a;
+  font-weight: 650;
+}
+
+.ep-kv dd {
+  margin: 0;
+  color: var(--ep-ink);
+  min-width: 0;
+  word-break: break-word;
+}
+
+.ep-history {
+  margin: 0 0 14px;
+  padding-left: 18px;
+  font-size: 12px;
+  line-height: 1.55;
+  color: #334155;
+}
+
+.ep-history li {
+  margin-bottom: 4px;
+}
+
+.ep-signature {
+  display: block;
+  width: min(360px, 100%);
+  height: 140px;
+  margin: 8px 0 12px;
+  border: 1px solid var(--ep-line);
+  border-radius: 8px;
+  background: #fff;
+  touch-action: none;
+  cursor: crosshair;
+}
+
+.ep-coordination {
+  margin: 12px 0;
+  padding: 10px 12px;
+  border: 1px solid #f0c9a8;
+  border-radius: 8px;
+  background: #fff8f2;
+}
+
+.ep-coordination-message {
+  margin: 0 0 8px;
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.ep-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 11px;
+  margin: 0 0 12px;
+}
+
+.ep-table th,
+.ep-table td {
+  border: 1px solid var(--ep-line);
+  padding: 6px 8px;
+  text-align: left;
+  vertical-align: top;
+}
+
+.ep-table th {
+  background: #eef5f1;
+  font-weight: 700;
+}
+
+.ep-num {
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+  display: inline-block;
+  min-width: 100%;
+}
+
+/* Di dalam tabel: tetap table-cell — jangan inline-block (merusak kolom horizontal). */
+th.ep-num,
+td.ep-num,
+.ep-table th.ep-num,
+.ep-table td.ep-num {
+  display: table-cell;
+  text-align: right;
+  min-width: 0;
+  font-variant-numeric: tabular-nums;
+}
+
+.ep-task-status {
+  display: inline-flex;
+  align-items: center;
+  min-height: 18px;
+  padding: 0 7px;
+  border-radius: 999px;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.01em;
+  white-space: nowrap;
+  border: 1px solid transparent;
+}
+
+.ep-task-status.is-belum {
+  background: #eef2f6;
+  color: #4a5d6e;
+  border-color: #d5dde6;
+}
+
+.ep-task-status.is-sebagian {
+  background: #fff4df;
+  color: #8a5a10;
+  border-color: #f0d4a0;
+}
+
+.ep-task-status.is-selesai {
+  background: #e3f5ea;
+  color: #1b6b45;
+  border-color: #b7dfc6;
+}
+
+.ep-task-status.is-wait {
+  background: #e8f0ff;
+  color: #2a4f9b;
+  border-color: #c5d4f5;
+}
+
+.ep-task-status.is-draft {
+  background: #f3f5f7;
+  color: #5a6a78;
+  border-color: #d8dee5;
+}
+
+.ep-task-status.is-reject {
+  background: #fdeceb;
+  color: #9b1c1c;
+  border-color: #f0b4b4;
+}
+
+.ep-tblscroll-embed {
+  max-height: 220px;
+  margin-bottom: 10px;
+}
+
+.ep-btn.sm.is-active,
+.ep-btn.is-active {
+  border-color: var(--ep-primary);
+  background: #e2f0e8;
+  box-shadow: inset 0 0 0 1px var(--ep-primary);
+}
+
+.ep-task-modal {
+  width: min(860px, 100%);
+  max-height: min(90vh, 820px);
+}
+
+/* --- Popup Designer (scoped; tidak mengubah modal role lain) --- */
+.ep-task-modal.is-designer {
+  width: min(720px, 100%);
+  height: auto;
+  max-height: min(92vh, 720px);
+}
+
+.ep-task-modal.is-designer .ep-modal-head {
+  padding: 10px 14px;
+  align-items: center;
+}
+
+.ep-task-modal.is-designer .ep-modal-head h2 {
+  margin: 0;
+  font-size: 16px;
+  line-height: 1.25;
+}
+
+.ep-task-modal.is-designer .ep-modal-submeta {
+  margin-top: 2px;
+  font-size: 11px;
+}
+
+.ep-task-modal.is-designer .ep-modal-body {
+  padding: 10px 14px 8px;
+  overflow: auto;
+}
+
+.ep-task-modal.is-designer .ep-modal-foot {
+  padding: 8px 14px;
+}
+
+.ep-designer-summary {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 10px 18px;
+  margin: 0 0 10px;
+}
+
+.ep-designer-summary-title {
+  margin: 0 0 4px;
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: #6b7c8a;
+}
+
+.ep-kv-compact {
+  margin: 0;
+  gap: 3px 10px;
+  grid-template-columns: minmax(100px, 130px) 1fr;
+  font-size: 11px;
+}
+
+.ep-task-modal.is-designer .ep-sectionlabel {
+  margin: 8px 0 6px;
+  font-size: 10px;
+}
+
+.ep-task-modal.is-designer .ep-sectionlabel:first-child {
+  margin-top: 0;
+}
+
+.ep-empty-inline {
+  padding: 4px 0 !important;
+  margin: 0 0 8px;
+  text-align: left;
+  font-size: 12px;
+}
+
+.ep-task-history-block.is-compact .ep-history {
+  margin: 0 0 6px;
+  max-height: 88px;
+  overflow: auto;
+  padding-left: 16px;
+}
+
+.ep-task-history-block.is-compact .ep-sectionlabel {
+  margin: 6px 0 4px;
+}
+
+.ep-notice-compact {
+  margin: 0 0 8px;
+  padding: 6px 8px;
+  font-size: 11px;
+  line-height: 1.35;
+}
+
+.ep-design-status-strip {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1.4fr);
+  gap: 6px 14px;
+  margin: 0 0 8px;
+  font-size: 11px;
+}
+
+.ep-design-status-item {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
+.ep-design-status-item.is-wide {
+  grid-column: 1 / -1;
+}
+
+.ep-design-status-lbl {
+  color: #6b7c8a;
+  font-weight: 650;
+  font-size: 10px;
+}
+
+.ep-design-status-item strong {
+  font-weight: 650;
+  color: var(--ep-ink);
+  word-break: break-word;
+}
+
+.ep-workflow-panel.is-compact {
+  margin: 0;
+}
+
+.ep-workflow-panel.is-compact .ep-filterbar,
+.ep-workflow-panel.is-compact .ep-design-actions {
+  margin: 0 0 6px;
+  padding: 6px 0;
+  gap: 6px;
+  flex-wrap: wrap;
+  align-items: center;
+  border-bottom: none;
+}
+
+.ep-workflow-panel.is-compact .ep-design-actions .ep-btn {
+  min-height: 30px;
+  padding: 4px 10px;
+}
+
+.ep-workflow-panel.is-compact .ep-design-history-label {
+  margin: 2px 0 2px;
+}
+
+.ep-workflow-panel.is-compact .ep-tblscroll-embed {
+  max-height: 84px;
+  margin-bottom: 2px;
+}
+
+.ep-workflow-panel.is-compact .ep-design-status-strip {
+  margin: 0 0 6px;
+  padding: 6px 8px;
+  border: 1px solid var(--ep-line);
+  border-radius: 8px;
+  background: #f7fbf8;
+}
+
+.ep-task-modal.is-designer .ep-designer-summary {
+  margin-bottom: 6px;
+  padding-bottom: 6px;
+  border-bottom: 1px solid #e4eee8;
+}
+
+.ep-workflow-loading {
+  margin: 0 0 6px;
+  font-size: 12px;
+  color: #5a6b78;
+}
+
+@media (max-width: 640px) {
+  .ep-designer-summary {
+    grid-template-columns: 1fr;
+  }
+}
+
+/* Designer summary: customer / item lines / header actions */
+.ep-modal-head-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex: none;
+}
+
+.ep-task-modal.is-designer .ep-modal-head-actions .ep-btn {
+  min-height: 30px;
+}
+
+.ep-error-inline {
+  margin: 6px 0 0;
+  padding: 4px 8px;
+  font-size: 11px;
+}
+
+/* Item Cetak: teks statis (bukan dropdown); wrap nama normal, Qty kanan. */
+.ep-designer-print-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 0;
+  max-width: 100%;
+  overflow-x: hidden;
+  font-size: 11px;
+  line-height: 1.4;
+}
+
+.ep-designer-print-list li {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  column-gap: 6px;
+  align-items: start;
+  min-width: 0;
+}
+
+.ep-designer-print-name {
+  min-width: 0;
+  white-space: normal;
+  overflow-wrap: break-word;
+  word-break: normal;
+}
+
+.ep-designer-print-sep {
+  color: #8a9aa8;
+  flex: none;
+}
+
+.ep-designer-print-qty {
+  flex: none;
+  white-space: nowrap;
+  text-align: right;
+  justify-self: end;
+}
+
+.ep-task-modal.is-designer .ep-designer-summary-col .ep-kv-compact > dd {
+  min-width: 0;
+}
+
+/* --- Popup Penjadwalan Kepala Produksi (scoped) --- */
+.ep-task-modal.is-scheduling {
+  width: min(760px, 100%);
+  height: auto;
+  max-height: min(90vh, 780px);
+}
+
+.ep-task-modal.is-scheduling .ep-modal-head {
+  padding: 10px 14px;
+  align-items: flex-start;
+}
+
+.ep-task-modal.is-scheduling .ep-modal-head-main {
+  min-width: 0;
+  flex: 1 1 auto;
+}
+
+.ep-task-modal.is-scheduling .ep-modal-head h2 {
+  margin: 0 0 4px;
+  font-size: 16px;
+  line-height: 1.25;
+}
+
+.ep-task-modal.is-scheduling .ep-modal-kicker {
+  margin-bottom: 2px;
+}
+
+.ep-task-modal.is-scheduling .ep-modal-head-actions {
+  flex: 0 0 auto;
+  align-items: center;
+}
+
+.ep-sched-head-meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 14px;
+  min-width: 0;
+}
+
+.ep-sched-head-customer {
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--ep-ink);
+  min-width: 0;
+}
+
+.ep-sched-head-po {
+  font-size: 12px;
+  font-weight: 600;
+  color: #2f4a3e;
+  font-variant-numeric: tabular-nums;
+}
+
+.ep-task-status.is-urgent {
+  background: #fde8e8;
+  color: #9b1c1c;
+  box-shadow: inset 0 0 0 1px #f2b4b4;
+}
+
+.ep-btn-design {
+  background: #e8f3ff !important;
+  border-color: #9bb8d9 !important;
+  color: #1e4a73 !important;
+}
+
+.ep-btn-design:hover {
+  background: #d9ebfc !important;
+}
+
+.ep-task-modal.is-scheduling .ep-modal-body {
+  padding: 10px 14px 8px;
+  overflow-x: hidden;
+  overflow-y: auto;
+}
+
+.ep-task-modal.is-scheduling .ep-modal-foot {
+  padding: 8px 14px;
+}
+
+.ep-task-modal.is-scheduling .ep-sectionlabel {
+  margin: 8px 0 6px;
+  font-size: 10px;
+}
+
+.ep-task-schedule {
+  min-width: 0;
+  max-width: 100%;
+}
+
+/* Design viewer + empty states masih memakai kv compact di dalam modal. */
+.ep-task-modal.is-scheduling .ep-kv-sched {
+  margin: 0 0 8px;
+  gap: 5px 10px;
+  grid-template-columns: max-content minmax(0, 1fr);
+  font-size: 12px;
+}
+
+.ep-task-modal.is-scheduling .ep-kv-sched dt {
+  color: #6b7c8a;
+  font-weight: 500;
+}
+
+.ep-task-modal.is-scheduling .ep-kv-sched dd {
+  margin: 0;
+  font-weight: 600;
+  min-width: 0;
+  word-break: break-word;
+}
+
+.ep-sched-items-scroll,
+.ep-sched-alloc-scroll {
+  margin: 0 0 8px;
+  max-width: 100%;
+  border: 1px solid #d5e2da;
+  border-radius: 6px;
+}
+
+.ep-sched-items-scroll {
+  max-height: min(32vh, 240px);
+  overflow-x: hidden;
+  overflow-y: auto;
+}
+
+.ep-sched-alloc-scroll {
+  max-height: min(28vh, 200px);
+  overflow-x: hidden;
+  overflow-y: auto;
+}
+
+.ep-sched-items-table,
+.ep-sched-alloc-table {
+  width: 100%;
+  max-width: 100%;
+  margin: 0;
+  table-layout: fixed;
+  border-collapse: collapse;
+}
+
+/* Item Cetak — nama lebar, qty compact */
+.ep-sched-items-table col.ep-sched-col-name {
+  width: 40%;
+}
+
+.ep-sched-items-table col.ep-sched-col-qty {
+  width: 15%;
+}
+
+/* Daftar Alokasi — operator/item lebih lebar */
+.ep-sched-alloc-table col.ep-sched-col-op {
+  width: 16%;
+}
+
+.ep-sched-alloc-table col.ep-sched-col-item {
+  width: 18%;
+}
+
+.ep-sched-alloc-table col.ep-sched-col-qty-sm {
+  width: 9%;
+}
+
+.ep-sched-alloc-table col.ep-sched-col-date {
+  width: 11%;
+}
+
+.ep-sched-alloc-table col.ep-sched-col-meta {
+  width: 9%;
+}
+
+.ep-sched-alloc-table col.ep-sched-col-status {
+  width: 9%;
+}
+
+.ep-sched-alloc-table col.ep-sched-col-aksi {
+  width: 10%;
+}
+
+.ep-task-modal.is-scheduling .ep-sched-items-table thead th,
+.ep-task-modal.is-scheduling .ep-sched-alloc-table thead th {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  text-align: center;
+  vertical-align: middle;
+  line-height: 1.2;
+  white-space: normal;
+  overflow-wrap: break-word;
+  font-weight: 700;
+  padding: 6px 5px;
+  height: auto;
+  min-height: 2.6em;
+}
+
+.ep-task-modal.is-scheduling .ep-sched-items-table td,
+.ep-task-modal.is-scheduling .ep-sched-alloc-table td {
+  padding: 5px 6px;
+  font-size: 11px;
+  display: table-cell;
+  vertical-align: middle;
+  min-width: 0;
+}
+
+.ep-sched-items-table td:first-child,
+.ep-sched-alloc-table td.ep-sched-td-text {
+  text-align: left;
+}
+
+.ep-sched-items-table td.ep-num,
+.ep-sched-alloc-table td.ep-sched-td-qty,
+.ep-sched-alloc-table td.ep-num {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.ep-sched-alloc-table td.ep-sched-td-center {
+  text-align: center;
+}
+
+.ep-sched-item-name {
+  display: block;
+  font-weight: 650;
+  color: var(--ep-ink);
+  line-height: 1.3;
+  overflow-wrap: break-word;
+  word-break: normal;
+}
+
+.ep-sched-item-code {
+  display: block;
+  margin-top: 1px;
+  font-size: 10px;
+  font-weight: 500;
+  color: #8a9aa8;
+  font-variant-numeric: tabular-nums;
+}
+
+.ep-task-modal.is-scheduling tr.is-active-line {
+  background: #f3faf6;
+}
+
+.ep-task-modal.is-scheduling .ep-table-compact th,
+.ep-task-modal.is-scheduling .ep-table-compact td {
+  display: table-cell;
+}
+
+@media (max-width: 720px) {
+  .ep-sched-items-scroll,
+  .ep-sched-alloc-scroll {
+    overflow-x: auto;
+  }
+
+  .ep-sched-items-table,
+  .ep-sched-alloc-table {
+    min-width: 520px;
+  }
+}
+
+.ep-sched-alloc-form {
+  margin-bottom: 6px;
+  gap: 6px;
+}
+
+.ep-sched-section-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin: 2px 0 6px;
+}
+
+.ep-sched-section-title {
+  margin: 0 !important;
+}
+
+.ep-sched-form-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px 10px;
+  margin: 0 0 8px;
+  min-width: 0;
+}
+
+.ep-sched-field {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 0;
+  font-size: 11px;
+  color: #6b7c8a;
+  font-weight: 500;
+}
+
+.ep-sched-field select,
+.ep-sched-field input {
+  width: 100%;
+  min-width: 0;
+  box-sizing: border-box;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--ep-ink);
+}
+
+.ep-sched-form-actions {
+  grid-column: 1 / -1;
+  display: flex;
+  justify-content: flex-end;
+}
+
+.ep-sched-design-shade,
+.ep-sched-revise-shade,
+.ep-evidence-preview-shade {
+  z-index: 45;
+}
+
+.ep-evidence-preview-modal {
+  width: min(640px, 96vw);
+  max-height: min(88vh, 720px);
+}
+
+.ep-evidence-preview-frame {
+  margin-top: 4px;
+  border: 1px solid #c5d4cb;
+  border-radius: 6px;
+  overflow: auto;
+  max-height: min(56vh, 480px);
+  background: #f7faf8;
+}
+
+.ep-evidence-inline-actions {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin-left: 6px;
+}
+
+.ep-task-progress-block {
+  margin: 0 0 10px;
+}
+
+.ep-sched-revise-modal {
+  width: min(420px, 94vw);
+  max-height: min(88vh, 560px);
+}
+
+.ep-sched-revise-kv {
+  margin: 0 0 10px;
+}
+
+.ep-sched-revise-kv dd.ep-num {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+.ep-sched-revise-fields {
+  display: grid;
+  gap: 8px;
+  margin: 0 0 8px;
+}
+
+.ep-sched-revise-fields input.ep-num {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+.ep-sched-design-modal {
+  width: min(640px, 96vw);
+  max-height: min(84vh, 680px);
+}
+
+.ep-sched-design-frame {
+  margin-top: 8px;
+  border: 1px solid #c5d4cb;
+  border-radius: 6px;
+  overflow: auto;
+  max-height: min(48vh, 420px);
+  background: #f7faf8;
+}
+
+.ep-sched-design-img {
+  display: block;
+  max-width: 100%;
+  height: auto;
+  margin: 0 auto;
+}
+
+.ep-sched-design-embed {
+  display: block;
+  width: 100%;
+  min-height: 360px;
+  border: 0;
+}
+
+@media (max-width: 720px) {
+  .ep-sched-form-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 640px) {
+  .ep-sched-summary {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .ep-sched-form-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}

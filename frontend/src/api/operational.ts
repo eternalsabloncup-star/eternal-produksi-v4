@@ -191,9 +191,11 @@ export type ProductionSample = {
   allocation_id: string;
   version: number;
   filename: string;
-  status: "menunggu_approval" | "disetujui" | "ditolak";
+  /** ID bukti GridFS — stream via sampleEvidenceContentUrl (sesi cookie). */
+  evidence_id?: string;
+  status: "draft" | "menunggu_approval" | "disetujui" | "ditolak";
   submitted_by: string;
-  submitted_at: string;
+  submitted_at: string | null;
   reject_reason?: string | null;
 };
 
@@ -238,10 +240,19 @@ export async function fetchSamples(
   return request(`/api/production/allocations/${encodeURIComponent(allocationId)}/samples`);
 }
 
+/** URL stream bukti sampel — sesi cookie; scope allocation di server. */
+export function sampleEvidenceContentUrl(
+  allocationId: string,
+  evidenceId: string,
+): string {
+  return `/api/production/allocations/${encodeURIComponent(allocationId)}/samples/evidence/${encodeURIComponent(evidenceId)}/content`;
+}
+
+/** Unggah draft sampel — belum masuk antrean approval. */
 export async function uploadSample(
   allocationId: string,
   file: File,
-): Promise<{ sample: ProductionSample }> {
+): Promise<{ sample: ProductionSample; phase?: string }> {
   const form = new FormData();
   form.append("file", file);
   const csrf = getCsrfToken();
@@ -255,7 +266,23 @@ export async function uploadSample(
     },
   );
   if (!res.ok) throw new OperationalApiError(await readError(res), res.status);
-  return (await res.json()) as { sample: ProductionSample };
+  return (await res.json()) as { sample: ProductionSample; phase?: string };
+}
+
+/** Ajukan draft aktif terbaru ke Approval Kepala Produksi. */
+export async function confirmSampleSubmission(
+  allocationId: string,
+  idempotencyKey?: string,
+): Promise<{ sample: ProductionSample; duplicate?: boolean; phase?: string }> {
+  return request(
+    `/api/production/allocations/${encodeURIComponent(allocationId)}/samples/confirm`,
+    {
+      method: "POST",
+      body: JSON.stringify({
+        idempotency_key: idempotencyKey ?? newIdempotencyKey("sample-confirm"),
+      }),
+    },
+  );
 }
 
 export async function decideSample(

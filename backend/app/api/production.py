@@ -5,16 +5,22 @@ from __future__ import annotations
 from typing import Any
 
 from fastapi import APIRouter, Depends, File, HTTPException, UploadFile, status
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
 from app.auth.deps import AuthContext, require_csrf, require_session
 from app.db import get_db
+from app.repositories import evidence_repository as evidence
 from app.repositories import sample_repository as samples
 from app.repositories import schedule_repository as schedules
 from app.repositories.po_repository import get_by_accurate_id
 from app.repositories.task_repository import TaskQuantityError
 from app.repositories import master_repository as master
 from app.services import production_service
+from app.services.evidence_access import (
+    EvidenceAccessDenied,
+    assert_sample_evidence_access,
+)
 from app.services.index_preflight import MissingRequiredIndexError
 from app.services.task_engine import TaskPermissionError
 
@@ -138,12 +144,69 @@ def get_samples(
     }
 
 
+@router.get("/allocations/{allocation_id}/samples/evidence/{evidence_id}/content")
+def get_sample_evidence_content(
+    allocation_id: str,
+    evidence_id: str,
+    auth: AuthContext = Depends(require_session),
+) -> StreamingResponse:
+    """Read-only stream bukti sampel — scope allocation; bukan public URL."""
+    db = get_db()
+    alloc = schedules.get_allocation(db, allocation_id)
+    if alloc is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Alokasi tidak ditemukan")
+    po_doc = get_by_accurate_id(db, str(alloc.get("accurate_po_id") or ""))
+    try:
+        assert_sample_evidence_access(
+            db, auth.user, allocation=alloc, po_doc=po_doc
+        )
+    except EvidenceAccessDenied as exc:
+        raise HTTPException(status.HTTP_403_FORBIDDEN, str(exc)) from exc
+    sample_rows = samples.list_samples(db, allocation_id)
+    allowed = {
+        str(s.get("evidence_id"))
+        for s in sample_rows
+        if isinstance(s, dict) and s.get("evidence_id")
+    }
+    if evidence_id not in allowed:
+        raise HTTPException(
+            status.HTTP_404_NOT_FOUND,
+            "Bukti sampel tidak terkait alokasi ini.",
+        )
+    meta = evidence.get_evidence(db, evidence_id)
+    if meta is None or meta.get("deleted_at") is not None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Bukti tidak ditemukan")
+    if str(meta.get("scope")) != production_service.SAMPLE_SCOPE:
+        raise HTTPException(status.HTTP_403_FORBIDDEN, "Bukti bukan file sampel.")
+    if str(meta.get("scope_id")) != str(allocation_id):
+        raise HTTPException(
+            status.HTTP_403_FORBIDDEN,
+            "Bukti di luar scope alokasi yang diminta.",
+        )
+    try:
+        _doc, stream = evidence.open_evidence_stream(db, evidence_id)
+    except LookupError as exc:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, str(exc)) from exc
+    filename = str(meta.get("filename") or "sample.bin")
+    content_type = str(meta.get("content_type") or "application/octet-stream")
+    return StreamingResponse(
+        stream,
+        media_type=content_type,
+        headers={
+            "Content-Disposition": f'inline; filename="{filename}"',
+            "Cache-Control": "private, no-store",
+            "X-Content-Type-Options": "nosniff",
+        },
+    )
+
+
 @router.post("/allocations/{allocation_id}/samples")
 async def post_sample(
     allocation_id: str,
     file: UploadFile = File(...),
     auth: AuthContext = Depends(require_csrf),
 ) -> dict[str, Any]:
+    """Unggah draft sampel — belum masuk antrean approval."""
     content_type = file.content_type or "application/octet-stream"
     if content_type not in ALLOWED_SAMPLE_TYPES:
         raise HTTPException(
@@ -158,13 +221,35 @@ async def post_sample(
             status.HTTP_413_REQUEST_ENTITY_TOO_LARGE, "File sampel terlalu besar"
         )
     try:
-        return production_service.submit_sample(
+        return production_service.upload_sample_draft(
             get_db(),
             auth.user,
             allocation_id=allocation_id,
             filename=file.filename or "sample.bin",
             content_type=content_type,
             content=content,
+        )
+    except Exception as exc:  # noqa: BLE001
+        raise _handle(exc) from exc
+
+
+class SampleConfirmRequest(BaseModel):
+    idempotency_key: str | None = Field(default=None, max_length=200)
+
+
+@router.post("/allocations/{allocation_id}/samples/confirm")
+def post_sample_confirm(
+    allocation_id: str,
+    body: SampleConfirmRequest | None = None,
+    auth: AuthContext = Depends(require_csrf),
+) -> dict[str, Any]:
+    """Konfirmasi draft aktif → Menunggu Approval Kepala Produksi."""
+    try:
+        return production_service.confirm_sample_submission(
+            get_db(),
+            auth.user,
+            allocation_id=allocation_id,
+            idempotency_key=(body.idempotency_key if body else None),
         )
     except Exception as exc:  # noqa: BLE001
         raise _handle(exc) from exc

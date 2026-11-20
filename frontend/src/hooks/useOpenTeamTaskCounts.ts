@@ -5,27 +5,27 @@ import {
   fetchOpenTeamTaskCountsFromApi,
   type OpenTaskCountsStatus,
 } from "../api/openTaskCounts";
-import { resolveInboxPoSourceMode } from "../demo/resolveInboxMode";
 import { subscribeProductionAlloc } from "../demo/productionHeadAlloc";
 import { getOpenTeamTaskCounts } from "../demo/teamTasks";
 import { subscribeTeamTaskWork } from "../demo/teamTaskWork";
+import { useProductionApiPanels } from "../sim/previewMode";
 
 export type UseOpenTeamTaskCountsResult = {
   counts: Record<TeamTaskRoleId, number>;
   status: OpenTaskCountsStatus;
   error?: string;
   refresh: () => void;
-  /** true bila angka dari task engine Mongo, bukan fixture DEMO. */
+  /** true bila angka dari task engine Mongo / simulasi API, bukan fixture DEMO. */
   apiMode: boolean;
 };
 
 /**
- * Badge Tugas Tim: API → task engine; DEMO → fixture lokal.
+ * Badge Tugas Tim: sumber sama dengan panel (`useProductionApiPanels`).
+ * API atau simulasi DEV → task engine; DEMO murni → fixture lokal.
  * Tidak mencampur sumber.
  */
 export function useOpenTeamTaskCounts(): UseOpenTeamTaskCountsResult {
-  const apiMode =
-    resolveInboxPoSourceMode(import.meta.env.VITE_INBOX_PO_SOURCE) === "api";
+  const apiMode = useProductionApiPanels();
 
   const [demoTick, setDemoTick] = useState(0);
   const [apiCounts, setApiCounts] = useState(emptyOpenTaskCounts);

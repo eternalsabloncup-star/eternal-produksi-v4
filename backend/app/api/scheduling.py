@@ -22,6 +22,9 @@ router = APIRouter(prefix="/api/scheduling", tags=["scheduling"])
 class AllocationIn(BaseModel):
     operator_email: str = Field(min_length=3, max_length=200)
     qty: float = Field(gt=0)
+    # Opsional agar Jadwal Produksi lama tidak regres; form Tugas Tim mengirim keduanya.
+    print_color: str | None = Field(default=None, max_length=100)
+    screen_kind: str | None = Field(default=None, max_length=20)
 
 
 class CreateAllocationsRequest(BaseModel):
@@ -44,6 +47,33 @@ def _po_or_404(accurate_po_id: str) -> dict[str, Any]:
     if doc is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "PO Accurate tidak ditemukan")
     return doc
+
+
+@router.get("/operators")
+def get_scheduling_operators(
+    auth: AuthContext = Depends(require_session),
+) -> dict[str, Any]:
+    """Operator aktif Master Pengguna untuk dropdown penjadwalan.
+
+    Identifier tetap email (kontrak alokasi); label UI memakai display_name.
+    """
+    from app.repositories import settings_user_repository as users
+    from app.services.task_engine import can_act
+
+    db = get_db()
+    allowed = (
+        can_act(db, auth.user, task_type="penjadwalan", action="confirm")
+        or can_act(db, auth.user, task_type="penjadwalan", action="input")
+        or can_act(db, auth.user, task_type="penjadwalan", action="edit")
+        or can_act(db, auth.user, task_type="penjadwalan-ulang", action="edit")
+        or can_act(db, auth.user, task_type="penjadwalan-ulang", action="input")
+    )
+    if not allowed:
+        raise HTTPException(
+            status.HTTP_403_FORBIDDEN,
+            "Daftar operator hanya untuk peran penjadwalan.",
+        )
+    return {"items": users.list_active_operators(db)}
 
 
 @router.get("/{accurate_po_id}/lines/{accurate_line_id}")
@@ -144,9 +174,24 @@ def put_allocation_qty(
         )
     except TaskPermissionError as exc:
         raise HTTPException(status.HTTP_403_FORBIDDEN, str(exc)) from exc
+    except scheduling_service.AllocationBelowConfirmedPrintError as exc:
+        raise HTTPException(
+            status.HTTP_409_CONFLICT,
+            {
+                "code": scheduling_service.AllocationBelowConfirmedPrintError.code,
+                "detail": str(exc),
+            },
+        ) from exc
+    except scheduling_service.AllocationDownstreamConflictError as exc:
+        raise HTTPException(status.HTTP_409_CONFLICT, str(exc)) from exc
+    except scheduling_service.AllocationConcurrencyError as exc:
+        raise HTTPException(status.HTTP_409_CONFLICT, str(exc)) from exc
     except scheduling_service.AllocationLockedError as exc:
+        # Legacy path — tetap 409 bila masih terpanggil.
         raise HTTPException(status.HTTP_409_CONFLICT, str(exc)) from exc
     except scheduling_service.ScheduleQuantityError as exc:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, str(exc)) from exc
+    except ValueError as exc:
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, str(exc)) from exc
 
 

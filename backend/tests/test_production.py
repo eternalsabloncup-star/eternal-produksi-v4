@@ -102,18 +102,31 @@ def _screen(db: Database, allocation_id: str, qty: float, key: str) -> dict:
     )
 
 
-def _sample_approved(db: Database, allocation_id: str, operator=OPERATOR) -> None:
-    prod.submit_sample(
+def _sample_submit_for_approval(
+    db: Database, allocation_id: str, operator=OPERATOR, *, filename: str = "sample.png"
+) -> dict:
+    """Draft upload + Konfirmasi → menunggu_approval."""
+    prod.upload_sample_draft(
         db,
         operator,
         allocation_id=allocation_id,
-        filename="sample.png",
+        filename=filename,
         content_type="image/png",
         content=PNG,
     )
-    latest = samples.latest_sample(db, allocation_id)
+    return prod.confirm_sample_submission(db, operator, allocation_id=allocation_id)[
+        "sample"
+    ]
+
+
+def _sample_approved(db: Database, allocation_id: str, operator=OPERATOR) -> None:
+    submitted = _sample_submit_for_approval(db, allocation_id, operator=operator)
     prod.decide_sample(
-        db, HEAD, allocation_id=allocation_id, version=latest["version"], approved=True
+        db,
+        HEAD,
+        allocation_id=allocation_id,
+        version=submitted["version"],
+        approved=True,
     )
 
 
@@ -208,20 +221,76 @@ def test_screen_of_operator_a_does_not_unlock_operator_b(db: Database) -> None:
 # --- Sample ----------------------------------------------------------------
 
 
+def test_sample_draft_replace_then_confirm_only_latest(db: Database) -> None:
+    """Operator boleh ganti draft; Konfirmasi hanya mengajukan versi terbaru."""
+    po_doc = _seed(db)
+    (alloc_a,) = _schedule(db, po_doc, LINE_A, [("op1@eternal.local", 200)], "d-draft-1")
+    _prep(db, LINE_A, 200, "prep-draft-1")
+    _screen(db, alloc_a, 5, "screen-draft-1")
+
+    d1 = prod.upload_sample_draft(
+        db,
+        OPERATOR,
+        allocation_id=alloc_a,
+        filename="a.png",
+        content_type="image/png",
+        content=PNG,
+    )["sample"]
+    assert d1["status"] == samples.STATUS_DRAFT
+    assert samples.pending_sample(db, alloc_a) is None
+
+    d2 = prod.upload_sample_draft(
+        db,
+        OPERATOR,
+        allocation_id=alloc_a,
+        filename="b.png",
+        content_type="image/png",
+        content=b"\x89PNG draft-b",
+    )["sample"]
+    assert d2["version"] == 2
+    assert d2["status"] == samples.STATUS_DRAFT
+
+    # Draft belum membuka gate cetak.
+    with pytest.raises(prod.ProductionGateError, match="Sampel"):
+        prod.confirm_print(
+            db, OPERATOR, allocation_id=alloc_a, qty=10, idempotency_key="print-draft"
+        )
+
+    confirmed = prod.confirm_sample_submission(db, OPERATOR, allocation_id=alloc_a)
+    assert confirmed["duplicate"] is False
+    assert confirmed["sample"]["version"] == 2
+    assert confirmed["sample"]["status"] == samples.STATUS_PENDING
+    assert confirmed["sample"]["filename"] == "b.png"
+
+    # Riwayat append-only: v1 tetap draft, v2 pending.
+    rows = samples.list_samples(db, alloc_a)
+    assert [r["version"] for r in rows] == [1, 2]
+    assert rows[0]["status"] == samples.STATUS_DRAFT
+    assert rows[1]["status"] == samples.STATUS_PENDING
+
+    # Konfirmasi ulang tidak menggandakan submission.
+    again = prod.confirm_sample_submission(db, OPERATOR, allocation_id=alloc_a)
+    assert again["duplicate"] is True
+    assert again["sample"]["version"] == 2
+    assert len(samples.list_samples(db, alloc_a)) == 2
+
+    approvals = [
+        t
+        for t in tasks.list_tasks(db, task_type="approval-sampel")
+        if (t.get("ref") or {}).get("allocation_id") == alloc_a
+        and t.get("status") == tasks.TASK_STATUS_OPEN
+    ]
+    assert len(approvals) == 1
+    assert approvals[0]["context"].get("sample_version") == 2
+
+
 def test_sample_versioning_reject_then_approve(db: Database) -> None:
     po_doc = _seed(db)
     (alloc_a,) = _schedule(db, po_doc, LINE_A, [("op1@eternal.local", 500)], "d-s-1")
     _prep(db, LINE_A, 500, "prep-s-1")
     _screen(db, alloc_a, 10, "screen-s-1")
 
-    prod.submit_sample(
-        db,
-        OPERATOR,
-        allocation_id=alloc_a,
-        filename="v1.png",
-        content_type="image/png",
-        content=PNG,
-    )
+    _sample_submit_for_approval(db, alloc_a, filename="v1.png")
     prod.decide_sample(
         db, HEAD, allocation_id=alloc_a, version=1, approved=False, reason="Warna meleset"
     )
@@ -256,15 +325,10 @@ def test_sample_versioning_reject_then_approve(db: Database) -> None:
             db, OPERATOR, allocation_id=alloc_a, qty=10, idempotency_key="print-locked"
         )
 
-    prod.submit_sample(
-        db,
-        OPERATOR,
-        allocation_id=alloc_a,
-        filename="v2.png",
-        content_type="image/png",
-        content=b"\x89PNG revisi",
+    submitted = _sample_submit_for_approval(db, alloc_a, filename="v2.png")
+    prod.decide_sample(
+        db, HEAD, allocation_id=alloc_a, version=submitted["version"], approved=True
     )
-    prod.decide_sample(db, HEAD, allocation_id=alloc_a, version=2, approved=True)
 
     all_versions = samples.list_samples(db, alloc_a)
     assert [s["version"] for s in all_versions] == [1, 2]

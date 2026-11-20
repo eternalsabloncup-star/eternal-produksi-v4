@@ -3,17 +3,25 @@ import {
   confirmDesignVersion,
   createDesignApprovalLink,
   customerApprovalPath,
+  designEvidenceContentUrl,
   fetchDesignState,
   submitDesignFile,
   type DesignStateResponse,
   WorkflowApiError,
 } from "../api/workflow";
+import { EvidenceContentPreview } from "./EvidenceContentPreview";
 
 type Props = {
   accuratePoId: string;
   poNo?: string;
   /** Dipanggil setelah mutasi sukses agar parent bisa refresh flow/tasks. */
   onChanged?: () => void;
+  /** Layout padat untuk popup Tugas Tim Designer (tidak mengubah kontrak API). */
+  compact?: boolean;
+  /** Sembunyikan tombol Muat ulang di body (dipindah ke header popup). */
+  hideReloadButton?: boolean;
+  /** Daftarkan fungsi reload ke parent (header Muat ulang). */
+  onRegisterReload?: (reload: () => Promise<void>) => void;
 };
 
 function gateLabel(state: string | undefined): string {
@@ -24,13 +32,24 @@ function gateLabel(state: string | undefined): string {
 }
 
 /** Panel Design API: upload → konfirmasi Designer → buat link customer. */
-export function DesignWorkflowPanel({ accuratePoId, poNo, onChanged }: Props) {
+export function DesignWorkflowPanel({
+  accuratePoId,
+  poNo,
+  onChanged,
+  compact = false,
+  hideReloadButton = false,
+  onRegisterReload,
+}: Props) {
   const [state, setState] = useState<DesignStateResponse | null>(null);
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [approvalUrl, setApprovalUrl] = useState<string | null>(null);
+  const [previewEvidenceId, setPreviewEvidenceId] = useState<string | null>(
+    null,
+  );
+  const [previewFilename, setPreviewFilename] = useState<string | null>(null);
   const fileRef = useRef<HTMLInputElement | null>(null);
 
   const load = useCallback(async () => {
@@ -57,6 +76,10 @@ export function DesignWorkflowPanel({ accuratePoId, poNo, onChanged }: Props) {
     setApprovalUrl(null);
     setNotice(null);
   }, [load]);
+
+  useEffect(() => {
+    onRegisterReload?.(load);
+  }, [onRegisterReload, load]);
 
   async function onUpload() {
     const file = fileRef.current?.files?.[0];
@@ -145,12 +168,16 @@ export function DesignWorkflowPanel({ accuratePoId, poNo, onChanged }: Props) {
   const canLink = Boolean(latest?.confirmed_at) && !state?.approval;
 
   return (
-    <div className="ep-workflow-panel" data-testid="design-workflow-panel">
+    <div
+      className={`ep-workflow-panel${compact ? " is-compact" : ""}`}
+      data-testid="design-workflow-panel"
+      data-compact={compact ? "1" : "0"}
+    >
       <p className="ep-sectionlabel">
-        Design · {poNo || accuratePoId}
+        {compact ? "Pekerjaan desain" : `Design · ${poNo || accuratePoId}`}
       </p>
 
-      {loading ? <p>Memuat status desain…</p> : null}
+      {loading ? <p className="ep-workflow-loading">Memuat status desain…</p> : null}
       {error ? (
         <p className="ep-error" role="alert">
           {error}
@@ -160,53 +187,57 @@ export function DesignWorkflowPanel({ accuratePoId, poNo, onChanged }: Props) {
 
       {!loading && state ? (
         <>
-          <dl className="ep-kv">
-            <dt>Gate Design</dt>
-            <dd>{gateLabel(designGate)}</dd>
-            <dt>Versi terbaru</dt>
-            <dd>
-              {latest
-                ? `v${latest.version} · ${latest.filename || "file"}${
-                    latest.confirmed_at ? " · dikonfirmasi" : " · menunggu konfirmasi"
-                  }`
-                : "Belum ada submission"}
-            </dd>
-            <dt>Approval customer</dt>
-            <dd>
-              {state.approval
-                ? `Disetujui ${state.approval.signer_name || ""} (${state.approval.approved_at || ""})`
-                : "Belum ada"}
-            </dd>
-          </dl>
-
-          {state.submissions.length > 0 ? (
-            <div className="ep-tblscroll">
-              <table className="ep-table">
-                <thead>
-                  <tr>
-                    <th>Versi</th>
-                    <th>File</th>
-                    <th>Diunggah</th>
-                    <th>Dikonfirmasi</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {state.submissions.map((s) => (
-                    <tr key={s.version}>
-                      <td>{s.version}</td>
-                      <td>{s.filename || "—"}</td>
-                      <td>{s.submitted_by || "—"}</td>
-                      <td>{s.confirmed_at ? s.confirmed_by || "ya" : "—"}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
+          {compact ? (
+            <div className="ep-design-status-strip" data-testid="design-status-strip">
+              <div className="ep-design-status-item">
+                <span className="ep-design-status-lbl">Gate Design</span>
+                <strong>{gateLabel(designGate)}</strong>
+              </div>
+              <div className="ep-design-status-item">
+                <span className="ep-design-status-lbl">Versi terbaru</span>
+                <strong>
+                  {latest
+                    ? `v${latest.version} · ${latest.filename || "file"}${
+                        latest.confirmed_at
+                          ? " · dikonfirmasi"
+                          : " · menunggu konfirmasi"
+                      }`
+                    : "Belum ada submission"}
+                </strong>
+              </div>
+              <div className="ep-design-status-item is-wide">
+                <span className="ep-design-status-lbl">Approval customer</span>
+                <strong>
+                  {state.approval
+                    ? `Disetujui ${state.approval.signer_name || ""} (${state.approval.approved_at || ""})`
+                    : "Belum ada"}
+                </strong>
+              </div>
             </div>
           ) : (
-            <p className="ep-empty">Belum ada file desain untuk PO ini.</p>
+            <dl className="ep-kv">
+              <dt>Gate Design</dt>
+              <dd>{gateLabel(designGate)}</dd>
+              <dt>Versi terbaru</dt>
+              <dd>
+                {latest
+                  ? `v${latest.version} · ${latest.filename || "file"}${
+                      latest.confirmed_at
+                        ? " · dikonfirmasi"
+                        : " · menunggu konfirmasi"
+                    }`
+                  : "Belum ada submission"}
+              </dd>
+              <dt>Approval customer</dt>
+              <dd>
+                {state.approval
+                  ? `Disetujui ${state.approval.signer_name || ""} (${state.approval.approved_at || ""})`
+                  : "Belum ada"}
+              </dd>
+            </dl>
           )}
 
-          <div className="ep-filterbar">
+          <div className="ep-filterbar ep-design-actions">
             <input
               ref={fileRef}
               type="file"
@@ -247,20 +278,93 @@ export function DesignWorkflowPanel({ accuratePoId, poNo, onChanged }: Props) {
             >
               Buat Link Approval
             </button>
-            <button type="button" className="ep-btn" disabled={busy} onClick={() => void load()}>
-              Muat ulang
-            </button>
+            {!hideReloadButton ? (
+              <button
+                type="button"
+                className="ep-btn"
+                disabled={busy}
+                onClick={() => void load()}
+              >
+                Muat ulang
+              </button>
+            ) : null}
           </div>
 
           {approvalUrl ? (
             <div className="ep-filterbar" data-testid="design-approval-url">
               <code>{approvalUrl}</code>
-              <button type="button" className="ep-btn primary" onClick={() => void copyLink()}>
+              <button
+                type="button"
+                className="ep-btn primary"
+                onClick={() => void copyLink()}
+              >
                 Salin URL
               </button>
             </div>
           ) : null}
+
+          <p className="ep-sectionlabel ep-design-history-label">Riwayat file</p>
+          {state.submissions.length > 0 ? (
+            <div
+              className={`ep-tblscroll${compact ? " ep-tblscroll-embed" : ""}`}
+            >
+              <table className="ep-table">
+                <thead>
+                  <tr>
+                    <th>Versi</th>
+                    <th>File</th>
+                    <th>Diunggah</th>
+                    <th>Dikonfirmasi</th>
+                    <th>Bukti</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {state.submissions.map((s) => (
+                    <tr key={s.version}>
+                      <td>{s.version}</td>
+                      <td>{s.filename || "—"}</td>
+                      <td>{s.submitted_by || "—"}</td>
+                      <td>{s.confirmed_at ? s.confirmed_by || "ya" : "—"}</td>
+                      <td>
+                        {s.evidence_id ? (
+                          <button
+                            type="button"
+                            className="ep-btn sm"
+                            data-testid="design-preview-btn"
+                            onClick={() => {
+                              setPreviewEvidenceId(s.evidence_id || null);
+                              setPreviewFilename(s.filename || null);
+                            }}
+                          >
+                            Preview
+                          </button>
+                        ) : (
+                          "—"
+                        )}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          ) : (
+            <p className="ep-empty ep-empty-inline">
+              Belum ada file desain untuk PO ini.
+            </p>
+          )}
         </>
+      ) : null}
+
+      {previewEvidenceId ? (
+        <EvidenceContentPreview
+          title="Preview desain"
+          contentUrl={designEvidenceContentUrl(accuratePoId, previewEvidenceId)}
+          filename={previewFilename}
+          onClose={() => {
+            setPreviewEvidenceId(null);
+            setPreviewFilename(null);
+          }}
+        />
       ) : null}
     </div>
   );
