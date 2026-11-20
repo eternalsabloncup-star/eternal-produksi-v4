@@ -141,16 +141,10 @@ class Settings(BaseSettings):
     @classmethod
     def accurate_sync_start_date_iso(cls, value: str) -> str:
         text = (value or "").strip() or "2026-11-01"
-        # Validasi format tanpa mengimpor cycle date_floor di class body.
-        from datetime import date as _date
+        # Validasi ketat lewat helper bersama (tolak suffix / format non-ISO).
+        from app.services.accurate_auto_sync.date_floor import parse_iso_date_floor
 
-        try:
-            _date.fromisoformat(text[:10])
-        except ValueError as exc:
-            raise ValueError(
-                "ACCURATE_SYNC_START_DATE harus YYYY-MM-DD"
-            ) from exc
-        return text[:10]
+        return parse_iso_date_floor(text).isoformat()
 
     @model_validator(mode="after")
     def derive_cookie_secure(self) -> Settings:

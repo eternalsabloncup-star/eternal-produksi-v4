@@ -12,6 +12,7 @@ Filter list mengurangi histori; backend tetap memvalidasi ``transDate`` detail.
 
 from __future__ import annotations
 
+import re
 from datetime import date, datetime
 from functools import lru_cache
 from typing import Any
@@ -26,20 +27,35 @@ ACCURATE_DATE_FLOOR_UPPER = "31/12/2099"
 
 DEFAULT_ACCURATE_SYNC_START_DATE = date(2026, 11, 1)
 
+# Tepat YYYY-MM-DD — tolak suffix, waktu, slash, dan format lain.
+_ISO_DATE_STRICT = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+
 
 def parse_iso_date_floor(raw: str | date | None) -> date:
-    """Parse ``YYYY-MM-DD`` (atau ``date``). Default Owner: 2026-11-01."""
-    if isinstance(raw, date) and not isinstance(raw, datetime):
+    """Parse ketat ``YYYY-MM-DD`` (atau ``date``). Default Owner: 2026-11-01.
+
+    Menolak karakter tambahan, datetime ISO, format dd/MM/yyyy, dan tanggal
+    kalender tidak valid (mis. 2026-02-29).
+    """
+    if isinstance(raw, datetime):
+        raise ValueError(
+            "ACCURATE_SYNC_START_DATE menolak datetime; gunakan date atau YYYY-MM-DD."
+        )
+    if isinstance(raw, date):
         return raw
     text = (str(raw).strip() if raw is not None else "") or ""
     if not text:
         return DEFAULT_ACCURATE_SYNC_START_DATE
-    try:
-        return date.fromisoformat(text[:10])
-    except ValueError as exc:
+    if _ISO_DATE_STRICT.match(text) is None:
         raise ValueError(
             f"ACCURATE_SYNC_START_DATE tidak valid ({text!r}); "
-            "gunakan YYYY-MM-DD."
+            "gunakan tepat YYYY-MM-DD."
+        )
+    try:
+        return date.fromisoformat(text)
+    except ValueError as exc:
+        raise ValueError(
+            f"ACCURATE_SYNC_START_DATE bukan tanggal kalender valid ({text!r})."
         ) from exc
 
 

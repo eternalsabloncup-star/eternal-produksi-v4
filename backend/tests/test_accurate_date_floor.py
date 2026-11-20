@@ -145,6 +145,66 @@ def test_parse_and_classify_jakarta_boundaries() -> None:
     assert fp["filter.transDate.val[1]"] == "31/12/2099"
 
 
+@pytest.mark.parametrize(
+    ("raw", "ok"),
+    [
+        ("2026-11-01", True),
+        ("2026-02-29", False),
+        ("2028-02-29", True),
+        ("2026-11-01abc", False),
+        ("2026-11-01T12:00:00", False),
+        ("01/11/2026", False),
+        ("2026-13-01", False),
+        ("2026-11-31", False),
+    ],
+)
+def test_parse_iso_date_floor_strict(raw: str, ok: bool) -> None:
+    if ok:
+        assert parse_iso_date_floor(raw).isoformat() == raw
+    else:
+        with pytest.raises(ValueError):
+            parse_iso_date_floor(raw)
+
+
+@pytest.mark.parametrize(
+    ("raw", "ok"),
+    [
+        ("2026-11-01", True),
+        ("2026-02-29", False),
+        ("2028-02-29", True),
+        ("2026-11-01abc", False),
+        ("2026-11-01T12:00:00", False),
+        ("01/11/2026", False),
+        ("2026-13-01", False),
+        ("2026-11-31", False),
+    ],
+)
+def test_settings_accurate_sync_start_date_strict(
+    raw: str, ok: bool, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from pydantic import ValidationError
+
+    from app.config import Settings, clear_settings_cache
+
+    monkeypatch.setenv("MONGO_URL", "mongodb://127.0.0.1:27019/test")
+    monkeypatch.setenv("DB_NAME", "eternal_v4_test")
+    monkeypatch.setenv("ACCURATE_SYNC_START_DATE", raw)
+    clear_settings_cache()
+    if ok:
+        s = Settings()  # type: ignore[call-arg]
+        assert s.accurate_sync_start_date == raw
+    else:
+        with pytest.raises(ValidationError):
+            Settings()  # type: ignore[call-arg]
+    clear_settings_cache()
+
+
+def test_parse_iso_date_floor_accepts_date_object() -> None:
+    assert parse_iso_date_floor(date(2026, 11, 1)) == date(2026, 11, 1)
+    assert parse_iso_date_floor(None) == date(2026, 11, 1)
+    assert parse_iso_date_floor("") == date(2026, 11, 1)
+
+
 def test_list_page_params_include_between_filter() -> None:
     params = list_page_params(1, 20, sort="id|asc")
     assert params["filter.transDate.op"] == "BETWEEN"
