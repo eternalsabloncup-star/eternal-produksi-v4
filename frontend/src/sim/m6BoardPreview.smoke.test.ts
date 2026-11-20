@@ -8,8 +8,15 @@ const session = { active: true };
 
 async function get(path: string) {
   const url = new URL(path, "http://local.test");
-  const res = await handleSimRequest(url, "GET", session);
-  return { status: res.status, body: (await res.json()) as Record<string, unknown> };
+  const res = handleSimRequest(url, { method: "GET" }, session);
+  expect(res).not.toBeNull();
+  if (res == null) {
+    throw new Error(`Sim handler tidak menangani ${path}`);
+  }
+  return {
+    status: res.status,
+    body: (await res.json()) as Record<string, unknown>,
+  };
 }
 
 describe("M6 sim board preview", () => {
