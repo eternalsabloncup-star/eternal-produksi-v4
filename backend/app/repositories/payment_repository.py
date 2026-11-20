@@ -79,6 +79,13 @@ def _as_float(value: Any) -> float:
         return 0.0
 
 
+def _optional_amount(value: Any) -> float | None:
+    """Simpan None bila caller menyerahkan None — jangan mengarang 0."""
+    if value is None:
+        return None
+    return _as_float(value)
+
+
 def upsert_receipt(
     db: Database,
     *,
@@ -100,7 +107,7 @@ def upsert_receipt(
         "accurate_po_id": str(accurate_po_id).strip(),
         "po_no": po_no,
         "invoice_no": invoice_no,
-        "amount": _as_float(amount),
+        "amount": _optional_amount(amount),
         "receipt_date": receipt_date,
         "raw_ref": dict(raw_ref or {}),
         "synced_at": now,
@@ -139,14 +146,41 @@ def reconcile_po_payment(db: Database, accurate_po_id: str) -> dict[str, Any]:
             "receipt_ids": [],
         }
 
-    negative = [r for r in receipts if r.get("amount", 0) < 0]
-    zero = [r for r in receipts if r.get("amount", 0) == 0]
-    positive = [r for r in receipts if r.get("amount", 0) > 0]
+    invalid = [r for r in receipts if r.get("amount") is None]
+    negative = [r for r in receipts if isinstance(r.get("amount"), (int, float)) and r["amount"] < 0]
+    zero = [r for r in receipts if r.get("amount") == 0]
+    positive = [r for r in receipts if isinstance(r.get("amount"), (int, float)) and r["amount"] > 0]
     unmatched_invoice = [r for r in positive if not (r.get("invoice_no") or "").strip()]
     invoices = {
         (r.get("invoice_no") or "").strip() for r in positive if (r.get("invoice_no") or "").strip()
     }
+    flagged_review = [
+        r
+        for r in receipts
+        if isinstance(r.get("raw_ref"), dict) and r["raw_ref"].get("review_required")
+    ]
 
+    if invalid:
+        return {
+            "decision": "review",
+            "reason": "Terdapat penerimaan dengan nominal tidak valid/malformed.",
+            "total_amount": sum(
+                float(r["amount"]) for r in receipts if isinstance(r.get("amount"), (int, float))
+            ),
+            "receipt_ids": [r["accurate_receipt_id"] for r in invalid],
+        }
+    if flagged_review:
+        return {
+            "decision": "review",
+            "reason": str(
+                (flagged_review[0].get("raw_ref") or {}).get("review_reason")
+                or "Penerimaan ditandai REVIEW oleh sync Accurate."
+            ),
+            "total_amount": sum(
+                float(r["amount"]) for r in receipts if isinstance(r.get("amount"), (int, float))
+            ),
+            "receipt_ids": [r["accurate_receipt_id"] for r in flagged_review],
+        }
     if negative:
         return {
             "decision": "review",
@@ -154,7 +188,9 @@ def reconcile_po_payment(db: Database, accurate_po_id: str) -> dict[str, Any]:
                 "Terdapat penerimaan bernilai negatif (refund/pembatalan). "
                 "Aturan refund/pembatalan belum diputuskan Owner."
             ),
-            "total_amount": sum(r.get("amount", 0) for r in receipts),
+            "total_amount": sum(
+                float(r["amount"]) for r in receipts if isinstance(r.get("amount"), (int, float))
+            ),
             "receipt_ids": [r["accurate_receipt_id"] for r in negative],
         }
     if unmatched_invoice:

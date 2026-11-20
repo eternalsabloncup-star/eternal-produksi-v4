@@ -328,17 +328,18 @@ def test_timeout_reported_as_partial(
     assert result["status"]["health"] == "PARTIAL"
 
 
-def test_receipt_job_blocked_even_when_enabled(
+def test_receipt_job_enabled_requires_client_or_stays_isolated(
     auto_sync_db: Database, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setenv("V4_RECEIPT_AUTO_SYNC_ENABLED", "1")
+    """Kill switch ON tanpa client: list Accuratereal akan gagal — kontrak verified."""
+    monkeypatch.setenv("V4_RECEIPT_AUTO_SYNC_ENABLED", "0")
     from app.config import clear_settings_cache
 
     clear_settings_cache()
     result = receipt_job.run_receipt_auto_sync(auto_sync_db)
-    assert result["blocked"] is True
+    assert result["enabled"] is False
     assert result["accurate_requests"] == 0
-    assert result.get("error") == "receipt_contract_unverified"
+    assert receipt_job.RECEIPT_CONTRACT_STATUS.startswith("verified")
 
 
 def test_sj_job_off_zero_requests(
@@ -359,6 +360,7 @@ def test_runner_all_with_flags_off(
     auto_sync_db: Database, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setenv("V4_PO_AUTO_SYNC_ENABLED", "0")
+    monkeypatch.setenv("V4_INVOICE_AUTO_SYNC_ENABLED", "0")
     monkeypatch.setenv("V4_RECEIPT_AUTO_SYNC_ENABLED", "0")
     monkeypatch.setenv("V4_SJ_SYNC_ENABLED", "0")
     from app.config import clear_settings_cache
@@ -367,6 +369,7 @@ def test_runner_all_with_flags_off(
     before = _mongo_fingerprint(auto_sync_db)
     result = runner.run_auto_sync_job(auto_sync_db, "all")
     assert result["ok"] is True
+    assert set(result["jobs"]) == {"po", "invoice", "receipt", "sj"}
     assert before == _mongo_fingerprint(auto_sync_db)
 
 
@@ -380,6 +383,7 @@ def test_monitoring_snapshot_disabled_from_config(
     snap = runner.monitoring_snapshot(auto_sync_db)
     assert snap["manual_sync_button"] is False
     assert snap["interval_seconds"] == 60
+    assert {j["job"] for j in snap["jobs"]} == {"po", "invoice", "receipt", "sj"}
     assert all(j["health"] == "DISABLED" for j in snap["jobs"])
 
 
