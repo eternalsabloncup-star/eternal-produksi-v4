@@ -399,14 +399,20 @@ def active_stage_membership_from_facts(
     if not statuses:
         return []
 
-    # T5: checker ketat mengalahkan “semua node hijau” palsu.
-    if po_doc is not None:
-        from app.services.po_completion import is_po_fulfillment_complete
+    # T5: saat strict ON, Selesai HANYA dari fulfillment checker — tanpa
+    # fallback all(_status_passed) yang bisa mengabaikan evidence/qty.
+    from app.config import get_settings
 
-        if is_po_fulfillment_complete(db, po_doc):
+    strict_on = bool(get_settings().strict_po_completion_enabled)
+    if po_doc is not None and strict_on:
+        from app.services.po_completion import evaluate_po_fulfillment
+
+        if evaluate_po_fulfillment(db, po_doc).get("complete"):
             return [FLOW_SELESAI_ID]
-
-    if all(_status_passed(statuses.get(nid, NODE_WAITING)) for nid, _ in PRODUCTION_FLOW_NODES):
+        # Incomplete: lanjutkan membership operasional (bukan Selesai).
+    elif all(
+        _status_passed(statuses.get(nid, NODE_WAITING)) for nid, _ in PRODUCTION_FLOW_NODES
+    ):
         return [FLOW_SELESAI_ID]
 
     if not _order_masuk_left_entry(statuses):

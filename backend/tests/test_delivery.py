@@ -332,6 +332,14 @@ def test_replacement_sj_loads_normally_without_extra_approval(db: Database) -> N
             "itemUnitName": "PCS",
         }
     ]))
+    from app.repositories import master_repository as master
+
+    master.set_role_actions(
+        db,
+        role="production-head",
+        task_type="loading-sj",
+        actions=["view", "confirm", "edit", "cancel"],
+    )
     delivery.raise_quantity_discrepancy(db, HEAD, accurate_sj_id=SJ_ID)
     deliveries.mark_superseded(db, accurate_sj_id=SJ_ID, replacement_sj_id="SJ-FIX")
     deliveries.upsert_delivery_note(
@@ -424,6 +432,14 @@ def test_loading_requires_permission(db: Database) -> None:
 def test_discrepancy_creates_single_red_coordination_task(db: Database) -> None:
     _produce_packed(db, 100)
     deliveries.upsert_delivery_note(db, _sj_payload())
+    from app.repositories import master_repository as master
+
+    master.set_role_actions(
+        db,
+        role="production-head",
+        task_type="loading-sj",
+        actions=["view", "confirm", "edit", "cancel"],
+    )
     first = delivery.raise_quantity_discrepancy(db, HEAD, accurate_sj_id=SJ_ID)
     second = delivery.raise_quantity_discrepancy(db, HEAD, accurate_sj_id=SJ_ID)
     assert first["task_key"] == second["task_key"]
@@ -438,6 +454,14 @@ def test_discrepancy_creates_single_red_coordination_task(db: Database) -> None:
 def test_coordination_confirmation_does_not_unlock_loading(db: Database) -> None:
     _produce_packed(db, 100)
     deliveries.upsert_delivery_note(db, _sj_payload())
+    from app.repositories import master_repository as master
+
+    master.set_role_actions(
+        db,
+        role="production-head",
+        task_type="loading-sj",
+        actions=["view", "confirm", "edit", "cancel"],
+    )
     task = delivery.raise_quantity_discrepancy(db, HEAD, accurate_sj_id=SJ_ID)
     delivery.confirm_coordination(
         db, HEAD, task_key=task["task_key"], idempotency_key="coord-1"

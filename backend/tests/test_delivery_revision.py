@@ -300,6 +300,14 @@ def test_qty_increase_after_loading_requires_more_qc(db: Database) -> None:
         delivery.confirm_loading(
             db, DRIVER, accurate_sj_id=SJ_ID, idempotency_key="rev-e-2"
         )
+    from app.repositories import master_repository as master
+
+    master.set_role_actions(
+        db,
+        role="production-head",
+        task_type="loading-sj",
+        actions=["view", "confirm", "edit", "cancel"],
+    )
     task = delivery.raise_quantity_discrepancy(db, HEAD, accurate_sj_id=SJ_ID)
     assert task["context"]["message"] == delivery.DISCREPANCY_MESSAGE
 

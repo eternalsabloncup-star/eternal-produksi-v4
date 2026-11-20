@@ -2,6 +2,14 @@
 
 Default OFF via ``V4_STRICT_PO_COMPLETION_ENABLED`` agar deploy tidak
 menggeser bucket monitoring legacy tanpa persetujuan Owner.
+
+FIND-T2-01 (legacy vs strict — tidak mengubah aturan bisnis terpisah):
+- Flag OFF: membership/Selesai boleh mengandalkan node historis
+  (``all(_status_passed)``); checker ini tidak memaksa bucket Selesai.
+- Flag ON (cutover): Selesai hanya jika seluruh qty kewajiban PO-line
+  terkirim + bukti pengiriman aktif valid; packing parsial/delivery parsial
+  tidak cukup. Konsekuensi cutover: PO yang “semua node hijau” tanpa
+  evidence/qty penuh keluar dari Selesai hingga kewajiban terpenuhi.
 """
 
 from __future__ import annotations
@@ -29,22 +37,14 @@ def _header_items(po_doc: dict[str, Any]) -> list[dict[str, Any]]:
 
 
 def _obligation_qty(item: dict[str, Any], db: Database, accurate_po_id: str) -> float:
-    """Qty kewajiban fulfillment per line.
+    """Qty kewajiban fulfillment = target qty PO-line sah (Accurate terkini).
 
-    Cetak: qty packing confirmed (hasil layak) — fallback qty PO bila belum packing.
-    Non-Cetak: qty packing confirmed bila ada task; else qty PO-line (fail-closed
-    bila strict + task wajib tetapi kosong ditangani di checker).
+    Packing adalah availability gate Loading — bukan pengurang kewajiban Selesai.
+    Partial packing/delivery tidak mengecilkan target. ``db``/``accurate_po_id``
+    dipertahankan untuk signature pemanggil; tidak dipakai mengecilkan qty.
     """
-    line_id = str(item.get("accurate_line_id") or "")
-    po_qty = float(item.get("qty") or 0)
-    kind = str(item.get("process_kind") or "")
-    qc = tasks.get_task(db, production.qc_task_key(accurate_po_id, line_id)) or {}
-    packed = float(qc.get("qty_confirmed") or 0)
-    if kind == "Cetak":
-        return packed if packed > 0 else po_qty
-    if kind == "Non-Cetak":
-        return packed if packed > 0 else po_qty
-    return po_qty
+    del db, accurate_po_id
+    return float(item.get("qty") or 0)
 
 
 def _delivered_qty_for_line(

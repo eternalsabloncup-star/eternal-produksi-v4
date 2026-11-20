@@ -368,7 +368,15 @@ def loading_sj_task_key(accurate_sj_id: str) -> str:
 
 
 def _require_loading_permission(db: Database, user: dict[str, Any], *, action: str) -> None:
-    """Prefer loading-sj.*; transitional fallback pengiriman.* sampai Master dimigrasi."""
+    """Loading auth: saat loading-sj ON wajib grant loading-sj (tanpa fallback pengiriman).
+
+    Flag OFF: kompatibilitas legacy — loading-sj ATAU pengiriman.* masih diterima.
+    """
+    from app.config import get_settings
+
+    if get_settings().loading_sj_task_enabled:
+        require_action(db, user, task_type=LOADING_SJ_TASK, action=action)
+        return
     if can_act(db, user, task_type=LOADING_SJ_TASK, action=action):
         return
     if can_act(db, user, task_type=DRIVER_TASK, action=action):
@@ -409,7 +417,11 @@ def ensure_loading_sj_task(
     assigned_user_email: str | None = None,
     session: Any | None = None,
 ) -> dict[str, Any] | None:
-    """Idempotent: satu tugas loading-sj per SJ bila flag aktif + Master siap."""
+    """Idempotent: satu tugas loading-sj per SJ bila flag aktif + Master siap.
+
+    Resync/revisi SJ tidak menghapus ``assigned_user_email`` existing kecuali
+    pemanggil mengirim assignee baru secara eksplisit (reassignment).
+    """
     from app.config import get_settings
 
     if not get_settings().loading_sj_task_enabled:
@@ -418,19 +430,28 @@ def ensure_loading_sj_task(
         role = master.require_task_type_assigned_role(db, LOADING_SJ_TASK)
     except LookupError:
         return None
+    ref = _sj_ref(note)
+    key = build_task_key(LOADING_SJ_TASK, "delivery_note", ref)
+    existing = tasks.get_task(db, key, session=session)
+    prev_ctx = dict((existing or {}).get("context") or {})
     ctx: dict[str, Any] = {
+        **prev_ctx,
         "sj_no": note.get("sj_no"),
         "sj_version": note.get("sj_version"),
         "item_count": len(note.get("items") or []),
     }
-    if assigned_user_email:
-        ctx["assigned_user_email"] = assigned_user_email.strip().lower()
+    if assigned_user_email is not None:
+        email = assigned_user_email.strip().lower()
+        if email:
+            ctx["assigned_user_email"] = email
+        else:
+            ctx.pop("assigned_user_email", None)
     return tasks.upsert_task(
         db,
         task_type=LOADING_SJ_TASK,
         scope="delivery_note",
         assigned_role=role,
-        ref=_sj_ref(note),
+        ref=ref,
         label="Loading Surat Jalan",
         context=ctx,
         session=session,
@@ -962,12 +983,18 @@ def raise_quantity_discrepancy(
     """Tombol Perbedaan Qty → tugas koordinasi Kepala Produksi (baris merah)."""
     from app.services.index_preflight import require_delivery_txn_indexes
 
-    validation = validate_loading(db, accurate_sj_id)
+    _require_loading_permission(db, user, action="confirm")
+    note = deliveries.get_delivery_note(db, accurate_sj_id)
+    if note is None:
+        raise LookupError(f"Surat Jalan tidak ditemukan: {accurate_sj_id}")
+    assert_branch_access(user, scope_object=note)
+    _assert_loading_assignee(db, user, accurate_sj_id)
+
+    validation = validate_loading(db, accurate_sj_id, user=user)
     if validation["all_matched"]:
         raise LoadingValidationError(
             "Qty Loading sudah cocok dengan Surat Jalan — tugas koordinasi tidak dibuat."
         )
-    note = deliveries.get_delivery_note(db, accurate_sj_id)
     # Fail-closed di luar txn: tidak seed Master, tidak createIndex.
     require_delivery_txn_indexes(db)
     assigned_role = master.require_task_type_assigned_role(db, LOADING_TASK)

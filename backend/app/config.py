@@ -212,6 +212,30 @@ class Settings(BaseSettings):
             return []
         return [part.strip() for part in self.cors_origins.split(",") if part.strip()]
 
+    def _non_cetak_activation_summary(self) -> dict[str, object]:
+        """Status aktivasi Non-Cetak packing — parser sama dengan eligibility.
+
+        Invalid timestamp → OFF/invalid (bukan activated). Tanpa secret.
+        """
+        from app.services.po_tasks import parse_activation_datetime
+
+        raw = str(self.non_cetak_packing_activated_at or "").strip()
+        if not raw:
+            return {
+                "non_cetak_packing_activated": False,
+                "non_cetak_packing_activation_status": "off",
+            }
+        parsed = parse_activation_datetime(raw)
+        if parsed is None:
+            return {
+                "non_cetak_packing_activated": False,
+                "non_cetak_packing_activation_status": "invalid",
+            }
+        return {
+            "non_cetak_packing_activated": True,
+            "non_cetak_packing_activation_status": "on",
+        }
+
     def safe_summary(self) -> dict[str, object]:
         """Non-secret config summary for diagnostics."""
         return {
@@ -240,10 +264,8 @@ class Settings(BaseSettings):
                 "X-Session-ID (hanya jika session non-kosong)",
             ],
             "sj_sync_enabled": bool(self.sj_sync_enabled),
-            # Flag diagnostik saja — parse/eligibility di po_tasks (invalid → OFF).
-            "non_cetak_packing_activated": bool(
-                str(self.non_cetak_packing_activated_at or "").strip()
-            ),
+            # Diagnostik aktivasi — parser sama dengan eligibility (invalid = OFF).
+            **self._non_cetak_activation_summary(),
             "loading_packing_ledger_enforced": bool(
                 self.loading_packing_ledger_enforced
             ),
