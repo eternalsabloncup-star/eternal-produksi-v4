@@ -111,8 +111,8 @@ def sync_sales_order_payload(
     """
     from app.services.po_ingest_guards import (
         date_floor_reject_or_none,
-        fill_empty_branch_id_cas,
         mark_branch_conflict_review,
+        mark_empty_branch_review,
         resolve_branch_for_ingest,
     )
 
@@ -151,6 +151,15 @@ def sync_sales_order_payload(
         branch_res = resolve_branch_for_ingest(db, po=po, existing=before_doc)
         if not branch_res.get("ok"):
             if before_doc is None or not before_doc.get("branch_id"):
+                if before_doc is not None and not before_doc.get("branch_id"):
+                    mark_empty_branch_review(
+                        db,
+                        accurate_id=str(po.accurate_id or ""),
+                        source_branch_id=branch_res.get("source_branch_id"),
+                        reason=str(
+                            branch_res.get("reason") or "existing_missing_branch_id"
+                        ),
+                    )
                 return {
                     "po": po,
                     "document": before_doc,
@@ -162,35 +171,41 @@ def sync_sales_order_payload(
                     "count_after": count_by_accurate_id(db, po.accurate_id or ""),
                     "line_diff": line_diff,
                     "operational_preserved": True,
-                    "branch_apply": "rejected",
-                    "outcome": branch_res.get("outcome"),
+                    "branch_apply": "review_required"
+                    if before_doc is not None
+                    else "rejected",
+                    "outcome": "review_required"
+                    if before_doc is not None
+                    else branch_res.get("outcome"),
                     "reason": branch_res.get("reason"),
                     "writes": 0,
                 }
         branch_action = str(branch_res.get("action") or "preserve")
         branch_id = branch_res.get("branch_id")
+        # branch_id hanya lewat $setOnInsert untuk PO baru — tanpa auto-heal existing.
         stored = upsert_sales_order(
             db,
             po,
             line_diff=line_diff,
             branch_id_on_insert=(
-                str(branch_id) if branch_action == "set" and branch_id else None
+                str(branch_id)
+                if before == 0 and branch_action == "set" and branch_id
+                else None
             ),
         )
-        if branch_action == "set" and branch_id and not stored.get("branch_id"):
-            filled = fill_empty_branch_id_cas(
-                db,
-                accurate_id=po.accurate_id or "",
-                branch_id=str(branch_id),
-                existing=stored,
-            )
-            if filled is not None:
-                stored = filled
-                branch_apply = "set_from_accurate"
-            else:
-                branch_apply = "blocked_or_preserve"
-        elif branch_action == "set" and branch_id:
+        if before == 0 and branch_action == "set" and branch_id and stored.get("branch_id"):
             branch_apply = "set_from_accurate"
+        elif before_doc is not None and not stored.get("branch_id"):
+            mark_empty_branch_review(
+                db,
+                accurate_id=str(po.accurate_id or ""),
+                source_branch_id=str(branch_id)
+                if branch_id
+                else branch_res.get("source_branch_id"),
+                reason="existing_missing_branch_id",
+            )
+            stored = get_by_accurate_id(db, po.accurate_id or "") or stored
+            branch_apply = "review_required"
         elif branch_action == "conflict":
             mark_branch_conflict_review(
                 db,
@@ -224,8 +239,17 @@ def sync_sales_order_payload(
         "line_diff": line_diff,
         "operational_preserved": isinstance((stored or {}).get("operational"), dict),
         "branch_apply": branch_apply,
-        "outcome": "created" if before == 0 else "updated",
-        "writes": 1,
+        "outcome": (
+            "created"
+            if before == 0
+            else ("review_required" if branch_apply == "review_required" else "updated")
+        ),
+        "writes": 1 if before == 0 or branch_apply != "review_required" else 1,
+        "reason": (
+            "existing_missing_branch_id"
+            if branch_apply == "review_required"
+            else None
+        ),
     }
 
 

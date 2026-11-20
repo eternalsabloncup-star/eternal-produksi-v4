@@ -213,20 +213,7 @@ def _upsert_unaccepted(
     if result is None:
         return {"outcome": "skipped", "reason": "acceptance_race", "accurate_id": accurate_id}
 
-    # Dokumen lama tanpa branch_id: CAS ber-gate (tolak accepted/dependensi).
-    if branch_id and not result.get("branch_id"):
-        from app.services.po_ingest_guards import fill_empty_branch_id_cas
-
-        filled = fill_empty_branch_id_cas(
-            db,
-            accurate_id=accurate_id,
-            branch_id=branch_id,
-            owner_token=owner_token,
-            existing=result,
-        )
-        if filled is not None:
-            result = filled
-
+    # Existing tanpa branch_id: jangan auto-heal di jalur sync rutin.
     return {
         "outcome": "updated",
         "accurate_id": accurate_id,
@@ -273,8 +260,8 @@ def sync_one_listed_sales_order(
     require_owns_job_lock(db, job="po", owner_token=owner_token)
     from app.services.accurate_auto_sync.date_floor import detail_scope_outcome
     from app.services.po_ingest_guards import (
-        fill_empty_branch_id_cas,
         mark_branch_conflict_review,
+        mark_empty_branch_review,
         resolve_branch_for_ingest,
     )
 
@@ -298,9 +285,15 @@ def sync_one_listed_sales_order(
             }
         # Existing tanpa cabang kanonis + source invalid: jangan perluas scope palsu.
         if not before.get("branch_id"):
+            mark_empty_branch_review(
+                db,
+                accurate_id=str(po.accurate_id or accurate_id),
+                source_branch_id=branch_res.get("source_branch_id"),
+                reason=str(branch_res.get("reason") or "existing_missing_branch_id"),
+            )
             return {
-                "outcome": branch_res.get("outcome") or "failed",
-                "reason": branch_res.get("reason"),
+                "outcome": "review_required",
+                "reason": branch_res.get("reason") or "existing_missing_branch_id",
                 "code": branch_res.get("code"),
                 "accurate_id": str(po.accurate_id or accurate_id),
                 "writes": 0,
@@ -316,20 +309,28 @@ def sync_one_listed_sales_order(
             source_branch_id=str(branch_res.get("source_branch_id")),
         )
 
-    def _try_fill_empty_branch(
-        existing_doc: dict[str, Any] | None = None,
-    ) -> dict[str, Any] | None:
-        """CAS cabang kosong ber-gate — sebelum early-return unchanged / accepted."""
-        if branch_action != "set" or not branch_id:
-            return None
-        aid = str(po.accurate_id or accurate_id)
-        return fill_empty_branch_id_cas(
+    def _note_empty_branch_if_needed(doc: dict[str, Any] | None) -> bool:
+        """True jika existing tanpa branch_id — review, tanpa auto-fill."""
+        if doc is None or doc.get("branch_id"):
+            return False
+        if branch_action != "set":
+            # Source invalid sudah ditangani di atas; tetap tandai bila kosong.
+            mark_empty_branch_review(
+                db,
+                accurate_id=str(po.accurate_id or accurate_id),
+                source_branch_id=branch_res.get("source_branch_id"),
+                reason="existing_missing_branch_id",
+            )
+            return True
+        mark_empty_branch_review(
             db,
-            accurate_id=aid,
-            branch_id=str(branch_id),
-            owner_token=owner_token,
-            existing=existing_doc if existing_doc is not None else before,
+            accurate_id=str(po.accurate_id or accurate_id),
+            source_branch_id=str(branch_id) if branch_id else branch_res.get(
+                "source_branch_id"
+            ),
+            reason="existing_missing_branch_id",
         )
+        return True
 
     if before is None:
         if branch_action != "set" or not branch_id:
@@ -360,15 +361,21 @@ def sync_one_listed_sales_order(
                         po=po,
                         owner_token=owner_token,
                     )
-                # Accepted menang race: jangan CAS otomatis tanpa gate integritas.
-                _try_fill_empty_branch(before2)
-                return _apply_safe_accepted_metadata(
+                needs_review = _note_empty_branch_if_needed(before2)
+                meta = _apply_safe_accepted_metadata(
                     db,
                     accurate_id=str(po.accurate_id),
                     before=before2,
                     po=po,
                     owner_token=owner_token,
                 )
+                if needs_review:
+                    return {
+                        **meta,
+                        "outcome": "review_required",
+                        "reason": "existing_missing_branch_id",
+                    }
+                return meta
             return {
                 "outcome": "skipped",
                 "reason": result.get("reason") or "acceptance_race",
@@ -381,8 +388,9 @@ def sync_one_listed_sales_order(
             "branch_id": str(branch_id),
         }
 
+    needs_empty_review = _note_empty_branch_if_needed(before)
+
     if is_po_accepted(before):
-        filled = _try_fill_empty_branch(before)
         if _material_line_change(line_diff):
             return _mark_material_review(
                 db,
@@ -399,18 +407,12 @@ def sync_one_listed_sales_order(
             po=po,
             owner_token=owner_token,
         )
-        if filled is not None:
-            meta_out = {
+        if needs_empty_review:
+            return {
                 **meta_out,
-                "outcome": "updated" if meta_out.get("outcome") == "unchanged" else meta_out.get("outcome"),
-                "branch_id": str(branch_id),
-                "branch_filled": True,
+                "outcome": "review_required",
+                "reason": "existing_missing_branch_id",
             }
-            if meta_out.get("outcome") == "updated" and not _material_line_change(line_diff):
-                meta_out["outcome"] = "updated"
-        elif branch_action == "set" and branch_id:
-            # Accepted/dependensi: CAS ditolak fail-closed — jangan geser scope.
-            meta_out = {**meta_out, "branch_fill_skipped": True}
         return meta_out
 
     # Belum accepted: update penuh dengan filter anti-race Terima PO.
@@ -430,15 +432,12 @@ def sync_one_listed_sales_order(
         and not header_changed
         and branch_action != "conflict"
     ):
-        # Jangan early-return unchanged sebelum cabang kosong ditangani.
-        filled = _try_fill_empty_branch()
-        if filled is not None:
+        if needs_empty_review:
             return {
-                "outcome": "updated",
+                "outcome": "review_required",
+                "reason": "existing_missing_branch_id",
                 "accurate_id": str(po.accurate_id),
                 "line_diff": line_diff,
-                "branch_id": str(branch_id),
-                "branch_filled": True,
             }
         return {
             "outcome": "unchanged",
@@ -451,7 +450,7 @@ def sync_one_listed_sales_order(
         po,
         line_diff=line_diff,
         owner_token=owner_token,
-        branch_id=str(branch_id) if branch_action == "set" and branch_id else None,
+        branch_id=None,
         set_branch_on_insert=False,
     )
     if result.get("outcome") == "skipped":
@@ -466,22 +465,32 @@ def sync_one_listed_sales_order(
                     po=po,
                     owner_token=owner_token,
                 )
-            _try_fill_empty_branch(before2)
-            return _apply_safe_accepted_metadata(
+            needs_review = _note_empty_branch_if_needed(before2)
+            meta = _apply_safe_accepted_metadata(
                 db,
                 accurate_id=str(po.accurate_id),
                 before=before2,
                 po=po,
                 owner_token=owner_token,
             )
+            if needs_review:
+                return {
+                    **meta,
+                    "outcome": "review_required",
+                    "reason": "existing_missing_branch_id",
+                }
+            return meta
         return {"outcome": "skipped", "reason": "acceptance_race", "accurate_id": str(po.accurate_id)}
 
     out: dict[str, Any] = {
-        "outcome": "updated",
+        "outcome": "review_required" if needs_empty_review else "updated",
         "accurate_id": str(po.accurate_id),
         "line_diff": line_diff,
     }
+    if needs_empty_review:
+        out["reason"] = "existing_missing_branch_id"
     if branch_action == "conflict":
+        out["outcome"] = "review_required"
         out["branch_conflict"] = True
         out["reason"] = "branch_conflict"
     return out

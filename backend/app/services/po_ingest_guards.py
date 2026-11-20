@@ -74,35 +74,14 @@ def po_has_operational_dependencies(db: Database, accurate_id: str) -> bool:
     return False
 
 
-def cas_empty_branch_blocked_reason(
+def mark_empty_branch_review(
     db: Database,
     *,
     accurate_id: str,
-    existing: dict[str, Any] | None = None,
-) -> str | None:
-    """None = CAS kosong diizinkan; string = fail-closed (jangan isi otomatis)."""
-    from app.repositories.po_repository import get_by_accurate_id
-    from app.services.po_acceptance import is_po_accepted
-
-    doc = existing if isinstance(existing, dict) else get_by_accurate_id(db, accurate_id)
-    if doc is None:
-        # Insert baru ditangani $setOnInsert — bukan jalur CAS existing.
-        return None
-    if is_po_accepted(doc):
-        return "po_accepted"
-    if po_has_operational_dependencies(db, str(accurate_id)):
-        return "operational_dependency_present"
-    return None
-
-
-def mark_branch_fill_blocked_review(
-    db: Database,
-    *,
-    accurate_id: str,
-    source_branch_id: str,
-    reason: str,
+    source_branch_id: str | None,
+    reason: str = "existing_missing_branch_id",
 ) -> None:
-    """Catat blokir CAS tanpa mengubah ``branch_id`` / field workflow lain."""
+    """Tandai PO existing tanpa ``branch_id`` untuk repair Owner — tanpa auto-fill/rollback."""
     from app.repositories.po_repository import po_collection, require_po_indexes
 
     require_po_indexes(db)
@@ -111,88 +90,18 @@ def mark_branch_fill_blocked_review(
         {
             "$set": {
                 "operational.branch_review": {
-                    "status": "blocked",
+                    "status": "review_required",
                     "reason": reason,
                     "source_branch_id": source_branch_id,
-                    "detail": "auto_fill_empty_branch_denied",
+                    "detail": "ingest_auto_fill_disabled",
                 }
             }
         },
     )
 
 
-def fill_empty_branch_id_cas(
-    db: Database,
-    *,
-    accurate_id: str,
-    branch_id: str,
-    owner_token: str | None = None,
-    existing: dict[str, Any] | None = None,
-) -> dict[str, Any] | None:
-    """CAS isi ``branch_id`` hanya jika kosong, belum accepted, tanpa dependensi.
-
-    - Acceptance: filter Mongo atomik (kosong + not accepted) — anti TOCTOU.
-    - Dependensi lintas koleksi: pre-check + post-check fail-closed; bila race
-      membentuk turunan setelah write, rollback nilai CAS yang baru diisi.
-      Tidak mengklaim keamanan transaksi multi-dokumen spekulatif.
-    """
-    from app.repositories.po_repository import (
-        clear_branch_id_if_matches,
-        get_by_accurate_id,
-        set_branch_id_if_empty_and_unaccepted,
-    )
-    from app.services.accurate_auto_sync.locks import require_owns_job_lock
-    from app.services.po_acceptance import is_po_accepted
-
-    if owner_token is not None:
-        require_owns_job_lock(db, job="po", owner_token=owner_token)
-
-    aid = str(accurate_id)
-    blocked = cas_empty_branch_blocked_reason(
-        db, accurate_id=aid, existing=existing
-    )
-    if blocked:
-        mark_branch_fill_blocked_review(
-            db,
-            accurate_id=aid,
-            source_branch_id=str(branch_id),
-            reason=blocked,
-        )
-        return None
-
-    filled = set_branch_id_if_empty_and_unaccepted(db, aid, branch_id)
-    if filled is None:
-        # CAS kalah: sudah ber-cabang, atau accepted menang race, atau hilang.
-        live = get_by_accurate_id(db, aid)
-        if live is not None and is_po_accepted(live) and not live.get("branch_id"):
-            mark_branch_fill_blocked_review(
-                db,
-                accurate_id=aid,
-                source_branch_id=str(branch_id),
-                reason="po_accepted",
-            )
-        elif live is not None and po_has_operational_dependencies(db, aid) and not live.get(
-            "branch_id"
-        ):
-            mark_branch_fill_blocked_review(
-                db,
-                accurate_id=aid,
-                source_branch_id=str(branch_id),
-                reason="operational_dependency_present",
-            )
-        return None
-
-    # Post-check lintas koleksi: turunan muncul setelah/bersamaan CAS → rollback.
-    if po_has_operational_dependencies(db, aid):
-        clear_branch_id_if_matches(db, aid, str(filled.get("branch_id") or branch_id))
-        mark_branch_fill_blocked_review(
-            db,
-            accurate_id=aid,
-            source_branch_id=str(branch_id),
-            reason="operational_dependency_race",
-        )
-        return None
-    return filled
+# Alias kompatibilitas — jalur sync rutin tidak lagi memanggil CAS auto-heal.
+mark_branch_fill_blocked_review = mark_empty_branch_review
 
 
 def resolve_branch_for_ingest(
