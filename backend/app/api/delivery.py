@@ -22,6 +22,7 @@ from app.services.evidence_access import (
     assert_delivery_evidence_access,
 )
 from app.services.object_auth import ObjectAuthError, require_sj_branch_access
+from app.services.po_acceptance import PoAcceptanceError
 from app.services.task_engine import TaskPermissionError
 
 router = APIRouter(prefix="/api/delivery", tags=["delivery"])
@@ -87,6 +88,8 @@ def _handle(exc: Exception) -> HTTPException:
             status.HTTP_403_FORBIDDEN,
             "Sinkronisasi SJ ditolak: target Mongo tidak aman untuk mutasi.",
         )
+    if isinstance(exc, PoAcceptanceError):
+        return HTTPException(status.HTTP_409_CONFLICT, str(exc))
     if isinstance(
         exc, (delivery_service.LoadingValidationError, delivery_service.LoadingCancelError)
     ):

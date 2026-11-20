@@ -78,6 +78,9 @@ def _seed_users(db: Database) -> None:
         password=PASSWORD,
         allow_if_admin_exists=True,
     )
+    # HTTP session membaca effective_module_permissions dari dokumen user.
+    # Tanpa access.all_branches / branch_ids, assert_branch_access menolak
+    # (baseline FAIL setelah gate cabang) — selaraskan dengan fixture service-layer.
     for email, role in (
         ("kp@eternal.local", "production-head"),
         ("helper@eternal.local", "helper"),
@@ -93,6 +96,7 @@ def _seed_users(db: Database) -> None:
                 "role": "user",
                 "operational_role": role,
                 "is_active": True,
+                "effective_module_permissions": ["access.all_branches"],
             }
         )
 
@@ -202,6 +206,18 @@ def test_loading_blocked_then_driver_flow_over_http(
 ) -> None:
     _seed_users(db)
     _seed_packed(db, qty=100)
+    # Kontrak Owner terbaru: Kepala Produksi berhak view/confirm/edit/cancel.
+    # Grant ini hanya fixture DB test; bootstrap Settings saat release milik M5.
+    # Tidak ada input Qty Loading manual: hanya aksi Sesuai/Tidak Sesuai.
+    # Hak confirm tidak boleh otomatis menyelesaikan tugas koordinasi selisih.
+    from app.repositories import master_repository as master
+
+    master.set_role_actions(
+        db,
+        role="production-head",
+        task_type="loading-sj",
+        actions=["view", "confirm", "edit", "cancel"],
+    )
     owner_csrf = _login(app_client, "owner@eternal.local")
     app_client.post(
         "/api/delivery/notes",
@@ -227,6 +243,15 @@ def test_loading_blocked_then_driver_flow_over_http(
     assert discrepancy.status_code == 200
     task = discrepancy.json()
     assert task["coordination"] is True
+    # Meski Kepala Produksi sendiri memilih Tidak Sesuai, tugas selisih
+    # harus tetap menunggu konfirmasi terpisah, bukan auto-complete.
+    # Sumber kanonis: operational_tasks via task_repository (bukan koleksi "tasks").
+    from app.repositories import task_repository as task_repo
+
+    pending = task_repo.get_task(db, task["task_key"])
+    assert pending is not None
+    assert pending.get("status") != task_repo.TASK_STATUS_DONE
+    assert pending.get("status") == task_repo.TASK_STATUS_OPEN
     assert (
         task["context"]["message"]
         == "Mohon konfirmasi ke administrasi karena qty loading dan SJ berbeda"
