@@ -664,12 +664,249 @@ def test_public_documents_invoice_receipt_design_and_multi_sj(
     assert docs["design"]["status"] == "available"
     assert len(docs["design"]["items"]) == 1
     assert docs["design"]["items"][0]["version"] == 1
-    assert docs["design"]["items"][0]["status"] == "shared_with_customer"
+    assert docs["design"]["items"][0]["status"] == "active_share"
+    assert docs["design"]["items"][0]["approval_status"] == "not_approved"
+    assert docs["design"]["items"][0]["preview_allowed"] is True
 
     assert docs["delivery_note"]["status"] == "available"
     sj_ids = {i["id"] for i in docs["delivery_note"]["items"]}
     assert sj_ids == {"SJ-1", "SJ-2", "SJ-3"}
     assert "SJ-OLD" not in sj_ids
+
+
+def test_invoice_review_and_incomplete_mapping_fail_closed(db: Database) -> None:
+    _sync_po(db)
+    if "accurate_sales_invoices" not in db.list_collection_names():
+        db.create_collection("accurate_sales_invoices")
+    db["accurate_sales_invoices"].insert_many(
+        [
+            {
+                "accurate_invoice_id": "INV-REV",
+                "invoice_no": "SI/REV",
+                "trans_date": "01/11/2026",
+                "total_amount": 500.0,
+                "accurate_po_ids": ["95106"],
+                "primary_accurate_po_id": "95106",
+                "lines": [{"sales_order_id": "95106", "qty": 1}],
+                "review_required": True,
+                "review_reason": "qty line invalid",
+            },
+            {
+                "accurate_invoice_id": "INV-NOLINE",
+                "invoice_no": "SI/NOLINE",
+                "trans_date": "01/11/2026",
+                "total_amount": 100.0,
+                "accurate_po_ids": ["95106"],
+                "primary_accurate_po_id": "95106",
+                "lines": [],
+                "review_required": False,
+            },
+            {
+                "accurate_invoice_id": "INV-CONFLICT",
+                "invoice_no": "SI/CONFLICT",
+                "total_amount": 200.0,
+                "accurate_po_ids": ["95106"],
+                "primary_accurate_po_id": "OTHER",
+                "lines": [{"sales_order_id": "95106"}],
+                "review_required": False,
+            },
+        ]
+    )
+    result = tracking.generate_tracking_link(
+        db, accurate_po_id="95106", actor_email="admin@eternal.local"
+    )
+    payload = tracking.public_tracking_view(
+        db,
+        customer_slug=result["customer_slug"],
+        po_slug=result["po_slug"],
+        raw_token=result["token"],
+    )
+    inv = next(d for d in payload["documents"] if d["category"] == "sales_invoice")
+    assert inv["status"] == "waiting" or all(
+        not i["preview_allowed"] for i in inv["items"]
+    )
+    for item in inv["items"]:
+        assert item["preview_allowed"] is False
+        assert item["amount"] is None
+
+
+def test_receipt_boolean_void_and_multi_invoice_allocation(db: Database) -> None:
+    _sync_po(db)
+    if "accurate_payment_receipts" not in db.list_collection_names():
+        db.create_collection("accurate_payment_receipts")
+    db["accurate_payment_receipts"].insert_many(
+        [
+            {
+                "accurate_receipt_id": "RCP-FALSE-STR",
+                "accurate_po_id": "95106",
+                "amount": 10.0,
+                "receipt_date": "01/11/2026",
+                "invoice_no": "SI/A",
+                "raw_ref": {
+                    "receipt_no": "SR/F",
+                    "void_cheq": "false",
+                    "review_required": "false",
+                    "invoice_ids": ["INV-A"],
+                },
+            },
+            {
+                "accurate_receipt_id": "RCP-TRUE-STR",
+                "accurate_po_id": "95106",
+                "amount": 20.0,
+                "raw_ref": {
+                    "receipt_no": "SR/T",
+                    "void_cheq": "true",
+                    "review_required": False,
+                    "invoice_ids": ["INV-A"],
+                },
+            },
+            {
+                "accurate_receipt_id": "RCP-UNKNOWN",
+                "accurate_po_id": "95106",
+                "amount": 30.0,
+                "raw_ref": {
+                    "receipt_no": "SR/U",
+                    "void_cheq": "maybe",
+                    "review_required": False,
+                    "invoice_ids": ["INV-A"],
+                },
+            },
+            {
+                "accurate_receipt_id": "RCP-MULTI",
+                "accurate_po_id": "95106",
+                "amount": 40.0,
+                "raw_ref": {
+                    "receipt_no": "SR/M",
+                    "void_cheq": False,
+                    "review_required": False,
+                    "invoice_ids": ["INV-A", "INV-B"],
+                },
+            },
+            {
+                "accurate_receipt_id": "RCP-NEG",
+                "accurate_po_id": "95106",
+                "amount": -5.0,
+                "raw_ref": {
+                    "receipt_no": "SR/N",
+                    "void_cheq": False,
+                    "review_required": False,
+                    "invoice_ids": ["INV-A"],
+                },
+            },
+        ]
+    )
+    result = tracking.generate_tracking_link(
+        db, accurate_po_id="95106", actor_email="admin@eternal.local"
+    )
+    payload = tracking.public_tracking_view(
+        db,
+        customer_slug=result["customer_slug"],
+        po_slug=result["po_slug"],
+        raw_token=result["token"],
+    )
+    receipt = next(d for d in payload["documents"] if d["category"] == "sales_receipt")
+    by_id = {i["id"]: i for i in receipt["items"]}
+    assert by_id["RCP-FALSE-STR"]["status"] == "verified"
+    assert by_id["RCP-FALSE-STR"]["amount"] == 10.0
+    assert by_id["RCP-TRUE-STR"]["status"] == "void"
+    assert by_id["RCP-TRUE-STR"]["amount"] is None
+    assert by_id["RCP-TRUE-STR"]["preview_allowed"] is False
+    assert by_id["RCP-UNKNOWN"]["status"] == "review"
+    assert by_id["RCP-UNKNOWN"]["amount"] is None
+    assert by_id["RCP-MULTI"]["status"] == "review"
+    assert by_id["RCP-MULTI"]["amount"] is None
+    assert by_id["RCP-MULTI"]["invoice_no"] is None
+    assert by_id["RCP-NEG"]["status"] == "review"
+    assert by_id["RCP-NEG"]["amount"] is None
+
+
+def test_design_revoked_vs_active_visibility(db: Database) -> None:
+    _sync_po(db)
+    for name in ("design_submissions", "design_approval_links", "design_approvals"):
+        if name not in db.list_collection_names():
+            db.create_collection(name)
+    now = datetime.now(timezone.utc)
+    db["design_submissions"].insert_many(
+        [
+            {
+                "accurate_po_id": "95106",
+                "version": 1,
+                "filename": "v1.pdf",
+                "confirmed_at": now,
+            },
+            {
+                "accurate_po_id": "95106",
+                "version": 2,
+                "filename": "v2.pdf",
+                "confirmed_at": now,
+            },
+            {
+                "accurate_po_id": "95106",
+                "version": 3,
+                "filename": "v3.pdf",
+                "confirmed_at": now,
+            },
+        ]
+    )
+    db["design_approval_links"].insert_many(
+        [
+            {
+                "token_hash": "hash-revoked-v1",
+                "accurate_po_id": "95106",
+                "design_version": 1,
+                "created_at": now,
+                "revoked_at": now,
+                "expires_at": now + timedelta(hours=24),
+                "used_at": None,
+            },
+            {
+                "token_hash": "hash-active-v2",
+                "accurate_po_id": "95106",
+                "design_version": 2,
+                "created_at": now,
+                "revoked_at": None,
+                "expires_at": now + timedelta(hours=24),
+                "used_at": None,
+            },
+            {
+                "token_hash": "hash-hist-v3",
+                "accurate_po_id": "95106",
+                "design_version": 3,
+                "created_at": now - timedelta(days=5),
+                "revoked_at": None,
+                "expires_at": now - timedelta(hours=1),
+                "used_at": now - timedelta(days=1),
+            },
+        ]
+    )
+    db["design_approvals"].insert_one(
+        {
+            "accurate_po_id": "95106",
+            "design_version": 3,
+            "approved_at": now - timedelta(days=1),
+        }
+    )
+    result = tracking.generate_tracking_link(
+        db, accurate_po_id="95106", actor_email="admin@eternal.local"
+    )
+    payload = tracking.public_tracking_view(
+        db,
+        customer_slug=result["customer_slug"],
+        po_slug=result["po_slug"],
+        raw_token=result["token"],
+    )
+    design = next(d for d in payload["documents"] if d["category"] == "design")
+    by_ver = {i["version"]: i for i in design["items"]}
+    assert by_ver[1]["status"] == "revoked"
+    assert by_ver[1]["preview_allowed"] is False
+    assert by_ver[1]["filename"] is None
+    assert by_ver[2]["status"] == "active_share"
+    assert by_ver[2]["preview_allowed"] is True
+    assert by_ver[2]["approval_status"] == "not_approved"
+    assert by_ver[3]["status"] == "historical_share"
+    assert by_ver[3]["preview_allowed"] is True
+    assert by_ver[3]["approval_status"] == "approved"
+    assert by_ver[3]["file_available"] is False
 
 
 def test_public_tracking_hides_other_branch_receipt(db: Database) -> None:

@@ -217,27 +217,64 @@ def _customer_safe_header(header: dict[str, Any]) -> dict[str, Any]:
 
 
 def _invoice_belongs_only_to_po(inv: dict[str, Any], po_id: str) -> bool:
-    """Invoice boleh dibuka penuh hanya jika relasi single-PO ke pesanan ini."""
-    po_ids = [str(x) for x in (inv.get("accurate_po_ids") or []) if str(x).strip()]
-    primary = str(inv.get("primary_accurate_po_id") or "").strip()
-    if inv.get("review_required") and len(po_ids) != 1:
+    """Invoice boleh dibuka penuh hanya bila relasi single-PO terbukti.
+
+    Fail-closed pada review_required, multi-PO, primary ambigu, atau line
+    ``sales_order_id`` yang tidak seluruhnya milik PO ini.
+    """
+    target = str(po_id or "").strip()
+    if not target:
         return False
-    if len(po_ids) == 1 and po_ids[0] == str(po_id):
-        return True
-    return primary == str(po_id) and len(po_ids) <= 1
+    if inv.get("review_required") is True:
+        return False
+    po_ids = sorted(
+        {str(x).strip() for x in (inv.get("accurate_po_ids") or []) if str(x).strip()}
+    )
+    primary = str(inv.get("primary_accurate_po_id") or "").strip()
+    if len(po_ids) != 1 or po_ids[0] != target:
+        return False
+    if primary and primary != target:
+        return False
+    if not primary:
+        # Kontrak normalized: single-PO wajib mengisi primary = po_ids[0].
+        return False
+    line_so_ids = [
+        str(line.get("sales_order_id") or "").strip()
+        for line in (inv.get("lines") or [])
+        if isinstance(line, dict)
+    ]
+    # Tanpa line SO → mapping tidak cukup membuktikan detail milik PO ini.
+    if not line_so_ids:
+        return False
+    if any(not sid or sid != target for sid in line_so_ids):
+        return False
+    return True
+
+
+def _link_is_expired(link: dict[str, Any], *, now: datetime) -> bool:
+    expires_at = link.get("expires_at")
+    if expires_at is None:
+        return False
+    if isinstance(expires_at, datetime):
+        exp = expires_at if expires_at.tzinfo else expires_at.replace(tzinfo=timezone.utc)
+        return exp < now
+    return False
 
 
 def _customer_visible_design_versions(
     workflow: dict[str, Any],
 ) -> list[dict[str, Any]]:
-    """Versi desain yang pernah dikirim ke customer (ada approval link).
+    """Versi desain dengan izin customer terbukti — bukan sekadar approved.
 
-    Izin lihat ≠ approved. Link revoked tetap menandai bahwa versi pernah
-    diizinkan; file biner tidak dilayani lewat tracking publik.
+    - Link aktif (belum revoke, belum expired) → preview metadata diizinkan.
+    - Link used / sudah approved → riwayat diizinkan (customer pernah akses).
+    - Hanya revoked/expired tanpa used/approval → tampil sebagai ditahan.
+    File biner tidak pernah dilayani lewat Live Tracking.
     """
     links = workflow.get("design_approval_links") or []
     if not links:
         return []
+    now = datetime.now(timezone.utc)
     subs_by_ver = {
         int(s.get("version") or 0): s for s in (workflow.get("design_submissions") or [])
     }
@@ -245,34 +282,69 @@ def _customer_visible_design_versions(
         int(a.get("design_version") or 0): a
         for a in (workflow.get("design_approvals") or [])
     }
-    seen: set[int] = set()
-    out: list[dict[str, Any]] = []
-    # Urutkan versi naik; link terbaru per versi menang untuk metadata.
-    for link in sorted(
-        links,
-        key=lambda L: (int(L.get("design_version") or 0), str(L.get("created_at") or "")),
-    ):
+    by_ver: dict[int, list[dict[str, Any]]] = {}
+    for link in links:
         ver = int(link.get("design_version") or 0)
-        if ver <= 0 or ver in seen:
+        if ver <= 0:
             continue
-        seen.add(ver)
+        by_ver.setdefault(ver, []).append(link)
+
+    out: list[dict[str, Any]] = []
+    for ver in sorted(by_ver):
+        ver_links = by_ver[ver]
         sub = subs_by_ver.get(ver) or {}
         appr = approvals_by_ver.get(ver)
+        has_active = False
+        has_used = False
+        has_revoked = False
+        has_expired = False
+        for link in ver_links:
+            revoked = link.get("revoked_at") is not None
+            expired = _link_is_expired(link, now=now)
+            used = link.get("used_at") is not None
+            if revoked:
+                has_revoked = True
+            if expired:
+                has_expired = True
+            if used:
+                has_used = True
+            if not revoked and not expired:
+                has_active = True
+
+        # Izin terbukti: link masih aktif, atau customer pernah memakai / approve.
+        permission_proven = has_active or has_used or appr is not None
+        if has_active:
+            link_status = "active_share"
+        elif has_used or appr is not None:
+            link_status = "historical_share"
+        elif has_revoked:
+            link_status = "revoked"
+        elif has_expired:
+            link_status = "expired"
+        else:
+            link_status = "unavailable"
+
         out.append(
             {
                 "id": f"design-v{ver}",
                 "number": f"Desain v{ver}",
-                "date": _ts(sub.get("confirmed_at") or sub.get("submitted_at") or link.get("created_at")),
+                "date": _ts(
+                    sub.get("confirmed_at")
+                    or sub.get("submitted_at")
+                    or ver_links[-1].get("created_at")
+                ),
                 "version": ver,
-                "filename": sub.get("filename"),
-                "status": "approved" if appr else "shared_with_customer",
+                "filename": sub.get("filename") if permission_proven else None,
+                "status": link_status,
+                "approval_status": "approved" if appr else "not_approved",
                 "approved_at": _ts((appr or {}).get("approved_at")),
-                "preview_allowed": True,
+                "preview_allowed": permission_proven,
                 "download_allowed": False,
                 "file_available": False,
                 "note": (
-                    "File desain tidak dilayani lewat Live Tracking; "
-                    "gunakan link approval customer bila masih berlaku."
+                    "File desain tidak dilayani lewat Live Tracking."
+                    if permission_proven
+                    else "Izin customer untuk versi ini tidak berlaku atau sudah dicabut."
                 ),
             }
         )
@@ -313,29 +385,52 @@ def _build_invoice_items(
             )
         else:
             restricted += 1
-            # Multi-SO: jangan ekspos line/amount pesanan lain.
+            # Jangan ekspos amount/lines — termasuk review_required single-PO.
+            reason = "Faktur ditahan — relasi PO tidak terverifikasi penuh."
+            if inv.get("review_required"):
+                reason = str(
+                    inv.get("review_reason")
+                    or "Faktur berstatus REVIEW — detail tidak ditampilkan."
+                )
+            elif len([x for x in (inv.get("accurate_po_ids") or []) if str(x).strip()]) > 1:
+                reason = (
+                    "Faktur terkait lebih dari satu Sales Order — "
+                    "detail tidak ditampilkan di Live Tracking."
+                )
             items.append(
                 {
                     "id": inv_id,
                     "number": inv.get("invoice_no") or inv_id,
                     "date": inv.get("trans_date"),
-                    "status": "restricted_multi_so",
+                    "status": "restricted",
                     "amount": None,
                     "preview_allowed": False,
                     "download_allowed": False,
                     "file_available": False,
-                    "reason": (
-                        "Faktur terkait lebih dari satu Sales Order — "
-                        "detail tidak ditampilkan di Live Tracking."
-                    ),
+                    "reason": reason,
                 }
             )
     note = None
     if restricted:
-        note = (
-            f"{restricted} faktur multi-SO ditahan (metadata saja, tanpa detail)."
-        )
+        note = f"{restricted} faktur ditahan (tanpa nominal/item)."
     return items, note
+
+
+def _receipt_flag(
+    raw: dict[str, Any], key: str, *, default_false_when_missing: bool
+) -> tuple[bool, bool]:
+    """Parse flag Accurate. Returns ``(value, ambiguous)``.
+
+    ``ambiguous=True`` → caller wajib REVIEW/fail-closed.
+    """
+    from app.integrations.accurate.normalize_invoice_receipt import parse_accurate_bool
+
+    parsed, err = parse_accurate_bool(raw.get(key))
+    if err:
+        return True, True
+    if parsed is None:
+        return (False if default_false_when_missing else True), False
+    return parsed, False
 
 
 def _build_payment_items(
@@ -344,14 +439,66 @@ def _build_payment_items(
     po_id: str,
 ) -> list[dict[str, Any]]:
     items: list[dict[str, Any]] = []
+    target = str(po_id or "").strip()
     for i, p in enumerate(payments):
-        if str(p.get("accurate_po_id") or "") != str(po_id):
-            continue
-        if str(p.get("accurate_po_id") or "") in {"", "UNMAPPED"}:
+        mapped_po = str(p.get("accurate_po_id") or "").strip()
+        if mapped_po != target or mapped_po in {"", "UNMAPPED"}:
             continue
         raw = p.get("raw_ref") if isinstance(p.get("raw_ref"), dict) else {}
-        voided = bool(raw.get("void_cheq"))
-        review = bool(raw.get("review_required"))
+        voided, void_ambiguous = _receipt_flag(
+            raw, "void_cheq", default_false_when_missing=True
+        )
+        review_flag, review_ambiguous = _receipt_flag(
+            raw, "review_required", default_false_when_missing=True
+        )
+        invoice_ids = [
+            str(x).strip()
+            for x in (raw.get("invoice_ids") or [])
+            if str(x).strip()
+        ]
+        # Multi-faktur / alokasi ambigu → REVIEW; jangan verified.
+        multi_invoice = len(invoice_ids) > 1
+        amount = p.get("amount")
+        amount_invalid = amount is None or (
+            isinstance(amount, (int, float)) and float(amount) < 0
+        )
+        review = (
+            review_flag
+            or void_ambiguous
+            or review_ambiguous
+            or multi_invoice
+            or amount_invalid
+        )
+        # Void/reversal tidak pernah "verified".
+        if voided or void_ambiguous:
+            status = "void" if voided and not void_ambiguous else "review"
+            preview_allowed = False
+            show_amount = False
+            note = (
+                "Penerimaan dibatalkan/void."
+                if status == "void"
+                else "Status void/reversal ambigu — ditahan untuk review."
+            )
+        elif review:
+            status = "review"
+            preview_allowed = True
+            show_amount = False
+            note = str(
+                raw.get("review_reason")
+                or (
+                    "Alokasi multi-faktur — ditahan."
+                    if multi_invoice
+                    else "Menunggu review rekonsiliasi."
+                )
+            )
+        else:
+            status = "verified"
+            preview_allowed = True
+            show_amount = True
+            note = (
+                "Penerimaan terverifikasi dari Accurate "
+                "(file bukti asli tidak tersedia di Live Tracking)."
+            )
         receipt_no = (
             raw.get("receipt_no")
             or p.get("receipt_no")
@@ -362,26 +509,13 @@ def _build_payment_items(
                 "id": str(p.get("accurate_receipt_id") or i),
                 "number": receipt_no,
                 "date": p.get("receipt_date"),
-                "amount": None if (voided or review) else p.get("amount"),
-                "invoice_no": p.get("invoice_no"),
-                "status": (
-                    "void"
-                    if voided
-                    else ("review" if review else "verified")
-                ),
-                "preview_allowed": not voided,
+                "amount": amount if show_amount else None,
+                "invoice_no": p.get("invoice_no") if not multi_invoice else None,
+                "status": status,
+                "preview_allowed": preview_allowed,
                 "download_allowed": False,
                 "file_available": False,
-                "note": (
-                    "Penerimaan terverifikasi dari Accurate "
-                    "(file bukti asli tidak tersedia di Live Tracking)."
-                    if not voided and not review
-                    else (
-                        str(raw.get("review_reason") or "Menunggu review rekonsiliasi.")
-                        if review
-                        else "Penerimaan dibatalkan/void."
-                    )
-                ),
+                "note": note,
             }
         )
     return items
