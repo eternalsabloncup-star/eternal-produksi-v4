@@ -180,6 +180,7 @@ def test_new_po_uses_accurate_branch_id_not_mapping_code(
     from app.repositories.po_repository import ensure_po_indexes
 
     ensure_po_indexes(db)
+    org.upsert_branch(db, code="50", name="Cabang Accurate 50", is_active=True)
     org.upsert_branch(db, code="150", name="Cabang Accurate 150", is_active=True)
     org.set_branch_accurate_mapping(db, "150", accurate_branch_id="150")
 
