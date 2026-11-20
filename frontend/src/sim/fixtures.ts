@@ -574,46 +574,38 @@ export const SIM_BUFFER = {
   ready_formula: "qty_cetak - qty_terkirim_terkonfirmasi",
 };
 
+const SIM_FLOW_NODES = [
+  { id: "flow-order-masuk", label: "Order Masuk", status: "selesai" as const, detail: "PO diterima" },
+  { id: "flow-design", label: "Design", status: "menunggu" as const, detail: "Belum ada file desain." },
+  { id: "flow-approval-design", label: "Approval Design", status: "menunggu" as const, detail: "Belum ada approval desain." },
+  { id: "flow-payment", label: "Payment", status: "menunggu" as const, detail: "Belum ada penerimaan terverifikasi." },
+  { id: "flow-approval-payment", label: "Approval Payment", status: "menunggu" as const, detail: "Belum ada penerimaan terverifikasi." },
+  { id: "flow-penjadwalan", label: "Penjadwalan", status: "menunggu" as const, detail: "0 alokasi operator." },
+  { id: "flow-screener", label: "Screener", status: "menunggu" as const, detail: "0/0 alokasi di-Screen." },
+  { id: "flow-persiapan", label: "Persiapan", status: "menunggu" as const, detail: "Disiapkan 0 dari 2000." },
+  { id: "flow-operator", label: "Operator", status: "menunggu" as const, detail: "0/0 operator mengunggah sampel." },
+  { id: "flow-konfirmasi-sample", label: "Konfirmasi Sample", status: "menunggu" as const, detail: "0/0 sampel disetujui." },
+  { id: "flow-cetak", label: "Cetak", status: "menunggu" as const, detail: "Qty cetak 0 dari 2000." },
+  { id: "flow-packing", label: "Packing", status: "menunggu" as const, detail: "QC & Packing 0 dari 0." },
+  { id: "flow-surat-jalan", label: "Surat Jalan", status: "menunggu" as const, detail: "Belum ada SJ Accurate." },
+  { id: "flow-loading", label: "Loading", status: "menunggu" as const, detail: "Menunggu SJ." },
+  { id: "flow-pengiriman", label: "Pengiriman", status: "menunggu" as const, detail: "Menunggu SJ." },
+];
+
+/** Hanya PO accepted — sim parity dengan gate Accepted. */
 export const SIM_FLOW = {
   items: [
     {
-      accurate_po_id: PO_ID,
-      po_no: PO_NO,
+      accurate_po_id: "10002",
+      po_no: "SO-2026/11/002",
       has_print_items: true,
-      nodes: [
-        {
-          id: "inbox",
-          label: "Inbox",
-          status: "selesai" as const,
-          detail: "PO masuk",
-        },
-        {
-          id: "design",
-          label: "Desain",
-          status: "berjalan" as const,
-          detail: "Menunggu approval",
-        },
-        {
-          id: "schedule",
-          label: "Jadwal",
-          status: "menunggu" as const,
-          detail: "Belum dialokasi penuh",
-        },
-        {
-          id: "print",
-          label: "Cetak",
-          status: "berjalan" as const,
-          detail: "800 / 2500",
-        },
-        {
-          id: "delivery",
-          label: "Kirim",
-          status: "menunggu" as const,
-          detail: "SJ siap",
-        },
-      ],
+      active_stages: ["flow-order-masuk"],
+      nodes: SIM_FLOW_NODES,
     },
   ],
+  nodes: SIM_FLOW_NODES.map(({ id, label }) => ({ id, label })),
+  accepted_only: true,
+  source: "api-simulation",
 };
 
 export const SIM_DASHBOARD = {

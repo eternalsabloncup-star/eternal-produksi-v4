@@ -710,7 +710,75 @@ export function handleSimRequest(
 
   // Analytics
   if (path === "/api/buffer-stock" && method === "GET") return json(SIM_BUFFER);
+  if (path.startsWith("/api/production-flow/by-stage") && method === "GET") {
+    const nodeId = url.searchParams.get("node_id") || "flow-order-masuk";
+    const page = Math.max(1, Number(url.searchParams.get("page") || 1));
+    const pageSize = Math.min(
+      100,
+      Math.max(1, Number(url.searchParams.get("pageSize") || 50)),
+    );
+    const accuratePoId = url.searchParams.get("accurate_po_id") || "";
+    const acceptedDocs = SIM_PO_DOCS.filter((d) => {
+      const acc = d.acceptance as { status?: string } | undefined;
+      return acc?.status === "accepted";
+    });
+    const flowItem = SIM_FLOW.items[0];
+    const active = new Set(flowItem?.active_stages || ["flow-order-masuk"]);
+    const inStage =
+      nodeId === "flow-selesai"
+        ? []
+        : active.has(nodeId)
+          ? acceptedDocs.filter(
+              (d) => !accuratePoId || String(d.accurate_id) === accuratePoId,
+            )
+          : [];
+    const node =
+      flowItem?.nodes.find((n) => n.id === nodeId) ||
+      ({
+        id: nodeId,
+        label: nodeId,
+        status: "menunggu" as const,
+        detail: "",
+      });
+    const start = (page - 1) * pageSize;
+    const slice = inStage.slice(start, start + pageSize);
+    return json({
+      node_id: nodeId,
+      stage_label: node.label,
+      items: slice.map((doc) => {
+        const header = (doc.header || {}) as Record<string, unknown>;
+        return {
+          accurate_po_id: String(doc.accurate_id),
+          po_no: header.po_no || doc.po_no,
+          node_id: nodeId,
+          stage_label: node.label,
+          stage_status: node.status,
+          stage_detail: node.detail,
+          active_stages: flowItem?.active_stages || ["flow-order-masuk"],
+          has_print_items: true,
+          acceptance: doc.acceptance,
+          po: {
+            ...doc,
+            po_no: header.po_no || doc.po_no,
+            customer: header.customer ?? null,
+            item_count: Array.isArray(header.items) ? header.items.length : 0,
+          },
+        };
+      }),
+      total: inStage.length,
+      page,
+      pageSize,
+      accepted_only: true,
+      source: "api-simulation",
+    });
+  }
   if (path.startsWith("/api/production-flow") && method === "GET") {
+    const accuratePoId = url.searchParams.get("accurate_po_id");
+    if (accuratePoId) {
+      const hit = SIM_FLOW.items.find((i) => i.accurate_po_id === accuratePoId);
+      if (!hit) return json({ detail: "PO Accurate tidak ditemukan" }, 404);
+      return json({ items: [hit], accepted_only: true });
+    }
     return json(SIM_FLOW);
   }
   if (path === "/api/dashboard" && method === "GET") return json(SIM_DASHBOARD);

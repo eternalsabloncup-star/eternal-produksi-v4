@@ -232,9 +232,181 @@ PRODUCTION_FLOW_NODES: tuple[tuple[str, str], ...] = (
     ("flow-pengiriman", "Pengiriman"),
 )
 
+# Bucket virtual untuk PO yang seluruh tahap applicable sudah selesai.
+FLOW_SELESAI_ID = "flow-selesai"
+FLOW_SELESAI_LABEL = "Selesai"
+
+# Membership frontier — terpisah dari status node (production_flow_state).
+_TRACK_DESIGN = ("flow-design", "flow-approval-design")
+_TRACK_PAYMENT = ("flow-payment", "flow-approval-payment")
+_PARALLEL_AFTER_SCHEDULE = ("flow-screener", "flow-persiapan")
+_SERIAL_AFTER_PREP = (
+    "flow-operator",
+    "flow-konfirmasi-sample",
+    "flow-cetak",
+    "flow-packing",
+    "flow-surat-jalan",
+    "flow-loading",
+    "flow-pengiriman",
+)
+
+# Batas aman scan accepted PO per request by-stage (tanpa index baru).
+PRODUCTION_FLOW_SCAN_CAP = 500
+
 
 def _node(node_id: str, label: str, status: str, detail: str) -> dict[str, Any]:
     return {"id": node_id, "label": label, "status": status, "detail": detail}
+
+
+def _status_passed(status: str) -> bool:
+    return status in (NODE_DONE, NODE_NOT_APPLICABLE)
+
+
+def _order_masuk_left_entry(statuses: dict[str, str]) -> bool:
+    """Order Masuk ditinggalkan begitu Design atau Payment mulai (running/done)."""
+    design = statuses.get("flow-design", NODE_WAITING)
+    payment = statuses.get("flow-payment", NODE_WAITING)
+    if design == NODE_NOT_APPLICABLE:
+        return payment in (NODE_RUNNING, NODE_DONE) or statuses.get(
+            "flow-approval-payment", NODE_WAITING
+        ) in (NODE_RUNNING, NODE_DONE)
+    return design in (NODE_RUNNING, NODE_DONE) or payment in (NODE_RUNNING, NODE_DONE)
+
+
+def _track_frontier(track: tuple[str, ...], statuses: dict[str, str]) -> list[str]:
+    """Tahap aktif pada satu track: running, atau menunggu frontier (bukan semua menunggu)."""
+    for node_id in track:
+        st = statuses.get(node_id, NODE_WAITING)
+        if st == NODE_NOT_APPLICABLE or st == NODE_DONE:
+            continue
+        if st == NODE_RUNNING:
+            return [node_id]
+        if st == NODE_WAITING:
+            return [node_id]
+    return []
+
+
+def _parallel_frontier(
+    pair: tuple[str, ...], statuses: dict[str, str]
+) -> list[str]:
+    """Kedua sisi paralel dapat aktif bersamaan jika belum selesai."""
+    out: list[str] = []
+    for node_id in pair:
+        st = statuses.get(node_id, NODE_WAITING)
+        if st in (NODE_RUNNING, NODE_WAITING):
+            out.append(node_id)
+    return out
+
+
+def active_stage_membership(flow: dict[str, Any]) -> list[str]:
+    """Membership tahap aktif — bukan salinan status node.
+
+    Aturan Owner:
+    - selesai/tidak_berlaku → bukan aktif pada tahap itu
+    - menunggu hanya aktif jika frontier (bukan semua menunggu)
+    - paralel design||payment dan screener||persiapan
+    - seluruh workflow selesai → flow-selesai
+    """
+    nodes = flow.get("nodes") or []
+    statuses = {
+        str(n.get("id")): str(n.get("status") or NODE_WAITING)
+        for n in nodes
+        if isinstance(n, dict) and n.get("id")
+    }
+    if not statuses:
+        return []
+
+    if all(_status_passed(statuses.get(nid, NODE_WAITING)) for nid, _ in PRODUCTION_FLOW_NODES):
+        return [FLOW_SELESAI_ID]
+
+    # Order Masuk: membership terpisah dari status node (yang selalu selesai di SoT).
+    if not _order_masuk_left_entry(statuses):
+        return ["flow-order-masuk"]
+
+    active: list[str] = []
+    active.extend(_track_frontier(_TRACK_DESIGN, statuses))
+    active.extend(_track_frontier(_TRACK_PAYMENT, statuses))
+
+    design_done = _status_passed(statuses.get("flow-approval-design", NODE_WAITING))
+    payment_done = _status_passed(statuses.get("flow-approval-payment", NODE_WAITING))
+    if design_done and payment_done:
+        sched = statuses.get("flow-penjadwalan", NODE_WAITING)
+        if sched == NODE_RUNNING:
+            active.append("flow-penjadwalan")
+        elif sched == NODE_WAITING:
+            active.append("flow-penjadwalan")
+        elif sched == NODE_DONE:
+            pair = _parallel_frontier(_PARALLEL_AFTER_SCHEDULE, statuses)
+            if pair:
+                active.extend(pair)
+            elif all(
+                _status_passed(statuses.get(nid, NODE_WAITING))
+                for nid in _PARALLEL_AFTER_SCHEDULE
+            ):
+                for nid in _SERIAL_AFTER_PREP:
+                    st = statuses.get(nid, NODE_WAITING)
+                    if st == NODE_NOT_APPLICABLE or st == NODE_DONE:
+                        continue
+                    if st in (NODE_RUNNING, NODE_WAITING):
+                        active.append(nid)
+                        break
+        elif sched == NODE_NOT_APPLICABLE:
+            # Non-cetak: lompat ke SJ track
+            for nid in (
+                "flow-surat-jalan",
+                "flow-loading",
+                "flow-pengiriman",
+            ):
+                st = statuses.get(nid, NODE_WAITING)
+                if st in (NODE_RUNNING, NODE_WAITING):
+                    active.append(nid)
+                    break
+
+    # Dedup jaga urutan stabil
+    seen: set[str] = set()
+    ordered: list[str] = []
+    for nid in active:
+        if nid not in seen:
+            seen.add(nid)
+            ordered.append(nid)
+    return ordered
+
+
+def accepted_po_query(
+    *,
+    branch_ids: list[str] | set[str] | None = None,
+    branch_scope: bool = False,
+    q: str | None = None,
+    urgent: bool | None = None,
+) -> dict[str, Any]:
+    """Filter Mongo: origin accurate + accepted (+ branch/q/urgent seperti Inbox)."""
+    from app.repositories.po_repository import branch_scope_query
+    from app.services.po_acceptance import ACCEPTANCE_ACCEPTED
+
+    query: dict[str, Any] = {
+        "origin": "accurate",
+        "operational.acceptance.status": ACCEPTANCE_ACCEPTED,
+    }
+    text = (q or "").strip()
+    if text:
+        query["$or"] = [
+            {"po_no": {"$regex": text, "$options": "i"}},
+            {"header.customer": {"$regex": text, "$options": "i"}},
+            {"accurate_id": {"$regex": text, "$options": "i"}},
+            {"header.items.item_name": {"$regex": text, "$options": "i"}},
+            {"header.items.item_code": {"$regex": text, "$options": "i"}},
+        ]
+    if urgent is True:
+        query["header.urgent"] = True
+    elif urgent is False:
+        query["header.urgent"] = {"$ne": True}
+    if branch_scope:
+        scope = branch_scope_query(branch_ids)
+        if "$or" in query:
+            query = {"$and": [query, scope]}
+        else:
+            query.update(scope)
+    return query
 
 
 def production_flow_state(db: Database, po_doc: dict[str, Any]) -> dict[str, Any]:
@@ -457,7 +629,7 @@ def production_flow_state(db: Database, po_doc: dict[str, Any]) -> dict[str, Any
             f"{len(delivered)}/{len(notes)} SJ terkirim." if notes else "Menunggu SJ.",
         ),
     ]
-    return {
+    flow = {
         "accurate_po_id": accurate_po_id,
         "po_no": po_doc.get("po_no"),
         "has_print_items": has_print,
@@ -467,6 +639,122 @@ def production_flow_state(db: Database, po_doc: dict[str, Any]) -> dict[str, Any
             ["flow-screener", "flow-persiapan"],
         ],
         "source": "mongodb",
+    }
+    flow["active_stages"] = active_stage_membership(flow)
+    return flow
+
+
+def node_label(node_id: str) -> str:
+    if node_id == FLOW_SELESAI_ID:
+        return FLOW_SELESAI_LABEL
+    for nid, label in PRODUCTION_FLOW_NODES:
+        if nid == node_id:
+            return label
+    return node_id
+
+
+def list_production_flow_by_stage(
+    db: Database,
+    *,
+    node_id: str,
+    page: int = 1,
+    page_size: int = 50,
+    q: str | None = None,
+    urgent: bool | None = None,
+    accurate_po_id: str | None = None,
+    branch_ids: list[str] | set[str] | None = None,
+    branch_scope: bool = False,
+    serialize_po: Any = None,
+) -> dict[str, Any]:
+    """PO accepted yang aktif pada ``node_id`` — pagination setelah membership.
+
+    Membership dihitung server-side dari ``production_flow_state`` (bukan filter FE).
+    Scan dibatasi ``PRODUCTION_FLOW_SCAN_CAP`` agar N+1 tidak tak terkendali.
+    """
+    valid_ids = {nid for nid, _ in PRODUCTION_FLOW_NODES} | {FLOW_SELESAI_ID}
+    if node_id not in valid_ids:
+        raise ValueError(f"node_id tidak dikenal: {node_id}")
+
+    query = accepted_po_query(
+        branch_ids=branch_ids,
+        branch_scope=branch_scope,
+        q=q,
+        urgent=urgent,
+    )
+    po_filter = str(accurate_po_id or "").strip()
+    if po_filter:
+        query = {"$and": [query, {"accurate_id": po_filter}]}
+    coll = po_collection(db)
+    cursor = (
+        coll.find(query, {"_id": 0})
+        .sort("updated_at", -1)
+        .limit(PRODUCTION_FLOW_SCAN_CAP)
+    )
+
+    matched: list[dict[str, Any]] = []
+    scanned = 0
+    for doc in cursor:
+        scanned += 1
+        flow = production_flow_state(db, doc)
+        membership = list(flow.get("active_stages") or [])
+        if node_id not in membership:
+            continue
+        node = next(
+            (n for n in (flow.get("nodes") or []) if n.get("id") == node_id),
+            None,
+        )
+        if node_id == FLOW_SELESAI_ID:
+            stage_status = NODE_DONE
+            stage_detail = "Seluruh tahap applicable selesai."
+            stage_label = FLOW_SELESAI_LABEL
+        else:
+            stage_status = str((node or {}).get("status") or NODE_WAITING)
+            stage_detail = str((node or {}).get("detail") or "")
+            stage_label = str((node or {}).get("label") or node_label(node_id))
+
+        po_payload = serialize_po(doc, db) if callable(serialize_po) else {
+            "accurate_id": doc.get("accurate_id"),
+            "po_no": doc.get("po_no"),
+            "header": doc.get("header") if isinstance(doc.get("header"), dict) else {},
+            "acceptance": {
+                "status": "accepted",
+            },
+        }
+        matched.append(
+            {
+                "po": po_payload,
+                "accurate_po_id": str(doc.get("accurate_id") or ""),
+                "po_no": doc.get("po_no"),
+                "node_id": node_id,
+                "stage_label": stage_label,
+                "stage_status": stage_status,
+                "stage_detail": stage_detail,
+                "active_stages": membership,
+                "has_print_items": bool(flow.get("has_print_items")),
+                "acceptance": po_payload.get("acceptance")
+                if isinstance(po_payload, dict)
+                else {"status": "accepted"},
+            }
+        )
+
+    total = len(matched)
+    page = max(1, int(page))
+    page_size = max(1, min(int(page_size), 100))
+    start = (page - 1) * page_size
+    items = matched[start : start + page_size]
+    return {
+        "node_id": node_id,
+        "stage_label": node_label(node_id),
+        "items": items,
+        "total": total,
+        "page": page,
+        "pageSize": page_size,
+        "scanned": scanned,
+        "scan_cap": PRODUCTION_FLOW_SCAN_CAP,
+        "scan_capped": scanned >= PRODUCTION_FLOW_SCAN_CAP,
+        "source": "mongodb",
+        "accepted_only": True,
+        "supportedFilters": ["q", "urgent"],
     }
 
 
