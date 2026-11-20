@@ -56,9 +56,15 @@ export function statusBadgeClass(status: OperationalTask["status"]): string {
 }
 
 /** Label shortfall Qty per jenis pekerjaan (Owner). */
-export function shortfallLabel(taskType: string): string {
+export function shortfallLabel(
+  taskType: string,
+  processKind?: string | null,
+): string {
   if (taskType === "persiapan-cup") return "Belum Disiapkan";
-  if (taskType === "qc-packing") return "Belum Di-QC & Packing";
+  if (taskType === "qc-packing") {
+    if (processKind === "Non-Cetak") return "Belum Di-Packing";
+    return "Belum Di-QC & Packing";
+  }
   return "Kekurangan Qty";
 }
 

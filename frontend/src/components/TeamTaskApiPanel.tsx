@@ -1156,7 +1156,13 @@ export function TeamTaskApiPanel({ role, roleLabel }: Props) {
                       <dd className="ep-num">
                         {formatQty(selected.qty_confirmed)}
                       </dd>
-                      <dt>{shortfallLabel(selected.task_type)}</dt>
+                      <dt>
+                        {shortfallLabel(
+                          selected.task_type,
+                          selected.ref.process_kind ||
+                            (selected.context?.process_kind as string | undefined),
+                        )}
+                      </dt>
                       <dd className="ep-num">
                         {formatQty(
                           selected.qty_target !== undefined
@@ -1181,7 +1187,13 @@ export function TeamTaskApiPanel({ role, roleLabel }: Props) {
                           <th className="ep-num">Qty Target</th>
                           <th className="ep-num">Qty Terkonfirmasi</th>
                           <th className="ep-num">
-                            {shortfallLabel(selected.task_type)}
+                            {shortfallLabel(
+                              selected.task_type,
+                              selected.ref.process_kind ||
+                                (selected.context?.process_kind as
+                                  | string
+                                  | undefined),
+                            )}
                           </th>
                           <th>Status</th>
                         </tr>

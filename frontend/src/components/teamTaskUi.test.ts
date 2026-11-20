@@ -13,6 +13,7 @@ import {
   remainingQty,
   sampleStatusClass,
   sampleStatusLabel,
+  shortfallLabel,
   taskDisplayLabel,
 } from "./teamTaskUi";
 
@@ -88,6 +89,11 @@ describe("teamTaskUi labels & scheduling", () => {
         }),
       ),
     ).toBe(60);
+  });
+
+  it("labels non-cetak packing shortfall", () => {
+    expect(shortfallLabel("qc-packing", "Non-Cetak")).toBe("Belum Di-Packing");
+    expect(shortfallLabel("qc-packing")).toBe("Belum Di-QC & Packing");
   });
 });
 

@@ -86,6 +86,17 @@ class Settings(BaseSettings):
         default=False,
         validation_alias=AliasChoices("V4_SJ_SYNC_ENABLED", "SJ_SYNC_ENABLED"),
     )
+    # Packing Non-Cetak (T1): boundary aktivasi eksplisit Owner.
+    # Kosong/default = fitur OFF (tidak derive task Non-Cetak).
+    # ISO-8601 UTC, contoh: 2026-11-20T17:00:00+00:00
+    # Hanya PO dengan acceptance.accepted_at >= nilai ini yang eligible.
+    non_cetak_packing_activated_at: str = Field(
+        default="",
+        validation_alias=AliasChoices(
+            "V4_NON_CETAK_PACKING_ACTIVATED_AT",
+            "NON_CETAK_PACKING_ACTIVATED_AT",
+        ),
+    )
     # Auto-sync Accurate — semua default OFF; worker one-shot terpisah dari FastAPI.
     po_auto_sync_enabled: bool = Field(
         default=False,
@@ -201,6 +212,10 @@ class Settings(BaseSettings):
                 "X-Session-ID (hanya jika session non-kosong)",
             ],
             "sj_sync_enabled": bool(self.sj_sync_enabled),
+            # Flag diagnostik saja — parse/eligibility di po_tasks (invalid → OFF).
+            "non_cetak_packing_activated": bool(
+                str(self.non_cetak_packing_activated_at or "").strip()
+            ),
             "po_auto_sync_enabled": bool(self.po_auto_sync_enabled),
             "receipt_auto_sync_enabled": bool(self.receipt_auto_sync_enabled),
             "invoice_auto_sync_enabled": bool(self.invoice_auto_sync_enabled),

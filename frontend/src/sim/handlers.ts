@@ -367,20 +367,42 @@ export function handleSimRequest(
     } catch {
       body = {};
     }
-    const roleHint = path.includes("/screen")
-      ? "screener"
-      : path.includes("/print")
-        ? "operator"
-        : path.includes("/qc-packing")
-          ? "helper"
+    const lineMatch = path.match(
+      /^\/api\/production\/([^/]+)\/lines\/([^/]+)\/(preparation|qc-packing)$/,
+    );
+    const allocMatch = path.match(
+      /^\/api\/production\/allocations\/([^/]+)\/(screen|print)$/,
+    );
+    let task =
+      lineMatch != null
+        ? simTasks.find(
+            (t) =>
+              t.task_type ===
+                (lineMatch[3] === "qc-packing" ? "qc-packing" : "persiapan-cup") &&
+              t.ref.accurate_po_id === decodeURIComponent(lineMatch[1]) &&
+              t.ref.accurate_line_id === decodeURIComponent(lineMatch[2]),
+          )
+        : allocMatch != null
+          ? simTasks.find(
+              (t) =>
+                t.task_type === (allocMatch[2] === "screen" ? "screen" : "cetak") &&
+                t.ref.allocation_id === decodeURIComponent(allocMatch[1]),
+            )
+          : undefined;
+    if (!task) {
+      const roleHint = path.includes("/screen")
+        ? "screener"
+        : path.includes("/print")
+          ? "operator"
           : "helper";
-    const task =
-      simTasks.find(
-        (t) =>
-          t.assigned_role === roleHint &&
-          t.status !== "selesai" &&
-          (t.ref.allocation_id === ALLOC_A || t.ref.accurate_po_id === PO_ID),
-      ) || simTasks.find((t) => t.assigned_role === roleHint);
+      task =
+        simTasks.find(
+          (t) =>
+            t.assigned_role === roleHint &&
+            t.status !== "selesai" &&
+            (t.ref.allocation_id === ALLOC_A || t.ref.accurate_po_id === PO_ID),
+        ) || simTasks.find((t) => t.assigned_role === roleHint);
+    }
     if (!task) return json({ detail: "Tugas tidak ditemukan" }, 404);
     const result = applyConfirm(
       task.task_key,
