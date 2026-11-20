@@ -238,7 +238,26 @@ def list_operational_tasks(
         limit=fetch_limit,
     )
     filtered = filter_tasks_for_actor(db, auth.user, items)[:limit]
-    return {"items": filtered, "total": len(filtered), "source": "mongodb"}
+    from app.services.display_enrichment import enrich_operational_tasks
+
+    enriched = enrich_operational_tasks(db, filtered)
+    return {"items": enriched, "total": len(enriched), "source": "mongodb"}
+
+
+@router.get("/tasks/open-counts")
+def get_open_task_counts(
+    auth: AuthContext = Depends(require_session),
+) -> dict[str, Any]:
+    """Badge Tugas Tim — total actionable per role (tanpa cap list 1000)."""
+    from app.services.task_open_counts import count_actionable_open_by_role
+
+    counts = count_actionable_open_by_role(get_db(), auth.user)
+    return {
+        "counts": counts,
+        "source": "mongodb",
+        "accepted_only": False,
+        "truncated": False,
+    }
 
 
 @router.get("/tasks/{task_key:path}/confirmations")

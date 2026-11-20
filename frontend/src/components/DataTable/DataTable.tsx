@@ -62,6 +62,17 @@ type Props<T> = {
    * Dipakai misalnya membuka popup rincian.
    */
   onRowActivate?: (row: T) => void;
+  /**
+   * Mode server-side: filter/sort header tidak diterapkan pada halaman lokal.
+   * Parent wajib memuat ulang data; uniqueValues boleh dari filterFacets.
+   */
+  serverSide?: boolean;
+  /** Nilai unik checklist header (server); mengalahkan derivasi dari rows. */
+  filterFacets?: Record<string, string[]>;
+  /** Dipanggil saat filter/sort header berubah (serverSide). */
+  onServerHeaderChange?: (
+    next: Record<string, ColumnHeaderFilterState>,
+  ) => void;
 };
 
 function compareValues(
@@ -102,6 +113,9 @@ export function DataTable<T>({
   isRowExpandable,
   defaultHiddenColumns,
   onRowActivate,
+  serverSide = false,
+  filterFacets,
+  onServerHeaderChange,
 }: Props<T>) {
   const columnIds = useMemo(() => columns.map((c) => c.id), [columns]);
   const {
@@ -175,6 +189,10 @@ export function DataTable<T>({
     const map = new Map<string, string[]>();
     for (const col of columns) {
       if (col.filterable === false || !col.getFilterValue) continue;
+      if (filterFacets && Object.prototype.hasOwnProperty.call(filterFacets, col.id)) {
+        map.set(col.id, filterFacets[col.id] ?? []);
+        continue;
+      }
       const set = new Set<string>();
       for (const row of sourceForUniques) {
         set.add(col.getFilterValue(row) ?? "");
@@ -187,9 +205,12 @@ export function DataTable<T>({
       );
     }
     return map;
-  }, [columns, sourceForUniques]);
+  }, [columns, sourceForUniques, filterFacets]);
 
   const displayRows = useMemo(() => {
+    // Server-side: rows sudah difilter/disort + dipaginasi oleh API.
+    if (serverSide) return rows;
+
     let list = rows;
 
     const activeFilters = Object.entries(headerFilters).filter(
@@ -225,7 +246,7 @@ export function DataTable<T>({
     }
 
     return list;
-  }, [rows, headerFilters, byId]);
+  }, [rows, headerFilters, byId, serverSide]);
 
   const onResizeMove = useCallback(
     (e: MouseEvent) => {
@@ -286,10 +307,18 @@ export function DataTable<T>({
     return undefined;
   }
 
+  function emitServerHeader(
+    next: Record<string, ColumnHeaderFilterState>,
+  ) {
+    if (serverSide && onServerHeaderChange) onServerHeaderChange(next);
+  }
+
   function patchFilter(colId: string, patch: Partial<ColumnHeaderFilterState>) {
     setHeaderFilters((prev) => {
       const cur = prev[colId] ?? { selected: null, sortDir: null };
-      return { ...prev, [colId]: { ...cur, ...patch } };
+      const next = { ...prev, [colId]: { ...cur, ...patch } };
+      queueMicrotask(() => emitServerHeader(next));
+      return next;
     });
   }
 
@@ -301,6 +330,7 @@ export function DataTable<T>({
       }
       if (!next[colId]) next[colId] = { selected: null, sortDir: dir };
       else next[colId] = { ...next[colId], sortDir: dir };
+      queueMicrotask(() => emitServerHeader(next));
       return next;
     });
   }
@@ -309,6 +339,7 @@ export function DataTable<T>({
     setHeaderFilters((prev) => {
       const next = { ...prev };
       delete next[colId];
+      queueMicrotask(() => emitServerHeader(next));
       return next;
     });
     setOpenFilterId(null);

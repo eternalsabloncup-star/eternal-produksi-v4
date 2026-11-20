@@ -50,6 +50,10 @@ export type OperationalTask = {
   qty_target?: number;
   qty_confirmed: number;
   coordination?: boolean;
+  /** D1: nama customer/pelanggan terkait PO atau SJ. */
+  outlet_name?: string;
+  /** D3: tanggal kirim SJ aktif unik (kalender). */
+  ship_dates?: string[];
   ref: {
     accurate_po_id?: string;
     po_no?: string;

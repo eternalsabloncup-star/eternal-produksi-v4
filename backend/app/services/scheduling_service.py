@@ -95,8 +95,443 @@ def printed_qty_for_line(
     return total
 
 
+def _board_kpi_from_light_rows(
+    db: Database, light_rows: list[dict[str, Any]]
+) -> dict[str, Any]:
+    """KPI global dari seluruh baris Cetak accepted — tanpa SJ detail / N+1 per line."""
+    from app.repositories.gate_repository import GATE_OPEN, gates_collection
+    from app.repositories.schedule_repository import (
+        STATUS_ACTIVE,
+        allocations_collection,
+    )
+    from app.repositories.task_repository import tasks_collection
+
+    if not light_rows:
+        return {
+            "total_qty_so": 0.0,
+            "qty_allocated": 0.0,
+            "qty_printed": 0.0,
+            "rows_unscheduled": 0,
+            "rows_unlocked": 0,
+            "print_line_count": 0,
+        }
+
+    # Key komposit PO+line — jangan gabungkan accurate_line_id lintas PO.
+    line_ids = list({str(r["accurate_line_id"]) for r in light_rows})
+    po_ids = list({str(r["accurate_po_id"]) for r in light_rows})
+    pair_keys = {
+        (str(r["accurate_po_id"]), str(r["accurate_line_id"])) for r in light_rows
+    }
+
+    alloc_by_pair: dict[tuple[str, str], float] = {}
+    if line_ids and po_ids:
+        for row in allocations_collection(db).aggregate(
+            [
+                {
+                    "$match": {
+                        "accurate_line_id": {"$in": line_ids},
+                        "accurate_po_id": {"$in": po_ids},
+                        "status": STATUS_ACTIVE,
+                    }
+                },
+                {
+                    "$group": {
+                        "_id": {
+                            "po": "$accurate_po_id",
+                            "line": "$accurate_line_id",
+                        },
+                        "total": {"$sum": "$qty"},
+                    }
+                },
+            ]
+        ):
+            key_doc = row.get("_id") if isinstance(row.get("_id"), dict) else {}
+            po_k = str(key_doc.get("po") or "")
+            line_k = str(key_doc.get("line") or "")
+            if (po_k, line_k) in pair_keys:
+                alloc_by_pair[(po_k, line_k)] = float(row.get("total") or 0)
+
+    printed_by_pair: dict[tuple[str, str], float] = {}
+    if line_ids and po_ids:
+        for row in tasks_collection(db).aggregate(
+            [
+                {
+                    "$match": {
+                        "task_type": "cetak",
+                        "ref.accurate_line_id": {"$in": line_ids},
+                        "ref.accurate_po_id": {"$in": po_ids},
+                    }
+                },
+                {
+                    "$group": {
+                        "_id": {
+                            "po": "$ref.accurate_po_id",
+                            "line": "$ref.accurate_line_id",
+                        },
+                        "total": {"$sum": "$qty_confirmed"},
+                    }
+                },
+            ]
+        ):
+            key_doc = row.get("_id") if isinstance(row.get("_id"), dict) else {}
+            po_k = str(key_doc.get("po") or "")
+            line_k = str(key_doc.get("line") or "")
+            if (po_k, line_k) in pair_keys:
+                printed_by_pair[(po_k, line_k)] = float(row.get("total") or 0)
+
+    unlocked_pos: set[str] = set()
+    if po_ids:
+        for doc in gates_collection(db).find(
+            {"accurate_po_id": {"$in": po_ids}},
+            {"_id": 0, "accurate_po_id": 1, "design": 1, "payment": 1},
+        ):
+            po_id = str(doc.get("accurate_po_id") or "")
+            design = doc.get("design") if isinstance(doc.get("design"), dict) else {}
+            payment = (
+                doc.get("payment") if isinstance(doc.get("payment"), dict) else {}
+            )
+            if (
+                design.get("state") == GATE_OPEN
+                and payment.get("state") == GATE_OPEN
+            ):
+                unlocked_pos.add(po_id)
+
+    total_qty = 0.0
+    qty_allocated = 0.0
+    qty_printed = 0.0
+    rows_unscheduled = 0
+    rows_unlocked = 0
+    for row in light_rows:
+        line_id = str(row["accurate_line_id"])
+        po_id = str(row["accurate_po_id"])
+        pair = (po_id, line_id)
+        target = float(row.get("qty_target") or 0)
+        allocated = float(alloc_by_pair.get(pair) or 0)
+        printed = float(printed_by_pair.get(pair) or 0)
+        total_qty += target
+        qty_allocated += allocated
+        qty_printed += printed
+        if max(target - allocated, 0.0) > 0:
+            rows_unscheduled += 1
+        if po_id in unlocked_pos:
+            rows_unlocked += 1
+
+    return {
+        "total_qty_so": total_qty,
+        "qty_allocated": qty_allocated,
+        "qty_printed": qty_printed,
+        "rows_unscheduled": rows_unscheduled,
+        "rows_unlocked": rows_unlocked,
+        "print_line_count": len(light_rows),
+    }
+
+
+def _attach_ship_dates_to_light_rows(
+    db: Database, rows: list[dict[str, Any]]
+) -> None:
+    """Isi ship_dates pada light rows via batch SJ aktif (bukan per line)."""
+    from app.repositories.delivery_repository import delivery_notes_collection
+    from app.services.display_enrichment import (
+        is_active_delivery_note,
+        ship_dates_by_line_id,
+    )
+
+    po_ids = list({str(r["accurate_po_id"]) for r in rows})
+    if not po_ids:
+        return
+    notes = list(
+        delivery_notes_collection(db).find(
+            {"accurate_po_id": {"$in": po_ids}}, {"_id": 0}
+        )
+    )
+    by_po: dict[str, list[dict[str, Any]]] = {}
+    for note in notes:
+        if not is_active_delivery_note(note):
+            continue
+        po_id = str(note.get("accurate_po_id") or "")
+        if not po_id:
+            continue
+        by_po.setdefault(po_id, []).append(note)
+    dates_by_po = {
+        po_id: ship_dates_by_line_id(po_notes) for po_id, po_notes in by_po.items()
+    }
+    for row in rows:
+        po_id = str(row["accurate_po_id"])
+        line_id = str(row["accurate_line_id"])
+        row["ship_dates"] = list(dates_by_po.get(po_id, {}).get(line_id) or [])
+
+
+def _apply_column_filters(
+    rows: list[dict[str, Any]],
+    column_filters: dict[str, list[str] | None] | None,
+) -> list[dict[str, Any]]:
+    if not column_filters:
+        return rows
+    out = rows
+    mapping = {
+        "outletName": "outlet_name",
+        "paintColor": "paint_color",
+        "poNo": "po_no",
+        "itemName": "item_name",
+        "lineId": "accurate_line_id",
+    }
+    for col_id, selected in column_filters.items():
+        if selected is None:
+            continue
+        wanted = {str(v) for v in selected}
+        if col_id == "shipDates":
+            out = [
+                r
+                for r in out
+                if wanted.intersection(
+                    {str(d) for d in (r.get("ship_dates") or [])}
+                )
+            ]
+            continue
+        field = mapping.get(col_id)
+        if not field:
+            continue
+        out = [r for r in out if str(r.get(field) or "") in wanted]
+    return out
+
+
+def _sort_light_rows(
+    rows: list[dict[str, Any]],
+    *,
+    sort_by: str | None,
+    sort_dir: str | None,
+) -> list[dict[str, Any]]:
+    from app.services.display_enrichment import _calendar_sort_key
+
+    direction = (sort_dir or "desc").lower()
+    reverse = direction != "asc"
+    field_map = {
+        "updated_at": "updated_at",
+        "poNo": "po_no",
+        "outletName": "outlet_name",
+        "paintColor": "paint_color",
+        "itemName": "item_name",
+        "lineId": "accurate_line_id",
+        "qtyTarget": "qty_target",
+        "shipDates": "ship_dates",
+    }
+    key_field = field_map.get(sort_by or "", "updated_at")
+
+    def sort_key(row: dict[str, Any]) -> tuple:
+        if key_field == "ship_dates":
+            dates = row.get("ship_dates") or []
+            first = str(dates[0]) if dates else ""
+            return (_calendar_sort_key(first), str(row.get("accurate_po_id") or ""), str(row.get("accurate_line_id") or ""))
+        if key_field == "qty_target":
+            return (
+                float(row.get("qty_target") or 0),
+                str(row.get("accurate_po_id") or ""),
+                str(row.get("accurate_line_id") or ""),
+            )
+        return (
+            str(row.get(key_field) or ""),
+            str(row.get("accurate_po_id") or ""),
+            str(row.get("accurate_line_id") or ""),
+        )
+
+    return sorted(rows, key=sort_key, reverse=reverse)
+
+
+def _facets_from_light_rows(rows: list[dict[str, Any]]) -> dict[str, list[str]]:
+    def uniq(field: str) -> list[str]:
+        vals = sorted({str(r.get(field) or "") for r in rows if str(r.get(field) or "")})
+        return vals
+
+    ship: set[str] = set()
+    for r in rows:
+        for d in r.get("ship_dates") or []:
+            text = str(d or "").strip()
+            if text:
+                ship.add(text)
+    return {
+        "outletName": uniq("outlet_name"),
+        "paintColor": uniq("paint_color"),
+        "poNo": uniq("po_no"),
+        "itemName": uniq("item_name"),
+        "lineId": uniq("accurate_line_id"),
+        "shipDates": sorted(ship),
+    }
+
+
+def build_accepted_schedule_board(
+    db: Database,
+    *,
+    branch_ids: list[str] | set[str] | None = None,
+    branch_scope: bool = False,
+    q: str | None = None,
+    page: int = 1,
+    page_size: int = 100,
+    column_filters: dict[str, list[str] | None] | None = None,
+    sort_by: str | None = None,
+    sort_dir: str | None = None,
+) -> dict[str, Any]:
+    """Board Jadwal: accepted-only + Cetak, filter/sort sebelum pagination, KPI global.
+
+    Light rows di Python (bukan $facet BSON) agar aman dari batas dokumen agregasi.
+    Enrich SJ penuh hanya untuk halaman; ship_dates batch dipakai bila filter/sort tanggal.
+    """
+    from app.repositories.po_repository import get_by_accurate_id, po_collection
+    from app.services.display_enrichment import (
+        list_active_delivery_notes_for_po,
+        outlet_name_from_po,
+        ship_dates_by_line_id,
+    )
+    from app.services.read_models import accepted_po_query
+
+    page = max(1, int(page or 1))
+    page_size = max(1, min(int(page_size or 100), 500))
+    skip = (page - 1) * page_size
+
+    query = accepted_po_query(
+        branch_ids=branch_ids,
+        branch_scope=branch_scope,
+        q=None,
+    )
+    text = (q or "").strip()
+    post_unwind: dict[str, Any] = {
+        "header.items.process_kind": "Cetak",
+        "header.items.accurate_line_id": {"$exists": True, "$nin": [None, ""]},
+    }
+    if text:
+        safe = text.replace("\\", "\\\\")
+        post_unwind = {
+            "$and": [
+                post_unwind,
+                {
+                    "$or": [
+                        {"po_no": {"$regex": safe, "$options": "i"}},
+                        {"header.customer": {"$regex": safe, "$options": "i"}},
+                        {"accurate_id": {"$regex": safe, "$options": "i"}},
+                        {"header.items.item_name": {"$regex": safe, "$options": "i"}},
+                        {"header.items.item_code": {"$regex": safe, "$options": "i"}},
+                        {"header.items.color": {"$regex": safe, "$options": "i"}},
+                        {
+                            "header.items.accurate_line_id": {
+                                "$regex": safe,
+                                "$options": "i",
+                            }
+                        },
+                    ]
+                },
+            ]
+        }
+
+    pipeline: list[dict[str, Any]] = [
+        {"$match": query},
+        {
+            "$project": {
+                "_id": 0,
+                "accurate_id": 1,
+                "po_no": 1,
+                "updated_at": 1,
+                "header.customer": 1,
+                "header.items": 1,
+            }
+        },
+        {"$unwind": "$header.items"},
+        {"$match": post_unwind},
+        {
+            "$project": {
+                "accurate_po_id": {"$toString": "$accurate_id"},
+                "accurate_line_id": {"$toString": "$header.items.accurate_line_id"},
+                "qty_target": {
+                    "$convert": {
+                        "input": "$header.items.qty",
+                        "to": "double",
+                        "onError": 0,
+                        "onNull": 0,
+                    }
+                },
+                "po_no": {"$ifNull": ["$po_no", ""]},
+                "outlet_name": {"$ifNull": ["$header.customer", ""]},
+                "paint_color": {"$ifNull": ["$header.items.color", ""]},
+                "item_name": {"$ifNull": ["$header.items.item_name", ""]},
+                "item_code": {"$ifNull": ["$header.items.item_code", ""]},
+                "updated_at": 1,
+            }
+        },
+    ]
+
+    light_rows = list(po_collection(db).aggregate(pipeline))
+    # Batch SJ sekali untuk facet tanggal + filter/sort shipDates (bukan per line).
+    if light_rows:
+        _attach_ship_dates_to_light_rows(db, light_rows)
+
+    # Checklist header dari scope q (sebelum filter kolom) agar opsi tidak hilang.
+    facets = _facets_from_light_rows(light_rows)
+    filtered = _apply_column_filters(light_rows, column_filters)
+    sorted_rows = _sort_light_rows(
+        filtered, sort_by=sort_by or "updated_at", sort_dir=sort_dir or "desc"
+    )
+
+    total_rows = len(sorted_rows)
+    total_pages = max(1, (total_rows + page_size - 1) // page_size) if total_rows else 1
+    page_keys = sorted_rows[skip : skip + page_size]
+    if total_rows == 0:
+        total_pages = 1
+        page_keys = []
+    elif page > total_pages:
+        page_keys = []
+
+    kpi = _board_kpi_from_light_rows(db, sorted_rows)
+
+    page_po_ids = list(dict.fromkeys(str(r["accurate_po_id"]) for r in page_keys))
+    po_by_id: dict[str, dict[str, Any]] = {}
+    dates_by_po: dict[str, dict[str, list[str]]] = {}
+    for po_id in page_po_ids:
+        doc = get_by_accurate_id(db, po_id)
+        if doc is None:
+            continue
+        po_by_id[po_id] = doc
+        notes = list_active_delivery_notes_for_po(db, po_id)
+        dates_by_po[po_id] = ship_dates_by_line_id(notes)
+
+    items: list[dict[str, Any]] = []
+    for key in page_keys:
+        po_id = str(key["accurate_po_id"])
+        line_id = str(key["accurate_line_id"])
+        po_doc = po_by_id.get(po_id)
+        if po_doc is None:
+            continue
+        items.append(
+            line_schedule_state(
+                db,
+                po_doc,
+                line_id,
+                outlet_name=outlet_name_from_po(po_doc),
+                ship_dates=dates_by_po.get(po_id, {}).get(line_id, []),
+            )
+        )
+
+    return {
+        "items": items,
+        "total": total_rows,
+        "total_rows": total_rows,
+        "page": page,
+        "pageSize": page_size,
+        "total_pages": total_pages,
+        "po_count": len({str(r["accurate_po_id"]) for r in sorted_rows}),
+        "accepted_only": True,
+        "source": "mongodb",
+        "kpi": kpi,
+        "filter_facets": facets,
+        "sort_by": sort_by or "updated_at",
+        "sort_dir": (sort_dir or "desc").lower(),
+    }
+
+
 def line_schedule_state(
-    db: Database, po_doc: dict[str, Any], accurate_line_id: str
+    db: Database,
+    po_doc: dict[str, Any],
+    accurate_line_id: str,
+    *,
+    outlet_name: str | None = None,
+    ship_dates: list[str] | None = None,
 ) -> dict[str, Any]:
     accurate_po_id = str(po_doc.get("accurate_id") or "")
     line = _line_from_po(po_doc, accurate_line_id)
@@ -146,6 +581,16 @@ def line_schedule_state(
     from app.repositories import product_master_repository as products
 
     item_code = str(line.get("item_code") or "")
+    from app.services.display_enrichment import (
+        outlet_name_from_po,
+        paint_color_from_line,
+    )
+
+    resolved_outlet = (
+        outlet_name
+        if outlet_name is not None
+        else outlet_name_from_po(po_doc)
+    )
     return {
         "accurate_po_id": accurate_po_id,
         "po_no": po_doc.get("po_no"),
@@ -153,6 +598,9 @@ def line_schedule_state(
         "item_code": item_code,
         "item_name": line.get("item_name"),
         "process_kind": line.get("process_kind"),
+        "outlet_name": resolved_outlet or "",
+        "paint_color": paint_color_from_line(line),
+        "ship_dates": list(ship_dates) if ship_dates is not None else [],
         "qty_target": qty_target,
         "qty_allocated": allocated,
         "qty_unallocated": max(qty_target - allocated, 0),

@@ -10,6 +10,8 @@ import { getOpenTeamTaskCounts } from "../demo/teamTasks";
 import { subscribeTeamTaskWork } from "../demo/teamTaskWork";
 import { useProductionApiPanels } from "../sim/previewMode";
 
+export const TEAM_TASKS_CHANGED_EVENT = "eternal:tasks-changed";
+
 export type UseOpenTeamTaskCountsResult = {
   counts: Record<TeamTaskRoleId, number>;
   status: OpenTaskCountsStatus;
@@ -19,10 +21,13 @@ export type UseOpenTeamTaskCountsResult = {
   apiMode: boolean;
 };
 
+export function notifyTeamTasksChanged(): void {
+  window.dispatchEvent(new CustomEvent(TEAM_TASKS_CHANGED_EVENT));
+}
+
 /**
  * Badge Tugas Tim: sumber sama dengan panel (`useProductionApiPanels`).
- * API atau simulasi DEV → task engine; DEMO murni → fixture lokal.
- * Tidak mencampur sumber.
+ * API / simulasi DEV → `GET /api/tasks/open-counts`; DEMO → fixture lokal.
  */
 export function useOpenTeamTaskCounts(): UseOpenTeamTaskCountsResult {
   const apiMode = useProductionApiPanels();
@@ -69,6 +74,19 @@ export function useOpenTeamTaskCounts(): UseOpenTeamTaskCountsResult {
       cancelled = true;
     };
   }, [apiMode, reloadKey]);
+
+  useEffect(() => {
+    if (!apiMode) return;
+    function onInvalidate() {
+      setReloadKey((k) => k + 1);
+    }
+    window.addEventListener("eternal:po-accepted", onInvalidate);
+    window.addEventListener(TEAM_TASKS_CHANGED_EVENT, onInvalidate);
+    return () => {
+      window.removeEventListener("eternal:po-accepted", onInvalidate);
+      window.removeEventListener(TEAM_TASKS_CHANGED_EVENT, onInvalidate);
+    };
+  }, [apiMode]);
 
   const demoCounts = useMemo(() => {
     void demoTick;

@@ -1,25 +1,66 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   createAllocations,
   fetchPoSchedule,
+  fetchScheduleBoard,
   reviseAllocationQty,
   SchedulingApiError,
   type Allocation,
   type LineSchedule,
+  type ScheduleBoardColumnFilters,
+  type ScheduleBoardKpi,
 } from "../api/scheduling";
 import { newIdempotencyKey } from "../api/operational";
-import { getApiPoSource } from "../demo/ApiPoSource";
 import { DataTable } from "./DataTable/DataTable";
 import { DEFAULT_TABLE_PAGE_SIZE } from "./DataTable/Pagination";
-import type { ColumnDef } from "./DataTable/types";
+import type { ColumnDef, ColumnHeaderFilterState } from "./DataTable/types";
 import { KpiSummary, type KpiItem } from "./KpiSummary";
+import { formatDateDisplay } from "../lib/formatDate";
 import {
   allocationCanReviseQty,
   allocationReviseBounds,
 } from "./teamTaskUi";
 
+const SERVER_FILTER_COLS = new Set([
+  "outletName",
+  "paintColor",
+  "poNo",
+  "itemName",
+  "lineId",
+  "shipDates",
+]);
+
+function headerToColumnFilters(
+  header: Record<string, ColumnHeaderFilterState>,
+): ScheduleBoardColumnFilters {
+  const out: ScheduleBoardColumnFilters = {};
+  for (const [colId, st] of Object.entries(header)) {
+    if (!SERVER_FILTER_COLS.has(colId)) continue;
+    if (st.selected === null) continue;
+    (out as Record<string, string[] | null>)[colId] = st.selected;
+  }
+  return out;
+}
+
+function headerSort(
+  header: Record<string, ColumnHeaderFilterState>,
+): { sortBy?: string; sortDir?: "asc" | "desc" } {
+  for (const [colId, st] of Object.entries(header)) {
+    if (st.sortDir) return { sortBy: colId, sortDir: st.sortDir };
+  }
+  return {};
+}
+
 function qty(n: number): string {
   return n.toLocaleString("id-ID");
+}
+
+function shipDatesCell(dates: string[] | undefined): string {
+  if (!dates?.length) return "—";
+  const shown = dates
+    .map((d) => formatDateDisplay(d, ""))
+    .filter(Boolean);
+  return shown.length ? shown.join(", ") : "—";
 }
 
 function gateBadge(state: string): string {
@@ -33,6 +74,8 @@ type Filters = { q?: string };
 /** Jadwal Produksi — DataTable presentasional + alokasi MongoDB V4. */
 export function ScheduleApiPanel() {
   const [lines, setLines] = useState<LineSchedule[]>([]);
+  const [totalRows, setTotalRows] = useState(0);
+  const [boardKpi, setBoardKpi] = useState<ScheduleBoardKpi | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
@@ -42,66 +85,99 @@ export function ScheduleApiPanel() {
   const [scheduleDate, setScheduleDate] = useState("");
   const [busy, setBusy] = useState(false);
   const [filters, setFilters] = useState<Filters>({});
+  const [headerFilters, setHeaderFilters] = useState<
+    Record<string, ColumnHeaderFilterState>
+  >({});
+  const [filterFacets, setFilterFacets] = useState<Record<string, string[]>>(
+    {},
+  );
+  const [tableEpoch, setTableEpoch] = useState(0);
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState(DEFAULT_TABLE_PAGE_SIZE);
   const [reviseTarget, setReviseTarget] = useState<Allocation | null>(null);
   const [reviseQty, setReviseQty] = useState("");
   const [reviseReason, setReviseReason] = useState("");
   const [reviseError, setReviseError] = useState<string | null>(null);
+  const loadSeq = useRef(0);
+
+  const columnFilters = useMemo(
+    () => headerToColumnFilters(headerFilters),
+    [headerFilters],
+  );
+  const { sortBy, sortDir } = useMemo(
+    () => headerSort(headerFilters),
+    [headerFilters],
+  );
 
   const load = useCallback(async () => {
+    const seq = ++loadSeq.current;
     setLoading(true);
     setError(null);
     try {
-      const pageRes = await getApiPoSource().list({ page: 1, pageSize: 100 });
-      const collected: LineSchedule[] = [];
-      for (const row of pageRes.items) {
-        if (!row.accurateId) continue;
-        const res = await fetchPoSchedule(row.accurateId);
-        collected.push(...res.lines);
-      }
-      setLines(collected);
+      const board = await fetchScheduleBoard({
+        page,
+        pageSize,
+        q: filters.q,
+        columnFilters,
+        sortBy,
+        sortDir,
+      });
+      if (seq !== loadSeq.current) return;
+      setLines(board.items);
+      setTotalRows(board.total_rows ?? board.total);
+      setBoardKpi(board.kpi);
+      setFilterFacets(board.filter_facets || {});
     } catch (err) {
+      if (seq !== loadSeq.current) return;
       setLines([]);
+      setTotalRows(0);
+      setBoardKpi(null);
+      setFilterFacets({});
       setError(err instanceof Error ? err.message : "Gagal memuat jadwal.");
     } finally {
-      setLoading(false);
+      if (seq === loadSeq.current) setLoading(false);
     }
-  }, []);
+  }, [page, pageSize, filters.q, columnFilters, sortBy, sortDir]);
 
   useEffect(() => {
     void load();
   }, [load]);
 
-  const filtered = useMemo(() => {
-    const q = filters.q?.trim().toLowerCase();
-    if (!q) return lines;
-    return lines.filter(
-      (l) =>
-        l.po_no.toLowerCase().includes(q) ||
-        l.item_name.toLowerCase().includes(q) ||
-        l.item_code.toLowerCase().includes(q) ||
-        l.accurate_line_id.toLowerCase().includes(q) ||
-        l.allocations.some((a) => a.operator_email.toLowerCase().includes(q)),
-    );
-  }, [lines, filters]);
+  useEffect(() => {
+    function onPoAccepted() {
+      void load();
+    }
+    window.addEventListener("eternal:po-accepted", onPoAccepted);
+    return () => window.removeEventListener("eternal:po-accepted", onPoAccepted);
+  }, [load]);
 
-  const pageRows = useMemo(() => {
-    const start = (page - 1) * pageSize;
-    return filtered.slice(start, start + pageSize);
-  }, [filtered, page, pageSize]);
+  function onServerHeaderChange(
+    next: Record<string, ColumnHeaderFilterState>,
+  ) {
+    setHeaderFilters(next);
+    setPage(1);
+  }
+
+  function resetAllFilters() {
+    setFilters({});
+    setHeaderFilters({});
+    setTableEpoch((n) => n + 1);
+    setPage(1);
+  }
 
   const kpis = useMemo((): KpiItem[] => {
-    const totalQty = lines.reduce((s, l) => s + l.qty_target, 0);
-    const scheduled = lines.reduce((s, l) => s + l.qty_allocated, 0);
-    const printed = lines.reduce((s, l) => s + l.qty_printed, 0);
-    const unsched = lines.filter((l) => l.qty_unallocated > 0).length;
-    const unlocked = lines.filter((l) => l.scheduling_unlocked).length;
+    // KPI global dari server — tidak dihitung dari halaman aktif.
+    const totalQty = boardKpi?.total_qty_so ?? 0;
+    const scheduled = boardKpi?.qty_allocated ?? 0;
+    const printed = boardKpi?.qty_printed ?? 0;
+    const unsched = boardKpi?.rows_unscheduled ?? 0;
+    const unlocked = boardKpi?.rows_unlocked ?? 0;
+    const printLines = boardKpi?.print_line_count ?? totalRows;
     return [
       {
         label: "Total Qty SO",
         value: `${qty(totalQty)} pcs`,
-        foot: "Item Cetak Accurate",
+        foot: "Item Cetak · PO diterima",
       },
       {
         label: "Qty Terjadwal",
@@ -126,11 +202,11 @@ export function ScheduleApiPanel() {
       },
       {
         label: "Baris Item Cetak",
-        value: lines.length,
-        foot: "MongoDB V4",
+        value: printLines,
+        foot: "PO diterima · MongoDB V4",
       },
     ];
-  }, [lines]);
+  }, [boardKpi, totalRows]);
 
   async function refreshSelected(line: LineSchedule) {
     const res = await fetchPoSchedule(line.accurate_po_id);
@@ -146,6 +222,8 @@ export function ScheduleApiPanel() {
           : l,
       ),
     );
+    // Muat ulang board agar KPI global sinkron setelah mutasi.
+    void load();
   }
 
   async function onAllocate() {
@@ -278,6 +356,15 @@ export function ScheduleApiPanel() {
         render: (row) => <span className="key">{row.po_no}</span>,
       },
       {
+        id: "outletName",
+        label: "Nama Outlet",
+        hideable: true,
+        filterType: "text",
+        defaultWidth: 160,
+        getFilterValue: (row) => row.outlet_name || "",
+        render: (row) => row.outlet_name?.trim() || "—",
+      },
+      {
         id: "lineId",
         label: "Item Line",
         hideable: true,
@@ -294,6 +381,15 @@ export function ScheduleApiPanel() {
         defaultWidth: 180,
         getFilterValue: (row) => row.item_name,
         render: (row) => row.item_name,
+      },
+      {
+        id: "paintColor",
+        label: "Warna Cat",
+        hideable: true,
+        filterType: "text",
+        defaultWidth: 110,
+        getFilterValue: (row) => row.paint_color || "",
+        render: (row) => row.paint_color?.trim() || "—",
       },
       {
         id: "qtyTarget",
@@ -361,6 +457,22 @@ export function ScheduleApiPanel() {
             new Set(row.allocations.map((a) => a.schedule_date).filter(Boolean)),
           );
           return dates.length ? dates.join(", ") : "—";
+        },
+      },
+      {
+        id: "shipDates",
+        label: "Tanggal Pengiriman",
+        hideable: true,
+        filterType: "date",
+        defaultWidth: 150,
+        // Facet server memakai tanggal unik per nilai; join hanya untuk tampilan.
+        getFilterValue: (row) => (row.ship_dates || [])[0] || "",
+        getSortValue: (row) => (row.ship_dates && row.ship_dates[0]) || "",
+        render: (row) => {
+          const text = shipDatesCell(row.ship_dates);
+          return (
+            <span title={text === "—" ? undefined : text}>{text}</span>
+          );
         },
       },
       {
@@ -444,16 +556,20 @@ export function ScheduleApiPanel() {
       </p>
 
       <DataTable
+        key={`schedule-board-${tableEpoch}`}
         tableId="po-accurate:schedule-v1"
         columns={columns}
-        rows={loading ? [] : pageRows}
-        filterSourceRows={filtered}
+        rows={loading ? [] : lines}
+        filterSourceRows={lines}
+        serverSide
+        filterFacets={filterFacets}
+        onServerHeaderChange={onServerHeaderChange}
         rowKey={(r) => `${r.accurate_po_id}:${r.accurate_line_id}`}
         enableColumnManager
         inlineColumnTools
         page={page}
         pageSize={pageSize}
-        total={loading ? 0 : filtered.length}
+        total={loading ? 0 : totalRows}
         onPageChange={setPage}
         onPageSizeChange={(size) => {
           setPageSize(size);
@@ -472,22 +588,20 @@ export function ScheduleApiPanel() {
                 ⌕
               </span>
               <input
-                placeholder="Cari PO, barang, operator…"
+                placeholder="Cari PO, outlet, warna, barang…"
                 value={filters.q || ""}
                 onChange={(e) => {
                   setFilters({ q: e.target.value });
                   setPage(1);
                 }}
-                aria-label="Cari jadwal"
+                aria-label="Cari jadwal (teks bebas, server)"
+                title="Pencarian teks bebas di server (q). Filter header kolom terpisah."
               />
             </div>
             <button
               type="button"
               className="ep-btn sm"
-              onClick={() => {
-                setFilters({});
-                setPage(1);
-              }}
+              onClick={resetAllFilters}
             >
               Reset filter
             </button>

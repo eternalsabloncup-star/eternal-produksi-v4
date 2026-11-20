@@ -1,5 +1,9 @@
 import { useEffect, useState } from "react";
-import { acceptPo, PoAcceptError } from "../api/poAcceptance";
+import {
+  acceptPo,
+  fetchPoAcceptanceStatus,
+  PoAcceptError,
+} from "../api/poAcceptance";
 import { useAuth } from "../auth";
 import type { PoRow } from "../demo/types";
 import { formatDateDisplay } from "../lib/formatDate";
@@ -37,9 +41,20 @@ export const TERIMA_PO_SUCCESS_FEEDBACK: TerimaPoFeedback = {
   message: "PO berhasil diterima.",
 };
 
+/** Timeout/network uncertain — bukan sukses; minta refresh status. */
+export const TERIMA_PO_UNCERTAIN_FEEDBACK: TerimaPoFeedback = {
+  tone: "error",
+  title: "Status penerimaan belum dapat dipastikan",
+  message:
+    "Status penerimaan belum dapat dipastikan. Muat ulang status sebelum mencoba lagi — permintaan tidak dikirim ulang otomatis.",
+};
+
 /** Pesan error aman untuk overlay Terima PO (tanpa traceback/internal). */
 export function terimaPoFeedbackMessage(err: unknown): string {
   if (err instanceof PoAcceptError) {
+    if (err.uncertain) {
+      return TERIMA_PO_UNCERTAIN_FEEDBACK.message;
+    }
     const msg = err.message.trim();
     return msg || "Gagal menerima PO. Silakan coba lagi.";
   }
@@ -51,11 +66,22 @@ export function terimaPoFeedbackMessage(err: unknown): string {
 }
 
 export function terimaPoErrorFeedback(err: unknown): TerimaPoFeedback {
+  if (err instanceof PoAcceptError && err.uncertain) {
+    return { ...TERIMA_PO_UNCERTAIN_FEEDBACK };
+  }
   return {
     tone: "error",
     title: "Gagal menerima PO",
     message: terimaPoFeedbackMessage(err),
   };
+}
+
+export function notifyPoAccepted(accuratePoId: string): void {
+  window.dispatchEvent(
+    new CustomEvent("eternal:po-accepted", {
+      detail: { accuratePoId },
+    }),
+  );
 }
 
 /** Sama dengan Live Tracking: success 1800ms, error 2600ms. */
@@ -134,26 +160,69 @@ export function InboxPoDetailModal({ row, open, onClose, onAccepted }: Props) {
 
   const items = localRow.items || [];
 
+  function applyAccepted(
+    acceptance: {
+      status?: string;
+      accepted_by?: string | null;
+      accepted_at?: string | null;
+      inbox_status?: string;
+    },
+  ) {
+    if (!localRow) return;
+    const next: PoRow = {
+      ...localRow,
+      acceptanceStatus: acceptance.status || "accepted",
+      acceptedBy: acceptance.accepted_by ?? user?.email ?? null,
+      acceptedAt: acceptance.accepted_at
+        ? String(acceptance.accepted_at)
+        : null,
+      status: acceptance.inbox_status || "PO Diterima",
+    };
+    setLocalRow(next);
+    setPhase("success");
+    setFeedback(TERIMA_PO_SUCCESS_FEEDBACK);
+    onAccepted?.(next);
+    if (next.accurateId) notifyPoAccepted(next.accurateId);
+  }
+
+  async function refreshAcceptanceStatus() {
+    if (!localRow?.accurateId || phase === "loading") return;
+    setPhase("loading");
+    setFeedback(null);
+    const status = await fetchPoAcceptanceStatus(localRow.accurateId);
+    if (status?.status === "accepted") {
+      applyAccepted(status);
+      return;
+    }
+    setPhase("idle");
+    setFeedback({
+      ...TERIMA_PO_UNCERTAIN_FEEDBACK,
+      message:
+        status == null
+          ? "Status penerimaan belum dapat dipastikan. Coba muat ulang status lagi."
+          : "PO belum diterima di server. Anda dapat mencoba Terima PO lagi.",
+    });
+  }
+
   async function onTerimaPo() {
     if (acceptDisabled || !localRow?.accurateId) return;
     setPhase("loading");
     setFeedback(null);
     try {
       const res = await acceptPo(localRow.accurateId);
-      const next: PoRow = {
-        ...localRow,
-        acceptanceStatus: res.acceptance.status || "accepted",
-        acceptedBy: res.acceptance.accepted_by ?? user?.email ?? null,
-        acceptedAt: res.acceptance.accepted_at
-          ? String(res.acceptance.accepted_at)
-          : null,
-        status: res.acceptance.inbox_status || "PO Diterima",
-      };
-      setLocalRow(next);
-      setPhase("success");
-      setFeedback(TERIMA_PO_SUCCESS_FEEDBACK);
-      onAccepted?.(next);
+      applyAccepted(res.acceptance);
     } catch (err) {
+      // Timeout/network: jangan auto-retry accept; reconcile GET status.
+      if (err instanceof PoAcceptError && err.uncertain) {
+        const status = await fetchPoAcceptanceStatus(localRow.accurateId);
+        if (status?.status === "accepted") {
+          applyAccepted(status);
+          return;
+        }
+        setPhase("error");
+        setFeedback(TERIMA_PO_UNCERTAIN_FEEDBACK);
+        return;
+      }
       setPhase("error");
       // Status PO tidak diubah; onAccepted tidak dipanggil.
       setFeedback(terimaPoErrorFeedback(err));
@@ -270,6 +339,17 @@ export function InboxPoDetailModal({ row, open, onClose, onAccepted }: Props) {
             <button type="button" className="ep-btn" onClick={onClose}>
               Tutup
             </button>
+            {showAccept &&
+            phase === "error" &&
+            feedback?.title === TERIMA_PO_UNCERTAIN_FEEDBACK.title ? (
+              <button
+                type="button"
+                className="ep-btn"
+                onClick={() => void refreshAcceptanceStatus()}
+              >
+                Muat ulang status
+              </button>
+            ) : null}
             {showAccept ? (
               <button
                 type="button"

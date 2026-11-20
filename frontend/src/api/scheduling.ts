@@ -51,6 +51,12 @@ export type LineSchedule = {
   accurate_line_id: string;
   item_code: string;
   item_name: string;
+  /** D1: nama customer/pelanggan PO. */
+  outlet_name?: string;
+  /** D2: warna item Accurate (charField2) — bukan print_color alokasi. */
+  paint_color?: string;
+  /** D3: tanggal kirim SJ aktif unik untuk line ini (kalender). */
+  ship_dates?: string[];
   qty_target: number;
   qty_allocated: number;
   qty_unallocated: number;
@@ -124,9 +130,70 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   return (await res.json()) as T;
 }
 
+export type ScheduleBoardKpi = {
+  total_qty_so: number;
+  qty_allocated: number;
+  qty_printed: number;
+  rows_unscheduled: number;
+  rows_unlocked: number;
+  print_line_count: number;
+};
+
+export type ScheduleBoardResponse = {
+  items: LineSchedule[];
+  total: number;
+  total_rows?: number;
+  page: number;
+  pageSize: number;
+  total_pages: number;
+  po_count?: number;
+  accepted_only: boolean;
+  source: string;
+  kpi: ScheduleBoardKpi;
+  filter_facets?: Record<string, string[]>;
+  sort_by?: string;
+  sort_dir?: string;
+};
+
+/** Kolom yang difilter di server (sebelum pagination). */
+export type ScheduleBoardColumnFilters = {
+  outletName?: string[] | null;
+  paintColor?: string[] | null;
+  poNo?: string[] | null;
+  itemName?: string[] | null;
+  lineId?: string[] | null;
+  shipDates?: string[] | null;
+};
+
+export async function fetchScheduleBoard(opts?: {
+  q?: string;
+  page?: number;
+  pageSize?: number;
+  columnFilters?: ScheduleBoardColumnFilters;
+  sortBy?: string;
+  sortDir?: "asc" | "desc";
+}): Promise<ScheduleBoardResponse> {
+  const params = new URLSearchParams();
+  if (opts?.q?.trim()) params.set("q", opts.q.trim());
+  if (opts?.page != null) params.set("page", String(opts.page));
+  if (opts?.pageSize != null) params.set("pageSize", String(opts.pageSize));
+  if (opts?.columnFilters && Object.keys(opts.columnFilters).length > 0) {
+    params.set("columnFilters", JSON.stringify(opts.columnFilters));
+  }
+  if (opts?.sortBy) params.set("sortBy", opts.sortBy);
+  if (opts?.sortDir) params.set("sortDir", opts.sortDir);
+  const qs = params.toString();
+  return request(`/api/scheduling/board${qs ? `?${qs}` : ""}`);
+}
+
 export async function fetchPoSchedule(
   accuratePoId: string,
-): Promise<{ accurate_po_id: string; lines: LineSchedule[]; source: string }> {
+): Promise<{
+  accurate_po_id: string;
+  lines: LineSchedule[];
+  source: string;
+  accepted_only?: boolean;
+}> {
   return request(`/api/scheduling/${encodeURIComponent(accuratePoId)}`);
 }
 
