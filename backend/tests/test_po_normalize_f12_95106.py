@@ -56,10 +56,12 @@ def test_f12_95106_full_header_and_lines() -> None:
     assert po.address_pic_name == "PIC-SANITIZED"
     assert po.recipient == ""
 
-    # Zona: charField3="K" belum terbukti → ship_zone kosong + meta.
-    assert po.ship_zone == ""
+    # Zona: Owner final — charField3="K" → ship_zone Exact "K".
+    assert po.ship_zone == "K"
     assert po.raw_sync_meta.get("char_field3_raw") == "K"
-    assert po.raw_sync_meta.get("char_field3_zone_unproven") is True
+    assert po.raw_sync_meta.get("ship_zone_source") == "charField3"
+    assert po.raw_sync_meta.get("ship_zone_owner_confirmed") is True
+    assert "char_field3_zone_unproven" not in po.raw_sync_meta
 
     assert len(po.items) == 2
     assert [i.accurate_line_id for i in po.items] == ["106318", "106319"]
@@ -96,7 +98,7 @@ def test_f12_95106_api_serializer_and_no_demo() -> None:
     assert h["user_name"] == ""
     assert h["address_pic_name"] == "PIC-SANITIZED"
     assert h["recipient"] == ""
-    assert h["ship_zone"] == ""
+    assert h["ship_zone"] == "K"
     assert out["item_count"] == 2
     assert {i["process_kind"] for i in h["items"]} == {"Cetak", "Non-Cetak"}
     blob = str(out)
@@ -150,12 +152,39 @@ def test_print_user_never_becomes_creator_name() -> None:
     assert po.created_by_id == "1162627"
 
 
-def test_char_field3_not_mapped_as_zone() -> None:
+def test_char_field3_maps_exact_zone_not_address_or_alias() -> None:
     payload = copy.deepcopy(_f12_payload())
-    payload["shipZone"] = {"name": "Jawa"}  # key tidak terbukti F12 sebagai SoT zona
+    payload["shipZone"] = {"name": "Jawa"}  # alias tidak menggantikan charField3
+    payload["toAddress"] = "Alamat tidak boleh jadi zona"
+    po = normalize_sales_order(payload)
+    assert po.ship_zone == "K"
+    assert po.raw_sync_meta.get("char_field3_raw") == "K"
+    assert po.raw_sync_meta.get("ship_zone_source") == "charField3"
+
+
+def test_ship_zone_from_search_char_field3_when_char_empty() -> None:
+    payload = copy.deepcopy(_f12_payload())
+    payload["charField3"] = ""
+    payload["searchCharField3"] = {"id": "K", "name": "K"}
+    po = normalize_sales_order(payload)
+    assert po.ship_zone == "K"
+    assert po.raw_sync_meta.get("ship_zone_source") == "searchCharField3"
+
+
+def test_ship_zone_empty_stays_empty() -> None:
+    payload = copy.deepcopy(_f12_payload())
+    payload["charField3"] = ""
+    payload["searchCharField3"] = None
     po = normalize_sales_order(payload)
     assert po.ship_zone == ""
-    assert po.raw_sync_meta.get("char_field3_raw") == "K"
+    assert po.raw_sync_meta.get("ship_zone_source") == "none"
+
+
+def test_ship_zone_whitespace_trimmed_only() -> None:
+    payload = copy.deepcopy(_f12_payload())
+    payload["charField3"] = "  K  "
+    po = normalize_sales_order(payload)
+    assert po.ship_zone == "K"
 
 
 def test_f12_sync_idempotent_preserves_lines_and_operational(db) -> None:

@@ -86,6 +86,27 @@ class Settings(BaseSettings):
         default=False,
         validation_alias=AliasChoices("V4_SJ_SYNC_ENABLED", "SJ_SYNC_ENABLED"),
     )
+    # Auto-sync Accurate — semua default OFF; worker one-shot terpisah dari FastAPI.
+    po_auto_sync_enabled: bool = Field(
+        default=False,
+        validation_alias=AliasChoices("V4_PO_AUTO_SYNC_ENABLED", "PO_AUTO_SYNC_ENABLED"),
+    )
+    receipt_auto_sync_enabled: bool = Field(
+        default=False,
+        validation_alias=AliasChoices(
+            "V4_RECEIPT_AUTO_SYNC_ENABLED", "RECEIPT_AUTO_SYNC_ENABLED"
+        ),
+    )
+    # Interval target scheduler eksternal (detik). Bukan loop di dalam API process.
+    accurate_auto_sync_interval_seconds: int = Field(
+        default=60,
+        validation_alias=AliasChoices(
+            "V4_ACCURATE_AUTO_SYNC_INTERVAL_SECONDS",
+            "ACCURATE_AUTO_SYNC_INTERVAL_SECONDS",
+        ),
+        ge=15,
+        le=3600,
+    )
 
     @field_validator("mongodb_uri")
     @classmethod
@@ -156,6 +177,12 @@ class Settings(BaseSettings):
                 "X-Session-ID (hanya jika session non-kosong)",
             ],
             "sj_sync_enabled": bool(self.sj_sync_enabled),
+            "po_auto_sync_enabled": bool(self.po_auto_sync_enabled),
+            "receipt_auto_sync_enabled": bool(self.receipt_auto_sync_enabled),
+            "accurate_auto_sync_interval_seconds": int(
+                self.accurate_auto_sync_interval_seconds
+            ),
+            "receipt_sync_contract": "unverified",
             "accurate_paths": {
                 "api_token": "/api/api-token.do",
                 "open_db": "/api/open-db.do",
@@ -163,6 +190,7 @@ class Settings(BaseSettings):
                 "so_detail": "/accurate/api/sales-order/detail.do",
                 "do_list": "/accurate/api/delivery-order/list.do",
                 "do_detail": "/accurate/api/delivery-order/detail.do",
+                # sales-receipt: belum terverifikasi — jangan di-hardcode sebagai ready
             },
         }
 

@@ -28,6 +28,7 @@ def test_nested_objects_on_proven_f12_keys() -> None:
     payload["toAddress"] = "Jl. Contoh No. 1"
     payload["shipDate"] = "25/11/2026"
     payload["description"] = "Catatan SO"
+    payload["charField3"] = "K"
     payload["charField4"] = "Normal"
     payload["charField5"] = "Non - Buffer"
     payload["printUserName"] = "print.op"
@@ -54,7 +55,8 @@ def test_nested_objects_on_proven_f12_keys() -> None:
     assert po.user_name == ""
     assert po.address_pic_name == "PIC Contoh"
     assert po.recipient == ""
-    assert po.ship_zone == ""
+    assert po.ship_zone == "K"
+    assert po.raw_sync_meta.get("ship_zone_source") == "charField3"
     assert po.raw_sync_meta.get("seller_differs_from_customer_default") is True
 
 

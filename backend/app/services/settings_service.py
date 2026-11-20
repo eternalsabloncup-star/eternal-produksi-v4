@@ -595,9 +595,13 @@ def set_product_screen_size(
 
 
 def accurate_status(db: Database, actor: dict[str, Any]) -> dict[str, Any]:
-    del db
     _require(actor, PERM_MANAGE_SETTINGS)
     from app.config import get_settings
+    from app.services.accurate_auto_sync.receipt_job import (
+        RECEIPT_CONTRACT_BLOCKER,
+        RECEIPT_CONTRACT_STATUS,
+    )
+    from app.services.accurate_auto_sync.runner import monitoring_snapshot
 
     s = get_settings()
     summary = s.safe_summary()
@@ -609,6 +613,17 @@ def accurate_status(db: Database, actor: dict[str, Any]) -> dict[str, Any]:
             "db_id": bool(summary.get("accurate_db_id_configured")),
         },
         "sj_live_sync_enabled": bool(summary.get("sj_sync_enabled")),
+        "po_auto_sync_enabled": bool(summary.get("po_auto_sync_enabled")),
+        "receipt_auto_sync_enabled": bool(summary.get("receipt_auto_sync_enabled")),
+        "auto_sync_interval_seconds": int(
+            summary.get("accurate_auto_sync_interval_seconds") or 60
+        ),
+        "manual_sync_button": False,
+        "receipt_contract": {
+            "status": RECEIPT_CONTRACT_STATUS,
+            "blocker": RECEIPT_CONTRACT_BLOCKER,
+        },
+        "auto_sync": monitoring_snapshot(db),
         "auth_mode": summary.get("accurate_auth_mode"),
         "safe_summary": summary,
         "note": "Secret Accurate hanya dari environment — tidak disimpan/ditampilkan di Settings.",
