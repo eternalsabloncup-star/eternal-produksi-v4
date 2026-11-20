@@ -8,9 +8,10 @@ import {
 import { listTrackingLinks } from "../api/tracking";
 import type { PoRow } from "../demo/types";
 import {
-  generateAndCopyLiveTrackingLink,
+  createOrCopyLiveTrackingLink,
   hasActiveTrackingLink,
   LiveTrackingCopyError,
+  recoverAndCopyLiveTrackingLink,
 } from "../lib/liveTrackingCopy";
 import { resolveTrackingPoKey } from "../lib/trackingPoKey";
 import { ConfirmationSuccessOverlay } from "./ConfirmationSuccessOverlay";
@@ -28,8 +29,9 @@ type Props = {
 type Status = "loading" | "absent" | "created";
 
 /**
- * Belum dibuat → generate + copy sekali.
- * Sudah dibuat (backend active) → status saja, tanpa mutasi.
+ * Belum ada → Buat & Salin Link.
+ * Sudah aktif → Salin Link (reveal URL, tanpa regenerate).
+ * Legacy hash-only → penjelasan + pemulihan terkendali (persetujuan eksplisit).
  */
 export function InboxLiveTrackingButton({ row }: Props) {
   const poKey = resolveTrackingPoKey(row);
@@ -59,11 +61,11 @@ export function InboxLiveTrackingButton({ row }: Props) {
 
   async function onClick(e: MouseEvent) {
     e.stopPropagation();
-    if (!poKey || busy || status === "created" || status === "loading") return;
+    if (!poKey || busy || status === "loading") return;
     setBusy(true);
     setFeedback(null);
     try {
-      await generateAndCopyLiveTrackingLink(poKey);
+      await createOrCopyLiveTrackingLink(poKey);
       setStatus("created");
       setFeedback({
         tone: "success",
@@ -71,10 +73,47 @@ export function InboxLiveTrackingButton({ row }: Props) {
         message: `PO ${row.poNo || row.id} · siap dibagikan.`,
       });
     } catch (err) {
+      if (
+        err instanceof LiveTrackingCopyError &&
+        err.code === "legacy_unrecoverable"
+      ) {
+        setStatus("created");
+        const confirmed = window.confirm(
+          `${err.message}\n\nPemulihan akan mencabut link lama dan membuat link baru. Lanjutkan?`,
+        );
+        if (!confirmed) {
+          setFeedback({
+            tone: "error",
+            title: "Dibatalkan",
+            message: "Pemulihan link tidak dijalankan. Link lama tetap aktif.",
+          });
+          return;
+        }
+        try {
+          await recoverAndCopyLiveTrackingLink(poKey, { confirmed: true });
+          setStatus("created");
+          setFeedback({
+            tone: "success",
+            title: "Link disalin",
+            message: `PO ${row.poNo || row.id} · link baru siap dibagikan.`,
+          });
+        } catch (recoverErr) {
+          setFeedback({
+            tone: "error",
+            title: "Gagal",
+            message:
+              recoverErr instanceof Error
+                ? recoverErr.message
+                : "Gagal memulihkan link.",
+          });
+        }
+        return;
+      }
       if (err instanceof LiveTrackingCopyError) {
         if (err.linkCreated || err.code === "already_created") {
           setStatus("created");
         }
+        // Clipboard fail → never show success.
         setFeedback({
           tone: "error",
           title: "Gagal",
@@ -92,25 +131,18 @@ export function InboxLiveTrackingButton({ row }: Props) {
     }
   }
 
+  const label =
+    busy || status === "loading"
+      ? "Memproses…"
+      : status === "created"
+        ? "Salin Link"
+        : "Buat & Salin Link";
+
   let cell: ReactNode;
   if (!poKey) {
     cell = (
       <span className="ep-cell-center" style={{ fontSize: 11, color: "#6a8578" }}>
         —
-      </span>
-    );
-  } else if (status === "created") {
-    cell = (
-      <span className="ep-cell-center">
-        <span
-          className="ep-live-tracking-done"
-          data-testid="inbox-live-tracking-done"
-          data-po-key={poKey}
-          data-po-no={row.poNo || row.id}
-          title={`Live Tracking sudah dibuat · ${poKey}`}
-        >
-          Live Tracking Sudah Dibuat
-        </span>
       </span>
     );
   } else {
@@ -123,18 +155,19 @@ export function InboxLiveTrackingButton({ row }: Props) {
           disabled={busy || status === "loading"}
           aria-busy={busy}
           title={
-            busy
+            busy || status === "loading"
               ? "Memproses Live Tracking…"
-              : status === "loading"
-                ? "Memeriksa status…"
-                : `Live Tracking · ${poKey}`
+              : status === "created"
+                ? `Salin Link Live Tracking · ${poKey}`
+                : `Buat & Salin Link Live Tracking · ${poKey}`
           }
           data-testid="inbox-live-tracking-btn"
           data-po-key={poKey}
           data-po-no={row.poNo || row.id}
+          data-status={status}
           onClick={(ev) => void onClick(ev)}
         >
-          {busy ? "Memproses…" : status === "loading" ? "…" : "Live Tracking"}
+          {label}
         </button>
       </span>
     );

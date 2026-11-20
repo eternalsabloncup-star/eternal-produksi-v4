@@ -170,6 +170,16 @@ class Settings(BaseSettings):
             "V4_ACCURATE_SYNC_START_DATE",
         ),
     )
+    # Fernet key (url-safe base64 32-byte) untuk seal raw token Live Tracking.
+    # Production wajib di-set sebelum cutover; test/dev boleh kosong (derived).
+    # Jangan log / commit nilai ini.
+    tracking_link_seal_key: str = Field(
+        default="",
+        validation_alias=AliasChoices(
+            "V4_TRACKING_LINK_SEAL_KEY",
+            "TRACKING_LINK_SEAL_KEY",
+        ),
+    )
 
     @field_validator("mongodb_uri")
     @classmethod
@@ -260,6 +270,9 @@ class Settings(BaseSettings):
             "accurate_signature_configured": bool(
                 self.accurate_api_signature_secret.strip()
             ),
+            "tracking_link_seal_key_configured": bool(
+                self.tracking_link_seal_key.strip()
+            ),
             "accurate_db_id_configured": bool(self.accurate_db_id.strip()),
             "accurate_db_id_length": (
                 len(self.accurate_db_id.strip()) if self.accurate_db_id.strip() else 0
@@ -316,4 +329,10 @@ def clear_settings_cache() -> None:
 
         clear_date_floor_cache()
     except Exception:  # noqa: BLE001 — cache helper opsional saat import parsial
+        pass
+    try:
+        from app.services.tracking_token_seal import clear_seal_cache
+
+        clear_seal_cache()
+    except Exception:  # noqa: BLE001
         pass

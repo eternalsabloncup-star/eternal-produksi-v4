@@ -16,9 +16,12 @@ from app.repositories.tracking_link_repository import MissingRequiredTrackingInd
 from app.services import tracking_service as tracking
 from app.services.tracking_service import (
     TrackingConflict,
+    TrackingError,
     TrackingForbidden,
+    TrackingLegacyUnrecoverable,
     TrackingNotFound,
 )
+from app.services.tracking_token_seal import TrackingSealKeyMissing
 
 router = APIRouter(tags=["tracking"])
 
@@ -156,6 +159,52 @@ def list_links(
     except TrackingNotFound as exc:
         raise HTTPException(status.HTTP_404_NOT_FOUND, exc.message) from exc
     return {"items": rows, "accurate_po_id": accurate_po_id}
+
+
+@router.get("/api/tracking/{accurate_po_id}/links/active-url")
+def get_active_tracking_url(
+    accurate_po_id: str,
+    response: Response,
+    auth: AuthContext = Depends(require_session),
+) -> dict[str, Any]:
+    """Salin ulang path link aktif — authenticated, scoped PO, no-store.
+
+    Tidak regenerate. Tidak mengembalikan URL untuk revoked/expired.
+    Legacy hash-only → 409 legacy_unrecoverable (butuh persetujuan regenerate).
+    """
+    _require_ops(auth)
+    _no_store(response)
+    try:
+        return tracking.reveal_active_tracking_url(
+            get_db(),
+            accurate_po_id=accurate_po_id,
+            actor_email=auth.user.get("email_normalized"),
+        )
+    except MissingRequiredTrackingIndexError as exc:
+        raise _http_from_index_error(exc) from exc
+    except TrackingLegacyUnrecoverable as exc:
+        raise HTTPException(
+            status.HTTP_409_CONFLICT,
+            detail={
+                "code": exc.code,
+                "message": exc.message,
+                "link_id": exc.link_id,
+                "accurate_po_id": exc.accurate_po_id,
+                "requires_explicit_recovery": True,
+            },
+        ) from exc
+    except TrackingSealKeyMissing as exc:
+        raise HTTPException(
+            status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail={"code": exc.code, "message": str(exc)},
+        ) from exc
+    except TrackingNotFound as exc:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, exc.message) from exc
+    except TrackingError as exc:
+        raise HTTPException(
+            status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail={"code": exc.code, "message": exc.message},
+        ) from exc
 
 
 @router.post("/api/tracking/{accurate_po_id}/links", status_code=status.HTTP_201_CREATED)

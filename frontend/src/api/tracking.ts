@@ -113,6 +113,26 @@ export type TrackingLinkRow = {
   expires_at: string | null;
   access_count: number;
   last_accessed_at: string | null;
+  /** True when server can re-reveal the public path (sealed token present). */
+  url_recoverable?: boolean;
+};
+
+export type ActiveTrackingUrlResponse = {
+  status: "ok";
+  path: string;
+  link_id: string;
+  accurate_po_id: string;
+  customer_slug: string;
+  po_slug: string;
+  url_recoverable: boolean;
+};
+
+export type TrackingApiErrorDetail = {
+  code?: string;
+  message?: string;
+  link_id?: string;
+  accurate_po_id?: string;
+  requires_explicit_recovery?: boolean;
 };
 
 export type GenerateLinkResponse = {
@@ -128,8 +148,48 @@ export type GenerateLinkResponse = {
 
 async function parseError(response: Response): Promise<string> {
   try {
-    const data = (await response.json()) as { detail?: string };
+    const data = (await response.json()) as {
+      detail?: string | TrackingApiErrorDetail;
+    };
     if (typeof data.detail === "string") return data.detail;
+    if (data.detail && typeof data.detail === "object") {
+      const msg = data.detail.message || data.detail.code;
+      if (msg) return String(msg);
+    }
+  } catch {
+    // ignore
+  }
+  return "Terjadi kesalahan. Silakan coba lagi.";
+}
+
+export class TrackingApiError extends Error {
+  readonly status: number;
+  readonly detail: TrackingApiErrorDetail | string;
+  constructor(
+    status: number,
+    detail: TrackingApiErrorDetail | string,
+    fallbackMessage: string,
+  ) {
+    const message =
+      typeof detail === "string"
+        ? detail
+        : detail.message || detail.code || fallbackMessage;
+    super(message);
+    this.name = "TrackingApiError";
+    this.status = status;
+    this.detail = detail;
+  }
+}
+
+async function parseErrorDetail(
+  response: Response,
+): Promise<TrackingApiErrorDetail | string> {
+  try {
+    const data = (await response.json()) as {
+      detail?: string | TrackingApiErrorDetail;
+    };
+    if (typeof data.detail === "string") return data.detail;
+    if (data.detail && typeof data.detail === "object") return data.detail;
   } catch {
     // ignore
   }
@@ -186,6 +246,24 @@ export async function listTrackingLinks(
   if (!response.ok) throw new Error(await parseError(response));
   const body = (await response.json()) as { items: TrackingLinkRow[] };
   return body.items;
+}
+
+/** Reveal public path for the same active link (no generate / no regenerate). */
+export async function fetchActiveTrackingUrl(
+  accuratePoId: string,
+): Promise<ActiveTrackingUrlResponse> {
+  const response = await fetch(
+    `/api/tracking/${encodeURIComponent(accuratePoId)}/links/active-url`,
+    { method: "GET", credentials: "include" },
+  );
+  if (!response.ok) {
+    throw new TrackingApiError(
+      response.status,
+      await parseErrorDetail(response),
+      "Gagal mengambil URL Live Tracking.",
+    );
+  }
+  return (await response.json()) as ActiveTrackingUrlResponse;
 }
 
 export async function generateTrackingLink(
