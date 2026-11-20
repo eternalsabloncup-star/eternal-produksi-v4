@@ -116,43 +116,68 @@ def _board_kpi_from_light_rows(
             "print_line_count": 0,
         }
 
-    line_ids = [str(r["accurate_line_id"]) for r in light_rows]
+    # Key komposit PO+line — jangan gabungkan accurate_line_id lintas PO.
+    line_ids = list({str(r["accurate_line_id"]) for r in light_rows})
     po_ids = list({str(r["accurate_po_id"]) for r in light_rows})
+    pair_keys = {
+        (str(r["accurate_po_id"]), str(r["accurate_line_id"])) for r in light_rows
+    }
 
-    alloc_by_line: dict[str, float] = {}
-    if line_ids:
+    alloc_by_pair: dict[tuple[str, str], float] = {}
+    if line_ids and po_ids:
         for row in allocations_collection(db).aggregate(
             [
                 {
                     "$match": {
                         "accurate_line_id": {"$in": line_ids},
+                        "accurate_po_id": {"$in": po_ids},
                         "status": STATUS_ACTIVE,
                     }
                 },
-                {"$group": {"_id": "$accurate_line_id", "total": {"$sum": "$qty"}}},
+                {
+                    "$group": {
+                        "_id": {
+                            "po": "$accurate_po_id",
+                            "line": "$accurate_line_id",
+                        },
+                        "total": {"$sum": "$qty"},
+                    }
+                },
             ]
         ):
-            alloc_by_line[str(row["_id"])] = float(row.get("total") or 0)
+            key_doc = row.get("_id") if isinstance(row.get("_id"), dict) else {}
+            po_k = str(key_doc.get("po") or "")
+            line_k = str(key_doc.get("line") or "")
+            if (po_k, line_k) in pair_keys:
+                alloc_by_pair[(po_k, line_k)] = float(row.get("total") or 0)
 
-    printed_by_line: dict[str, float] = {}
-    if line_ids:
+    printed_by_pair: dict[tuple[str, str], float] = {}
+    if line_ids and po_ids:
         for row in tasks_collection(db).aggregate(
             [
                 {
                     "$match": {
                         "task_type": "cetak",
                         "ref.accurate_line_id": {"$in": line_ids},
+                        "ref.accurate_po_id": {"$in": po_ids},
                     }
                 },
                 {
                     "$group": {
-                        "_id": "$ref.accurate_line_id",
+                        "_id": {
+                            "po": "$ref.accurate_po_id",
+                            "line": "$ref.accurate_line_id",
+                        },
                         "total": {"$sum": "$qty_confirmed"},
                     }
                 },
             ]
         ):
-            printed_by_line[str(row["_id"])] = float(row.get("total") or 0)
+            key_doc = row.get("_id") if isinstance(row.get("_id"), dict) else {}
+            po_k = str(key_doc.get("po") or "")
+            line_k = str(key_doc.get("line") or "")
+            if (po_k, line_k) in pair_keys:
+                printed_by_pair[(po_k, line_k)] = float(row.get("total") or 0)
 
     unlocked_pos: set[str] = set()
     if po_ids:
@@ -179,9 +204,10 @@ def _board_kpi_from_light_rows(
     for row in light_rows:
         line_id = str(row["accurate_line_id"])
         po_id = str(row["accurate_po_id"])
+        pair = (po_id, line_id)
         target = float(row.get("qty_target") or 0)
-        allocated = float(alloc_by_line.get(line_id) or 0)
-        printed = float(printed_by_line.get(line_id) or 0)
+        allocated = float(alloc_by_pair.get(pair) or 0)
+        printed = float(printed_by_pair.get(pair) or 0)
         total_qty += target
         qty_allocated += allocated
         qty_printed += printed

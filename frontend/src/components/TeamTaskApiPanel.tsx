@@ -561,6 +561,7 @@ export function TeamTaskApiPanel({ role, roleLabel }: Props) {
   function showSuccess(message: string) {
     setSuccessMsg(message);
     setSuccessOpen(true);
+    window.dispatchEvent(new CustomEvent("eternal:tasks-changed"));
   }
 
   async function onUploadSampleDraft() {
@@ -911,9 +912,16 @@ export function TeamTaskApiPanel({ role, roleLabel }: Props) {
       {error ? (
         <div className="ep-error" role="alert">
           {error}
-          <button type="button" className="ep-btn sm" onClick={() => void load()}>
-            Coba Lagi
-          </button>
+            <button
+              type="button"
+              className="ep-btn sm"
+              onClick={() => {
+                void load();
+                window.dispatchEvent(new CustomEvent("eternal:tasks-changed"));
+              }}
+            >
+              Coba Lagi
+            </button>
         </div>
       ) : null}
       {truncated ? (
@@ -1018,7 +1026,14 @@ export function TeamTaskApiPanel({ role, roleLabel }: Props) {
             >
               Reset filter
             </button>
-            <button type="button" className="ep-btn sm" onClick={() => void load()}>
+            <button
+              type="button"
+              className="ep-btn sm"
+              onClick={() => {
+                void load();
+                window.dispatchEvent(new CustomEvent("eternal:tasks-changed"));
+              }}
+            >
               Muat ulang
             </button>
             <button

@@ -52,6 +52,27 @@ export function statusLabel(status: OperationalTask["status"]): string {
   return "Belum Dikerjakan";
 }
 
+/** Loading dibatalkan tetap status open di engine — bukan pekerjaan aktif. */
+export function isCancelledOrInactiveTask(
+  task: Pick<OperationalTask, "context">,
+): boolean {
+  const ctx = task.context;
+  if (!ctx || typeof ctx !== "object") return false;
+  return (ctx as { loading_cancelled?: unknown }).loading_cancelled === true;
+}
+
+/**
+ * Tugas actionable untuk badge / filter Belum+Sebagian:
+ * status terbuka dan belum dibatalkan.
+ */
+export function isActionableOpenTask(
+  task: Pick<OperationalTask, "status" | "context">,
+): boolean {
+  if (task.status === "selesai") return false;
+  if (isCancelledOrInactiveTask(task)) return false;
+  return true;
+}
+
 export function statusBadgeClass(status: OperationalTask["status"]): string {
   if (status === "selesai") return "ep-task-status is-selesai";
   if (status === "sebagian") return "ep-task-status is-sebagian";
@@ -76,11 +97,22 @@ export function aggregateStatusCounts(tasks: OperationalTask[]): StatusCounts {
   let sebagian = 0;
   let selesai = 0;
   for (const t of tasks) {
-    if (t.status === "selesai") selesai += 1;
-    else if (t.status === "sebagian") sebagian += 1;
+    if (t.status === "selesai") {
+      selesai += 1;
+      continue;
+    }
+    // Cancelled/inactive tidak masuk Belum/Sebagian (selaras badge).
+    if (isCancelledOrInactiveTask(t)) continue;
+    if (t.status === "sebagian") sebagian += 1;
     else belum += 1;
   }
   return { all: tasks.length, belum, sebagian, selesai };
+}
+
+/** Badge sidebar = Belum Dikerjakan + Sebagian (actionable). */
+export function actionableOpenCount(tasks: OperationalTask[]): number {
+  const c = aggregateStatusCounts(tasks);
+  return c.belum + c.sebagian;
 }
 
 export function filterTasksByStatus(
@@ -89,8 +121,19 @@ export function filterTasksByStatus(
 ): OperationalTask[] {
   if (filter === "all") return tasks;
   if (filter === "selesai") return tasks.filter((t) => t.status === "selesai");
-  if (filter === "sebagian") return tasks.filter((t) => t.status === "sebagian");
-  return tasks.filter((t) => t.status === "belum_dikerjakan");
+  if (filter === "sebagian") {
+    return tasks.filter(
+      (t) => t.status === "sebagian" && !isCancelledOrInactiveTask(t),
+    );
+  }
+  // Belum = terbuka selain sebagian (termasuk status non-selesai lain), bukan hanya
+  // exact "belum_dikerjakan" — selaras aggregateStatusCounts.
+  return tasks.filter(
+    (t) =>
+      t.status !== "selesai" &&
+      t.status !== "sebagian" &&
+      !isCancelledOrInactiveTask(t),
+  );
 }
 
 export function formatCountBadge(n: number, truncated: boolean): string {

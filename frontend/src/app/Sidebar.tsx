@@ -166,7 +166,7 @@ export function Sidebar({ inboxBadge, dataMode }: Props) {
                       ? "Memuat jumlah tugas…"
                       : openTaskStatus === "truncated"
                         ? `Sekurang-kurangnya ${openCount} belum selesai (batas baca tercapai)`
-                        : `${openCount} belum selesai`;
+                        : `${openCount} tugas aktif (Belum + Sebagian)`;
                 return (
                   <NavLink
                     key={role.id}

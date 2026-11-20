@@ -55,6 +55,27 @@ describe("teamTaskUi counts & filters", () => {
     expect(filterTasksByStatus(rows, "selesai")).toHaveLength(1);
   });
 
+  it("badge formula Belum+Sebagian matches actionable open count", () => {
+    const counts = aggregateStatusCounts(rows);
+    expect(counts.belum + counts.sebagian).toBe(3);
+  });
+
+  it("excludes loading_cancelled from Belum/Sebagian", () => {
+    const withCancel = [
+      ...rows,
+      task({
+        task_key: "cancel",
+        task_type: "loading-sj",
+        status: "belum_dikerjakan",
+        context: { loading_cancelled: true },
+      }),
+    ];
+    const counts = aggregateStatusCounts(withCancel);
+    expect(counts.belum).toBe(2);
+    expect(counts.sebagian).toBe(1);
+    expect(counts.all).toBe(5);
+  });
+
   it("marks truncated badges", () => {
     expect(formatCountBadge(12, false)).toBe("12");
     expect(formatCountBadge(12, true)).toBe("12+");

@@ -386,3 +386,50 @@ def test_board_filter_empty_selection(db: Database) -> None:
     assert board["total"] == 0
     assert board["items"] == []
     assert board["kpi"]["print_line_count"] == 0
+
+
+def test_board_kpi_allocation_uses_po_line_composite(db: Database) -> None:
+    """KPI alokasi/cetak tidak mencampur accurate_line_id lintas PO."""
+    from app.repositories.schedule_repository import insert_allocation
+
+    _bulk_accepted_pos(db, 2, start=370000)
+    # Samakan line id antar PO agar regresi key non-komposit terlihat.
+    for aid in ("370000", "370001"):
+        doc = db["accurate_sales_orders"].find_one({"accurate_id": aid})
+        assert doc is not None
+        items = list(doc["header"]["items"])
+        items[0] = {**items[0], "accurate_line_id": "SHARED-LINE"}
+        db["accurate_sales_orders"].update_one(
+            {"accurate_id": aid},
+            {"$set": {"header.items": items}},
+        )
+
+    insert_allocation(
+        db,
+        allocation_id="alloc-kpi-370000",
+        accurate_po_id="370000",
+        po_no="PO/BULK/370000",
+        accurate_line_id="SHARED-LINE",
+        item_code="CUP-0",
+        operator_email="op@eternal.local",
+        qty=40,
+        schedule_date="2026-11-21",
+        created_by="test",
+    )
+    insert_allocation(
+        db,
+        allocation_id="alloc-kpi-370001",
+        accurate_po_id="370001",
+        po_no="PO/BULK/370001",
+        accurate_line_id="SHARED-LINE",
+        item_code="CUP-0",
+        operator_email="op@eternal.local",
+        qty=10,
+        schedule_date="2026-11-21",
+        created_by="test",
+    )
+
+    board = scheduling_service.build_accepted_schedule_board(db, page_size=10)
+    assert board["total"] == 2
+    # Tanpa komposit PO+line, kedua baris bisa mendapat 50 — harus 40+10.
+    assert board["kpi"]["qty_allocated"] == 50.0
