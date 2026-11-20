@@ -1,14 +1,19 @@
 #!/usr/bin/env python3
-"""Owner-gated PO branch_id repair apply — DEFAULT REFUSE.
+"""Owner-gated PO branch_id repair apply — DEFAULT REFUSE / fail-closed.
 
-Tidak dijalankan oleh agent M3. Hanya setelah:
-  1) Owner approval tertulis
-  2) Production SHA == exact approved deploy SHA (main berisi PR #21+)
-  3) Manifest kandidat dari verify Accurate detail
-  4) Kill-switch PO tetap OFF
-  5) Flag eksplisit --i-understand-this-writes-production
+Wajib:
+  --execute
+  --i-understand-this-writes-production
+  --expect-live-sha (full 40-hex) + live repo exists & matches
+  --expect-manifest-sha256 + sealed candidates
+  --expect-candidate-count
+  --backup-meta (fresh eternal_v4@27018)
+  --maintenance-lock (workers cleared, PO sync off)
+  APP_ENV=production, DB eternal_v4, Mongo :27018
 
-Setiap write memakai CAS ``set_branch_id_if_empty_and_unaccepted`` (atomik).
+Setiap item: pre-check acceptance/deps/identity drift → CAS atomik
+``set_branch_id_if_empty_and_unaccepted``. Race/dep → STOP sisa write.
+ok=False bila ada gagal/blocked/partial. Audit selalu dipersist.
 """
 
 from __future__ import annotations
@@ -20,16 +25,42 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-_BACKEND = Path(__file__).resolve().parents[1] / "backend"
-if str(_BACKEND) not in sys.path:
-    sys.path.insert(0, str(_BACKEND))
+_ROOT = Path(__file__).resolve().parents[1]
+_BACKEND = _ROOT / "backend"
+_SCRIPTS = _ROOT / "scripts"
+for p in (_BACKEND, _SCRIPTS):
+    if str(p) not in sys.path:
+        sys.path.insert(0, str(p))
+
+from lib.po_branch_repair_safety import (  # noqa: E402
+    DEFAULT_LIVE_REPO,
+    assert_no_po_sync_worker,
+    load_backup_meta,
+    load_maintenance_lock,
+    load_sealed_candidates,
+    prewrite_block_reason,
+    require_safe_db_target,
+    resolve_live_sha,
+)
+
+
+def _persist_audit(path: Path, report: dict[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(report, indent=2, default=str))
 
 
 def main() -> int:
     p = argparse.ArgumentParser(description="Owner-gated branch_id repair (CAS)")
-    p.add_argument("--candidates", required=True, help="JSON valid_repair_candidates")
+    p.add_argument("--candidates", required=True, help="Sealed candidates JSON")
     p.add_argument("--expect-live-sha", required=True)
+    p.add_argument("--expect-manifest-sha256", required=True)
+    p.add_argument("--expect-candidate-count", type=int, required=True)
+    p.add_argument("--backup-meta", required=True)
+    p.add_argument("--maintenance-lock", required=True)
     p.add_argument("--audit-out", required=True)
+    p.add_argument("--live-repo", default=str(DEFAULT_LIVE_REPO))
+    p.add_argument("--expect-total-po", type=int, default=0)
+    p.add_argument("--expect-missing-po", type=int, default=0)
     p.add_argument(
         "--i-understand-this-writes-production",
         action="store_true",
@@ -38,23 +69,56 @@ def main() -> int:
     p.add_argument(
         "--execute",
         action="store_true",
-        help="Tanpa flag ini: dry simulation only (masih zero write)",
+        help="Tanpa flag ini: refuse (zero write)",
     )
     args = p.parse_args()
 
+    audit_path = Path(args.audit_out)
+    base_report: dict[str, Any] = {
+        "ok": False,
+        "mode": "OWNER_APPROVED_WRITE",
+        "wrote_mongo": False,
+        "refused": False,
+        "stopped": False,
+        "expect_live_sha": args.expect_live_sha,
+        "filled": 0,
+        "blocked": 0,
+        "already": 0,
+        "skipped": 0,
+        "failed": 0,
+        "items": [],
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+    }
+
     if not args.i_understand_this_writes_production or not args.execute:
-        print(
-            json.dumps(
-                {
-                    "ok": False,
-                    "refused": True,
-                    "reason": "missing_owner_write_flags",
-                    "hint": "Butuh --execute dan --i-understand-this-writes-production",
-                    "wrote_mongo": False,
-                }
-            )
+        base_report.update(
+            {
+                "refused": True,
+                "reason": "missing_owner_write_flags",
+                "hint": "Butuh --execute dan --i-understand-this-writes-production",
+            }
         )
+        _persist_audit(audit_path, base_report)
+        print(json.dumps(base_report))
         return 2
+
+    try:
+        live_sha = resolve_live_sha(
+            live_repo=Path(args.live_repo), expect_sha=args.expect_live_sha
+        )
+        backup = load_backup_meta(Path(args.backup_meta))
+        lock = load_maintenance_lock(Path(args.maintenance_lock))
+        assert_no_po_sync_worker()
+        items = load_sealed_candidates(
+            Path(args.candidates),
+            expect_sha256=args.expect_manifest_sha256,
+            expect_count=args.expect_candidate_count,
+        )
+    except ValueError as exc:
+        base_report.update({"refused": True, "reason": str(exc)})
+        _persist_audit(audit_path, base_report)
+        print(json.dumps(base_report))
+        return 3
 
     from app.config import clear_settings_cache, get_settings
     from app.db import close_client, get_db
@@ -63,84 +127,214 @@ def main() -> int:
     clear_settings_cache()
     close_client()
     settings = get_settings()
+    try:
+        db_gate = require_safe_db_target(
+            app_env=settings.app_env,
+            mongodb_uri=settings.mongodb_uri,
+            db_name=settings.mongodb_db,
+            require_production=True,
+        )
+    except ValueError as exc:
+        base_report.update({"refused": True, "reason": str(exc)})
+        _persist_audit(audit_path, base_report)
+        print(json.dumps(base_report))
+        return 4
+
     if getattr(settings, "v4_po_auto_sync_enabled", False):
-        print(json.dumps({"ok": False, "refused": True, "reason": "po_auto_sync_must_be_off"}))
-        return 3
-
-    live = Path("/home/eternaladmin/eternal-production-v4")
-    if live.is_dir():
-        import subprocess
-
-        sha = subprocess.check_output(
-            ["git", "-C", str(live), "rev-parse", "HEAD"], text=True
-        ).strip()
-        if sha != args.expect_live_sha:
-            print(
-                json.dumps(
-                    {
-                        "ok": False,
-                        "refused": True,
-                        "reason": "live_sha_mismatch",
-                        "live": sha,
-                        "expect": args.expect_live_sha,
-                    }
-                )
-            )
-            return 4
-
-    raw = json.loads(Path(args.candidates).read_text())
-    items = raw.get("valid_repair_candidates") if isinstance(raw, dict) else raw
-    if not isinstance(items, list):
-        raise SystemExit("candidates invalid")
+        base_report.update({"refused": True, "reason": "po_auto_sync_must_be_off"})
+        _persist_audit(audit_path, base_report)
+        print(json.dumps(base_report))
+        return 5
 
     db = get_db(settings)
-    audit: list[dict[str, Any]] = []
-    for it in items:
-        aid = str(it.get("accurate_id") or "")
-        expect = str(it.get("expected_branch_id") or "")
-        if not aid or expect not in {"50", "150"}:
-            audit.append({"accurate_id": aid, "status": "skipped_invalid"})
-            continue
-        before = db["accurate_sales_orders"].find_one(
-            {"accurate_id": aid}, {"branch_id": 1, "operational.acceptance.status": 1}
+    if db.name != "eternal_v4":
+        base_report.update({"refused": True, "reason": f"db_handle_mismatch:{db.name}"})
+        _persist_audit(audit_path, base_report)
+        print(json.dumps(base_report))
+        return 4
+
+    total = db["accurate_sales_orders"].count_documents({})
+    missing = db["accurate_sales_orders"].count_documents(
+        {"$or": [{"branch_id": {"$exists": False}}, {"branch_id": None}, {"branch_id": ""}]}
+    )
+    if args.expect_total_po and total != args.expect_total_po:
+        base_report.update(
+            {
+                "refused": True,
+                "reason": f"snapshot_total_drift:{total}!={args.expect_total_po}",
+            }
         )
-        if before and before.get("branch_id"):
+        _persist_audit(audit_path, base_report)
+        print(json.dumps(base_report))
+        return 6
+    if args.expect_missing_po and missing != args.expect_missing_po:
+        base_report.update(
+            {
+                "refused": True,
+                "reason": f"snapshot_missing_drift:{missing}!={args.expect_missing_po}",
+            }
+        )
+        _persist_audit(audit_path, base_report)
+        print(json.dumps(base_report))
+        return 6
+
+    approved_ids = {it["accurate_id"] for it in items}
+    audit: list[dict[str, Any]] = []
+    filled = blocked = already = skipped = failed = 0
+    stopped = False
+    stop_reason = None
+    wrote_any = False
+
+    for it in items:
+        aid = it["accurate_id"]
+        if aid not in approved_ids:
+            failed += 1
+            audit.append({"accurate_id": aid, "status": "foreign_id_rejected"})
+            stopped = True
+            stop_reason = "foreign_id"
+            break
+
+        block = prewrite_block_reason(
+            db,
+            accurate_id=aid,
+            expected_branch_id=it["expected_branch_id"],
+            expected_po_no=it.get("po_no"),
+            expected_trans_date=it.get("accurate_trans_date"),
+        )
+        if block == "already_has_branch":
+            already += 1
+            audit.append({"accurate_id": aid, "status": "already_has_branch"})
+            continue
+        if block is not None:
+            # Fail-closed: accepted/deps/drift → stop remaining writes.
+            blocked += 1
             audit.append(
                 {
                     "accurate_id": aid,
-                    "status": "already_has_branch",
-                    "branch_id": before.get("branch_id"),
+                    "status": "blocked",
+                    "reason": block,
+                    "expected": it["expected_branch_id"],
                 }
             )
-            continue
-        filled = set_branch_id_if_empty_and_unaccepted(db, aid, expect)
-        if filled is None:
-            audit.append({"accurate_id": aid, "status": "cas_miss_or_blocked", "expected": expect})
-        else:
+            stopped = True
+            stop_reason = block
+            break
+
+        try:
+            filled_doc = set_branch_id_if_empty_and_unaccepted(
+                db, aid, it["expected_branch_id"]
+            )
+        except Exception as exc:  # noqa: BLE001
+            failed += 1
             audit.append(
                 {
                     "accurate_id": aid,
-                    "status": "filled",
-                    "branch_id": filled.get("branch_id"),
-                    "expected": expect,
+                    "status": "write_error",
+                    "error": type(exc).__name__,
+                    "msg": str(exc)[:200],
+                }
+            )
+            stopped = True
+            stop_reason = "write_error"
+            break
+
+        if filled_doc is None:
+            # Race: accepted/deps/branch filled by other writer.
+            blocked += 1
+            # Re-check why
+            race = prewrite_block_reason(
+                db,
+                accurate_id=aid,
+                expected_branch_id=it["expected_branch_id"],
+                expected_po_no=it.get("po_no"),
+                expected_trans_date=it.get("accurate_trans_date"),
+            )
+            audit.append(
+                {
+                    "accurate_id": aid,
+                    "status": "cas_miss_or_blocked",
+                    "reason": race or "cas_miss",
+                    "expected": it["expected_branch_id"],
+                }
+            )
+            stopped = True
+            stop_reason = race or "cas_miss"
+            break
+
+        wrote_any = True
+        filled += 1
+        audit.append(
+            {
+                "accurate_id": aid,
+                "status": "filled",
+                "branch_id": filled_doc.get("branch_id"),
+                "expected": it["expected_branch_id"],
+            }
+        )
+
+    remaining = len(items) - len(audit)
+    if stopped and remaining > 0:
+        for it in items[len(audit) :]:
+            skipped += 1
+            audit.append(
+                {
+                    "accurate_id": it["accurate_id"],
+                    "status": "skipped_after_stop",
+                    "stop_reason": stop_reason,
                 }
             )
 
+    ok = (
+        not stopped
+        and failed == 0
+        and blocked == 0
+        and filled + already == len(items)
+        and skipped == 0
+    )
     report = {
-        "ok": True,
-        "mode": "OWNER_APPROVED_WRITE",
-        "expect_live_sha": args.expect_live_sha,
-        "filled": sum(1 for a in audit if a.get("status") == "filled"),
-        "blocked": sum(1 for a in audit if a.get("status") == "cas_miss_or_blocked"),
-        "already": sum(1 for a in audit if a.get("status") == "already_has_branch"),
+        **base_report,
+        "ok": ok,
+        "wrote_mongo": wrote_any,
+        "stopped": stopped,
+        "stop_reason": stop_reason,
+        "live_sha": live_sha,
+        "db_gate": db_gate,
+        "backup_sha256": backup.get("archive_sha256"),
+        "maintenance_token_fp": str(lock.get("token"))[:8] + "…",
+        "manifest_sha256": args.expect_manifest_sha256,
+        "candidate_count": len(items),
+        "snapshot": {"total": total, "missing": missing},
+        "filled": filled,
+        "blocked": blocked,
+        "already": already,
+        "skipped": skipped,
+        "failed": failed,
         "items": audit,
         "generated_at": datetime.now(timezone.utc).isoformat(),
+        "notes": [
+            "Cross-collection dep check is fail-closed + maintenance isolation; not a multi-doc transaction.",
+            "Partial apply ⇒ ok=false; remaining items skipped_after_stop.",
+        ],
     }
-    Path(args.audit_out).write_text(json.dumps(report, indent=2))
-    print(json.dumps({"ok": True, "audit_out": args.audit_out, "filled": report["filled"]}))
+    _persist_audit(audit_path, report)
+    print(
+        json.dumps(
+            {
+                "ok": report["ok"],
+                "audit_out": str(audit_path),
+                "filled": filled,
+                "blocked": blocked,
+                "already": already,
+                "skipped": skipped,
+                "failed": failed,
+                "stopped": stopped,
+                "wrote_mongo": wrote_any,
+            }
+        )
+    )
     close_client()
     clear_settings_cache()
-    return 0
+    return 0 if ok else 1
 
 
 if __name__ == "__main__":

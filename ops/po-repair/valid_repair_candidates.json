@@ -1,7 +1,9 @@
 {
   "ok": true,
-  "source_report": "verify_report.json",
-  "valid_repair_count": 347,
+  "sealed": true,
+  "kind": "valid_repair_candidates_v1",
+  "manifest_sha256": "553a77ab34bb81a5cfdc401f648be210ff9b49dd7d4b1a49f7cf8829937b690d",
+  "candidate_count": 347,
   "valid_repair_candidates": [
     {
       "accurate_id": "93793",
@@ -2086,10 +2088,15 @@
       "po_no": "PO/20/11/2026/000015"
     }
   ],
+  "source_report_generated_at": "verify_report.json",
+  "delta_sha256": null,
+  "notes": [
+    "Immutable candidate list \u2014 apply refuses foreign accurate_id.",
+    "Checksum covers accurate_id+expected_branch_id+trans_date+po_no only.",
+    "Resealed for fail-closed apply gates (M3 final safety).",
+    "Re-verify before write if delta/source changed."
+  ],
   "production_sha_at_verify": "189d0aac153a3e80dba9b11c1e9164206122c159",
   "main_sha_at_verify": "cd0c01e7eab86a06fdab110f220c6b57a6d22795",
-  "pr21_status": "MERGED_NOT_DEPLOYED",
-  "notes": [
-    "Write requires Owner approval + deploy main first"
-  ]
+  "pr21_status": "MERGED_NOT_DEPLOYED"
 }
