@@ -264,6 +264,9 @@ def create_allocations(
         allocation_id = build_allocation_id(
             accurate_line_id, schedules.next_sequence(db, accurate_line_id)
         )
+        from app.services.object_auth import object_branch_code
+
+        branch_code = object_branch_code(po_doc)
         created.append(
             schedules.insert_allocation(
                 db,
@@ -278,6 +281,7 @@ def create_allocations(
                 created_by=actor,
                 print_color=print_color,
                 screen_kind=screen_kind,
+                branch_code=branch_code,
             )
         )
 

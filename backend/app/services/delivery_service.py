@@ -15,6 +15,11 @@ from app.repositories import task_repository as tasks
 from app.repositories.po_repository import get_by_accurate_id
 from app.services import production_service as production
 from app.services.audit_log import append_audit_event
+from app.services.object_auth import (
+    actor_email,
+    assert_branch_access,
+    filter_delivery_notes_for_actor,
+)
 from app.services.task_engine import require_action
 
 LOADING_TASK = "qty-loading-sj-berbeda"
@@ -137,11 +142,17 @@ def ingest_delivery_note(
     return deliveries.run_delivery_mongo_txn(db, _operation)
 
 
-def validate_loading(db: Database, accurate_sj_id: str) -> dict[str, Any]:
+def validate_loading(
+    db: Database,
+    accurate_sj_id: str,
+    user: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     """Cek setiap item SJ terhadap Qty QC (Cetak) atau SJ itu sendiri (Non-Cetak)."""
     note = deliveries.get_delivery_note(db, accurate_sj_id)
     if note is None:
         raise LookupError(f"Surat Jalan tidak ditemukan: {accurate_sj_id}")
+    if user is not None:
+        assert_branch_access(user, scope_object=note)
     if note.get("superseded_by"):
         raise LoadingValidationError(
             f"Surat Jalan {note['sj_no']} sudah digantikan oleh "
@@ -243,8 +254,15 @@ def confirm_loading(
     *,
     accurate_sj_id: str,
     idempotency_key: str,
+    assigned_driver_email: str | None = None,
 ) -> dict[str, Any]:
-    """Satu aksi Loading untuk seluruh item SJ — Qty QC + Loading + Driver + audit atomik."""
+    """Satu aksi Loading untuk seluruh item SJ — Qty QC + Loading + audit atomik.
+
+    Owner: Loading actor is NOT the courier. Do not stamp driver assignment.
+    ``assigned_driver_email`` is accepted for API compatibility but ignored
+    (no mandatory courier selection).
+    """
+    _ = assigned_driver_email
     require_action(db, user, task_type=DRIVER_TASK, action="confirm")
     assigned_role = _prepare_delivery_txn(db)
 
@@ -273,7 +291,10 @@ def confirm_loading(
         )
 
     note = deliveries.get_delivery_note(db, accurate_sj_id)
-    actor = str(user.get("email_normalized") or "")
+    if note is None:
+        raise LookupError(f"Surat Jalan tidak ditemukan: {accurate_sj_id}")
+    assert_branch_access(user, scope_object=note)
+    actor = actor_email(user) or str(user.get("email_normalized") or "")
     sequence = deliveries.next_loading_sequence(db, accurate_sj_id)
 
     def _operation(session: Any) -> dict[str, Any]:
@@ -350,8 +371,10 @@ def confirm_loading(
                 reason="Surat Jalan direvisi selama konfirmasi Loading.",
                 session=session,
             )
+        # Owner: never stamp courier from Loading actor; leave historical metadata as-is.
+        note_for_task = dict(note)
         driver_task = _ensure_driver_task(
-            db, note, loading, assigned_role=assigned_role, session=session
+            db, note_for_task, loading, assigned_role=assigned_role, session=session
         )
         append_audit_event(
             db,
@@ -360,9 +383,10 @@ def confirm_loading(
             target_email=None,
             detail={
                 "accurate_sj_id": accurate_sj_id,
-                "sj_no": note["sj_no"],
+                "sj_no": note_for_task["sj_no"],
                 "loading_id": loading["loading_id"],
                 "sj_version": loading.get("sj_version"),
+                "loading_actor_email": actor,
                 "item_count": len(loading["items"]),
                 "qty_by_line": [
                     {
@@ -432,13 +456,28 @@ def _ensure_driver_task(
             "loading_id": loading["loading_id"],
             "sj_version": loading.get("sj_version"),
             "loading_cancelled": False,
+            "assigned_driver_email": note.get("assigned_driver_email")
+            or note.get("driver_email"),
+            "driver_email": note.get("driver_email")
+            or note.get("assigned_driver_email"),
         },
         session=session,
     )
     # Loading ulang mengaktifkan kembali tugas yang sama dengan Loading baru.
     tasks.tasks_collection(db).update_one(
         {"task_key": task["task_key"]},
-        {"$set": {"status": tasks.TASK_STATUS_OPEN}},
+        {
+            "$set": {
+                "status": tasks.TASK_STATUS_OPEN,
+                "context.assigned_driver_email": note.get("assigned_driver_email")
+                or note.get("driver_email"),
+                "context.driver_email": note.get("driver_email")
+                or note.get("assigned_driver_email"),
+                "context.loading_id": loading["loading_id"],
+                "context.sj_version": loading.get("sj_version"),
+                "context.loading_cancelled": False,
+            }
+        },
         session=session,
     )
     return tasks.get_task(db, task["task_key"], session=session) or task
@@ -731,6 +770,7 @@ def confirm_delivery_success(
     note = deliveries.get_delivery_note(db, accurate_sj_id)
     if note is None:
         raise LookupError(f"Surat Jalan tidak ditemukan: {accurate_sj_id}")
+    assert_branch_access(user, scope_object=note)
     _require_active_loading(db, accurate_sj_id)
     if len(photos) < MIN_DELIVERY_PHOTOS:
         raise DeliveryEvidenceError(
@@ -937,13 +977,14 @@ def confirm_delivery_failure(
     note = deliveries.get_delivery_note(db, accurate_sj_id)
     if note is None:
         raise LookupError(f"Surat Jalan tidak ditemukan: {accurate_sj_id}")
+    assert_branch_access(user, scope_object=note)
     _require_active_loading(db, accurate_sj_id)
 
     # Fail-closed sebelum mutasi: tidak seed Master, tidak createIndex.
     require_delivery_txn_indexes(db)
     assigned_role = master.require_task_type_assigned_role(db, DELIVERY_FAILURE_TASK)
 
-    courier = str(user.get("email_normalized") or "")
+    courier = actor_email(user) or str(user.get("email_normalized") or "")
     fail_reason = reason.strip()
 
     def _operation(session: Any) -> dict[str, Any]:
@@ -1005,6 +1046,17 @@ def soft_delete_delivery_evidence(
 ) -> dict[str, Any]:
     """Hapus bukti = soft delete; file dan riwayat tetap untuk audit berizin."""
     require_action(db, user, task_type=DRIVER_TASK, action="manage_evidence")
+    meta = evidence.get_evidence(db, evidence_id)
+    if meta is None:
+        raise LookupError(f"Bukti tidak ditemukan: {evidence_id}")
+    sj_id = str(
+        (meta.get("context") or {}).get("accurate_sj_id")
+        or meta.get("scope_id")
+        or ""
+    )
+    if sj_id:
+        note = deliveries.get_delivery_note(db, sj_id) or {"accurate_sj_id": sj_id}
+        assert_branch_access(user, scope_object=note)
     doc = evidence.soft_delete_evidence(
         db,
         evidence_id=evidence_id,
@@ -1034,14 +1086,21 @@ def active_delivery_evidence(db: Database, accurate_sj_id: str) -> dict[str, Any
 
 def delivery_schedule(
     db: Database,
+    user: dict[str, Any] | None = None,
     *,
     ship_date_from: str | None = None,
     ship_date_to: str | None = None,
 ) -> dict[str, Any]:
-    """Jadwal Pengiriman: satu baris per SJ + ringkasan periode."""
+    """Jadwal Pengiriman: satu baris per SJ + ringkasan periode.
+
+    Akun terbatas hanya melihat SJ cabangnya; ``operations.full`` /
+    ``access.all_branches`` / Super Admin melihat semua.
+    """
     notes = deliveries.list_delivery_notes(
         db, ship_date_from=ship_date_from, ship_date_to=ship_date_to
     )
+    if user is not None:
+        notes = filter_delivery_notes_for_actor(user, notes)
     rows = []
     qty_by_unit: dict[str, float] = {}
     destinations: set[str] = set()

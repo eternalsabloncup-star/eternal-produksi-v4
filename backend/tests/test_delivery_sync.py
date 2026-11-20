@@ -291,6 +291,7 @@ def test_sync_api_permission_denied_for_ordinary_user(
             "operational_role": "driver",
             "password_hash": hash_password(PASSWORD),
             "is_active": True,
+            "effective_module_permissions": ["access.all_branches"]
         }
     )
     csrf = _login(app_client, "driver@eternal.local")

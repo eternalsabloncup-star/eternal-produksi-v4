@@ -128,6 +128,26 @@ export function allowTaskAction(
   return actions.includes(opts.action);
 }
 
+/**
+ * Filter presentasional selaras backend (Owner: assignment bukan gate).
+ * Backend tetap memfilter ulang by branch + Master action.
+ * ``operationsFull`` / Super Admin melihat semua tugas yang sudah di-fetch.
+ */
+export function filterTasksForActor(
+  tasks: OperationalTask[],
+  opts: {
+    isSuperAdmin: boolean;
+    actorEmail: string | null | undefined;
+    operationalRole: string | null | undefined;
+    operationsFull?: boolean;
+  },
+): OperationalTask[] {
+  if (opts.isSuperAdmin || opts.operationsFull) return tasks;
+  // Assignment metadata does not hide permitted tasks (Owner contract).
+  // Branch filtering is enforced by backend list_tasks.
+  return tasks;
+}
+
 /** Eligibility tombol Ubah Qty — dari kontrak backend, bukan status tampilan. */
 export function allocationCanReviseQty(a: {
   status?: string;

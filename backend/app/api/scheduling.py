@@ -14,6 +14,11 @@ from app.repositories.po_repository import get_by_accurate_id
 from app.repositories import master_repository as master
 from app.services import scheduling_service
 from app.services.index_preflight import MissingRequiredIndexError
+from app.services.object_auth import (
+    ObjectAuthError,
+    require_allocation_branch_access,
+    require_po_branch_access,
+)
 from app.services.task_engine import TaskPermissionError
 
 router = APIRouter(prefix="/api/scheduling", tags=["scheduling"])
@@ -82,11 +87,14 @@ def get_line_schedule(
     accurate_line_id: str,
     auth: AuthContext = Depends(require_session),
 ) -> dict[str, Any]:
-    po_doc = _po_or_404(accurate_po_id)
+    db = get_db()
     try:
+        po_doc = require_po_branch_access(db, auth.user, accurate_po_id)
         return scheduling_service.line_schedule_state(
-            get_db(), po_doc, accurate_line_id
+            db, po_doc, accurate_line_id
         )
+    except ObjectAuthError as exc:
+        raise HTTPException(status.HTTP_403_FORBIDDEN, str(exc)) from exc
     except LookupError as exc:
         raise HTTPException(status.HTTP_404_NOT_FOUND, str(exc)) from exc
 
@@ -96,9 +104,14 @@ def get_po_schedule(
     accurate_po_id: str,
     auth: AuthContext = Depends(require_session),
 ) -> dict[str, Any]:
-    po_doc = _po_or_404(accurate_po_id)
-    header = po_doc.get("header") if isinstance(po_doc.get("header"), dict) else {}
     db = get_db()
+    try:
+        po_doc = require_po_branch_access(db, auth.user, accurate_po_id)
+    except LookupError as exc:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, str(exc)) from exc
+    except ObjectAuthError as exc:
+        raise HTTPException(status.HTTP_403_FORBIDDEN, str(exc)) from exc
+    header = po_doc.get("header") if isinstance(po_doc.get("header"), dict) else {}
     lines = [
         scheduling_service.line_schedule_state(
             db, po_doc, str(item.get("accurate_line_id"))
@@ -201,8 +214,12 @@ def get_allocation_history(
     auth: AuthContext = Depends(require_session),
 ) -> dict[str, Any]:
     db = get_db()
-    if schedules.get_allocation(db, allocation_id) is None:
-        raise HTTPException(status.HTTP_404_NOT_FOUND, "Alokasi tidak ditemukan")
+    try:
+        require_allocation_branch_access(db, auth.user, allocation_id)
+    except LookupError as exc:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, str(exc)) from exc
+    except ObjectAuthError as exc:
+        raise HTTPException(status.HTTP_403_FORBIDDEN, str(exc)) from exc
     return {
         "allocation_id": allocation_id,
         "items": schedules.allocation_history(db, allocation_id),

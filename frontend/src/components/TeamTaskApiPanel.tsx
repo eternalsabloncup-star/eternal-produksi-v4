@@ -43,6 +43,7 @@ import {
   allowTaskAction,
   aggregateStatusCounts,
   filterTasksByStatus,
+  filterTasksForActor,
   formatCountBadge,
   isCoordinationTask,
   isSampleTask,
@@ -198,14 +199,24 @@ export function TeamTaskApiPanel({ role, roleLabel }: Props) {
     };
   }, [role]);
 
+  const scopedTasks = useMemo(
+    () =>
+      filterTasksForActor(allTasks, {
+        isSuperAdmin: elevated,
+        actorEmail: user?.email,
+        operationalRole: role,
+      }),
+    [allTasks, elevated, user?.email, role],
+  );
+
   const statusCounts = useMemo(
-    () => aggregateStatusCounts(allTasks),
-    [allTasks],
+    () => aggregateStatusCounts(scopedTasks),
+    [scopedTasks],
   );
 
   const statusFiltered = useMemo(
-    () => filterTasksByStatus(allTasks, statusFilter),
-    [allTasks, statusFilter],
+    () => filterTasksByStatus(scopedTasks, statusFilter),
+    [scopedTasks, statusFilter],
   );
 
   const filteredTasks = useMemo(() => {

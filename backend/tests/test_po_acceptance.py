@@ -43,6 +43,7 @@ def _seed_users(db: Database) -> None:
                 "role": "user",
                 "operational_role": role,
                 "is_active": True,
+                "effective_module_permissions": ["access.all_branches"]
             }
         )
 
@@ -199,7 +200,8 @@ def test_scheduling_blocked_before_accept(db: Database) -> None:
         "email_normalized": "kp@eternal.local",
         "role": "user",
         "operational_role": "production-head",
-    }
+        "effective_module_permissions": ["access.all_branches"],
+}
     try:
         scheduling_service.create_allocations(
             db,
@@ -340,7 +342,8 @@ def test_production_mutations_blocked_before_accept(
         "email_normalized": "helper@eternal.local",
         "role": "user",
         "operational_role": "helper",
-    }
+        "effective_module_permissions": ["access.all_branches"],
+}
     conf_before = db["task_confirmations"].count_documents({})
     tasks_before = len(task_repo.list_tasks(db, accurate_po_id=PO_ID))
     try:
@@ -382,6 +385,7 @@ def test_production_preparation_ok_after_accept_and_schedule(db: Database) -> No
             "role": "user",
             "operational_role": "operator",
             "is_active": True,
+            "effective_module_permissions": ["access.all_branches"]
         }
     )
     po = _seed_po(db)
@@ -398,7 +402,8 @@ def test_production_preparation_ok_after_accept_and_schedule(db: Database) -> No
             "email_normalized": "kp@eternal.local",
             "role": "user",
             "operational_role": "production-head",
-        },
+            "effective_module_permissions": ["access.all_branches"],
+},
         po_doc=po,
         accurate_line_id=LINE_PRINT,
         allocations=[{"operator_email": "op1@eternal.local", "qty": 50}],
@@ -408,7 +413,8 @@ def test_production_preparation_ok_after_accept_and_schedule(db: Database) -> No
         "email_normalized": "helper@eternal.local",
         "role": "user",
         "operational_role": "helper",
-    }
+        "effective_module_permissions": ["access.all_branches"],
+}
     res = prod.confirm_preparation(
         db,
         helper,

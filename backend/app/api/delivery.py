@@ -21,6 +21,7 @@ from app.services.evidence_access import (
     EvidenceAccessDenied,
     assert_delivery_evidence_access,
 )
+from app.services.object_auth import ObjectAuthError, require_sj_branch_access
 from app.services.task_engine import TaskPermissionError
 
 router = APIRouter(prefix="/api/delivery", tags=["delivery"])
@@ -44,6 +45,8 @@ class AccurateDeliverySyncRequest(BaseModel):
 
 class LoadingConfirmRequest(BaseModel):
     idempotency_key: str = Field(min_length=8, max_length=200)
+    # Opsional: penugasan kurir eksplisit saat Loading (tidak menimpa assignment valid).
+    assigned_driver_email: str | None = Field(default=None, max_length=200)
 
 
 class CoordinationConfirmRequest(BaseModel):
@@ -65,7 +68,7 @@ class EvidenceDeleteRequest(BaseModel):
 
 
 def _handle(exc: Exception) -> HTTPException:
-    if isinstance(exc, TaskPermissionError):
+    if isinstance(exc, (TaskPermissionError, EvidenceAccessDenied, ObjectAuthError)):
         return HTTPException(status.HTTP_403_FORBIDDEN, str(exc))
     if isinstance(exc, delivery_sync.DeliverySyncInProgressError):
         return HTTPException(status.HTTP_409_CONFLICT, str(exc))
@@ -101,7 +104,10 @@ def get_schedule(
     auth: AuthContext = Depends(require_session),
 ) -> dict[str, Any]:
     return delivery_service.delivery_schedule(
-        get_db(), ship_date_from=ship_date_from, ship_date_to=ship_date_to
+        get_db(),
+        auth.user,
+        ship_date_from=ship_date_from,
+        ship_date_to=ship_date_to,
     )
 
 
@@ -156,9 +162,12 @@ def get_delivery_note(
     auth: AuthContext = Depends(require_session),
 ) -> dict[str, Any]:
     db = get_db()
-    note = deliveries.get_delivery_note(db, accurate_sj_id)
-    if note is None:
-        raise HTTPException(status.HTTP_404_NOT_FOUND, "Surat Jalan tidak ditemukan")
+    try:
+        note = require_sj_branch_access(db, auth.user, accurate_sj_id)
+    except LookupError as exc:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, str(exc)) from exc
+    except ObjectAuthError as exc:
+        raise HTTPException(status.HTTP_403_FORBIDDEN, str(exc)) from exc
     return {
         "delivery_note": note,
         "loading": deliveries.get_loading_event(db, accurate_sj_id),
@@ -238,7 +247,9 @@ def get_loading_validation(
     auth: AuthContext = Depends(require_session),
 ) -> dict[str, Any]:
     try:
-        return delivery_service.validate_loading(get_db(), accurate_sj_id)
+        return delivery_service.validate_loading(
+            get_db(), accurate_sj_id, user=auth.user
+        )
     except Exception as exc:  # noqa: BLE001
         raise _handle(exc) from exc
 
@@ -255,6 +266,7 @@ def post_loading(
             auth.user,
             accurate_sj_id=accurate_sj_id,
             idempotency_key=body.idempotency_key,
+            assigned_driver_email=body.assigned_driver_email,
         )
     except Exception as exc:  # noqa: BLE001
         raise _handle(exc) from exc
@@ -280,8 +292,12 @@ def get_revisions(
     auth: AuthContext = Depends(require_session),
 ) -> dict[str, Any]:
     db = get_db()
-    if deliveries.get_delivery_note(db, accurate_sj_id) is None:
-        raise HTTPException(status.HTTP_404_NOT_FOUND, "Surat Jalan tidak ditemukan")
+    try:
+        require_sj_branch_access(db, auth.user, accurate_sj_id)
+    except LookupError as exc:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, str(exc)) from exc
+    except ObjectAuthError as exc:
+        raise HTTPException(status.HTTP_403_FORBIDDEN, str(exc)) from exc
     return {
         "accurate_sj_id": accurate_sj_id,
         "revisions": deliveries.list_note_revisions(db, accurate_sj_id),

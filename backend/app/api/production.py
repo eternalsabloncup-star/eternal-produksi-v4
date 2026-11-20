@@ -22,6 +22,11 @@ from app.services.evidence_access import (
     assert_sample_evidence_access,
 )
 from app.services.index_preflight import MissingRequiredIndexError
+from app.services.object_auth import (
+    ObjectAuthError,
+    require_allocation_branch_access,
+    require_po_branch_access,
+)
 from app.services.task_engine import TaskPermissionError
 
 router = APIRouter(prefix="/api/production", tags=["production"])
@@ -51,6 +56,8 @@ def _po_or_404(accurate_po_id: str) -> dict[str, Any]:
 
 def _handle(exc: Exception) -> HTTPException:
     if isinstance(exc, TaskPermissionError):
+        return HTTPException(status.HTTP_403_FORBIDDEN, str(exc))
+    if isinstance(exc, (ObjectAuthError, EvidenceAccessDenied)):
         return HTTPException(status.HTTP_403_FORBIDDEN, str(exc))
     if isinstance(exc, master.MissingMasterConfigError):
         return HTTPException(
@@ -84,10 +91,14 @@ def get_line_production(
     accurate_line_id: str,
     auth: AuthContext = Depends(require_session),
 ) -> dict[str, Any]:
-    po_doc = _po_or_404(accurate_po_id)
-    return production_service.line_production_state(
-        get_db(), po_doc, accurate_line_id
-    )
+    db = get_db()
+    try:
+        po_doc = require_po_branch_access(db, auth.user, accurate_po_id)
+    except LookupError as exc:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, str(exc)) from exc
+    except ObjectAuthError as exc:
+        raise HTTPException(status.HTTP_403_FORBIDDEN, str(exc)) from exc
+    return production_service.line_production_state(db, po_doc, accurate_line_id)
 
 
 @router.post("/{accurate_po_id}/lines/{accurate_line_id}/preparation")
@@ -136,8 +147,12 @@ def get_samples(
     auth: AuthContext = Depends(require_session),
 ) -> dict[str, Any]:
     db = get_db()
-    if schedules.get_allocation(db, allocation_id) is None:
-        raise HTTPException(status.HTTP_404_NOT_FOUND, "Alokasi tidak ditemukan")
+    try:
+        require_allocation_branch_access(db, auth.user, allocation_id)
+    except LookupError as exc:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, str(exc)) from exc
+    except ObjectAuthError as exc:
+        raise HTTPException(status.HTTP_403_FORBIDDEN, str(exc)) from exc
     return {
         "allocation_id": allocation_id,
         "items": samples.list_samples(db, allocation_id),

@@ -24,6 +24,7 @@ function gateLabel(state: string | undefined): string {
 /** Panel Payment API: ingest receipt snapshot + bypass berizin. */
 export function PaymentWorkflowPanel({ accuratePoId, poNo, onChanged }: Props) {
   const { capabilities } = useAuth();
+  // Canonical: operations.full OR explicit payment-bypass (backend capabilities).
   const canBypass = Boolean(capabilities.payment_bypass);
   const [state, setState] = useState<PaymentStateResponse | null>(null);
   const [loading, setLoading] = useState(true);

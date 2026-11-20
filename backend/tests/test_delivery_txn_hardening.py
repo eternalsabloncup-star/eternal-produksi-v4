@@ -39,26 +39,31 @@ HEAD = {
     "email_normalized": "kp@eternal.local",
     "role": "user",
     "operational_role": "production-head",
+    "effective_module_permissions": ["access.all_branches"],
 }
 HELPER = {
     "email_normalized": "helper@eternal.local",
     "role": "user",
     "operational_role": "helper",
+    "effective_module_permissions": ["access.all_branches"],
 }
 SCREENER = {
     "email_normalized": "screener@eternal.local",
     "role": "user",
     "operational_role": "screener",
+    "effective_module_permissions": ["access.all_branches"],
 }
 OPERATOR = {
     "email_normalized": "op1@eternal.local",
     "role": "user",
     "operational_role": "operator",
+    "effective_module_permissions": ["access.all_branches"],
 }
 DRIVER = {
     "email_normalized": "driver@eternal.local",
     "role": "user",
     "operational_role": "driver",
+    "effective_module_permissions": ["access.all_branches"],
 }
 PNG = b"\x89PNG bukti"
 

@@ -28,11 +28,13 @@ HEAD = {
     "email_normalized": "kp@eternal.local",
     "role": "user",
     "operational_role": "production-head",
+    "effective_module_permissions": ["access.all_branches"],
 }
 OP = {
     "email_normalized": "op@eternal.local",
     "role": "user",
     "operational_role": "operator",
+    "effective_module_permissions": ["access.all_branches"],
 }
 
 
@@ -306,13 +308,19 @@ def test_shared_helper_quota_multi_operator(db: Database) -> None:
                 else "op-b@eternal.local",
                 "role": "user",
                 "operational_role": "operator",
-            },
+                "effective_module_permissions": ["access.all_branches"],
+},
             HEAD,
             alloc,
         )
     ok = prod.confirm_print(
         db,
-        {"email_normalized": "op-a@eternal.local", "role": "user", "operational_role": "operator"},
+        {
+            "email_normalized": "op-a@eternal.local",
+            "role": "user",
+            "operational_role": "operator",
+            "effective_module_permissions": ["access.all_branches"],
+        },
         allocation_id=a,
         qty=80,
         idempotency_key=f"qa-{uuid.uuid4().hex}",
@@ -325,7 +333,8 @@ def test_shared_helper_quota_multi_operator(db: Database) -> None:
                 "email_normalized": "op-b@eternal.local",
                 "role": "user",
                 "operational_role": "operator",
-            },
+                "effective_module_permissions": ["access.all_branches"],
+},
             allocation_id=b,
             qty=40,
             idempotency_key=f"qb-{uuid.uuid4().hex}",

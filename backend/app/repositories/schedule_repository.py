@@ -182,6 +182,7 @@ def insert_allocation(
     created_by: str,
     print_color: str | None = None,
     screen_kind: str | None = None,
+    branch_code: str | None = None,
 ) -> dict[str, Any]:
     _ensure_once(db)
     now = datetime.now(timezone.utc)
@@ -204,6 +205,8 @@ def insert_allocation(
         doc["print_color"] = print_color
     if screen_kind is not None:
         doc["screen_kind"] = screen_kind
+    if branch_code is not None and str(branch_code).strip():
+        doc["branch_code"] = str(branch_code).strip().upper()
     try:
         allocations_collection(db).insert_one(dict(doc))
     except DuplicateKeyError as exc:

@@ -18,6 +18,10 @@ from app.repositories import sample_repository as samples
 from app.repositories import schedule_repository as schedules
 from app.repositories import task_repository as tasks
 from app.services.audit_log import append_audit_event
+from app.services.object_auth import (
+    assert_branch_access,
+    assert_operator_assignment,
+)
 from app.services.task_engine import (
     TaskPermissionError,
     can_act,
@@ -59,6 +63,32 @@ def _require_accepted_po(db: Database, accurate_po_id: str) -> dict[str, Any]:
     except PoAcceptanceError as exc:
         raise ProductionGateError(str(exc)) from exc
     return po_doc
+
+
+def _assert_po_branch(user: dict[str, Any], po_doc: dict[str, Any]) -> None:
+    assert_branch_access(user, scope_object=po_doc)
+
+
+def _assert_alloc_mutate(
+    db: Database,
+    user: dict[str, Any],
+    alloc: dict[str, Any],
+    *,
+    allow_approver: bool = False,
+) -> dict[str, Any]:
+    """Cabang sebelum mutasi alokasi — assignment metadata bukan gate (Owner)."""
+    from app.repositories.po_repository import get_by_accurate_id
+    from app.services.object_auth import object_branch_code
+
+    _ = allow_approver
+    # Keep call for API compatibility; assert_operator_assignment is a no-op.
+    assert_operator_assignment(
+        db, user, allocation=alloc, allow_approver=allow_approver
+    )
+    po_doc = get_by_accurate_id(db, str(alloc.get("accurate_po_id") or ""))
+    scope = po_doc if object_branch_code(po_doc) else (alloc if object_branch_code(alloc) else po_doc or alloc)
+    assert_branch_access(user, scope_object=scope)
+    return po_doc or {}
 
 
 def _line_ref(alloc: dict[str, Any]) -> TaskRef:
@@ -149,7 +179,8 @@ def confirm_preparation(
     idempotency_key: str,
     note: str | None = None,
 ) -> dict[str, Any]:
-    _require_accepted_po(db, accurate_po_id)
+    po_doc = _require_accepted_po(db, accurate_po_id)
+    _assert_po_branch(user, po_doc)
     key = prep_task_key(accurate_po_id, accurate_line_id)
     if tasks.get_task(db, key) is None:
         raise LookupError(
@@ -176,6 +207,11 @@ def confirm_screen(
     """Qty Screen diinput manual; tidak dipaksa sama dengan Qty jadwal."""
     alloc = _require_allocation(db, allocation_id)
     _require_accepted_po(db, str(alloc["accurate_po_id"]))
+    # Screen: screener role — assignment operator tidak berlaku; cabang wajib.
+    from app.repositories.po_repository import get_by_accurate_id
+
+    po_doc = get_by_accurate_id(db, str(alloc["accurate_po_id"]))
+    assert_branch_access(user, scope_object=po_doc or alloc)
     key = screen_task_key(alloc)
     if tasks.get_task(db, key) is None:
         raise LookupError("Tugas Screen belum terbit untuk alokasi ini.")
@@ -202,6 +238,7 @@ def upload_sample_draft(
     require_action(db, user, task_type=SAMPLE_TASK, action="input")
     alloc = _require_allocation(db, allocation_id)
     _require_accepted_po(db, str(alloc["accurate_po_id"]))
+    _assert_alloc_mutate(db, user, alloc)
     if screen_confirmed_qty(db, alloc) <= 0:
         raise ProductionGateError(
             "Screen untuk alokasi ini belum dikonfirmasi Screener."
@@ -344,6 +381,7 @@ def confirm_sample_submission(
         )
     alloc = _require_allocation(db, allocation_id)
     _require_accepted_po(db, str(alloc["accurate_po_id"]))
+    _assert_alloc_mutate(db, user, alloc)
 
     # Idempotency: konfirmasi ulang saat sudah pending → tidak gandakan tugas.
     pending = samples.pending_sample(db, allocation_id)
@@ -468,6 +506,7 @@ def decide_sample(
     require_action(db, user, task_type=APPROVAL_TASK, action="approve")
     alloc = _require_allocation(db, allocation_id)
     _require_accepted_po(db, str(alloc["accurate_po_id"]))
+    _assert_alloc_mutate(db, user, alloc, allow_approver=True)
     if not approved and not (reason or "").strip():
         raise ValueError("Alasan penolakan sampel wajib diisi.")
 
@@ -598,6 +637,7 @@ def confirm_print(
     accurate_po_id = str(alloc["accurate_po_id"])
     accurate_line_id = str(alloc["accurate_line_id"])
     _require_accepted_po(db, accurate_po_id)
+    _assert_alloc_mutate(db, user, alloc)
 
     if screen_confirmed_qty(db, alloc) <= 0:
         raise ProductionGateError("Gate Screen belum terpenuhi untuk alokasi ini.")
@@ -708,7 +748,8 @@ def confirm_qc_packing(
     Target operasional = Qty cetak sah line (bukan Qty PO penuh).
     Maksimum tambahan = cetak − packing terkonfirmasi.
     """
-    _require_accepted_po(db, accurate_po_id)
+    po_doc = _require_accepted_po(db, accurate_po_id)
+    _assert_po_branch(user, po_doc)
     key = qc_task_key(accurate_po_id, accurate_line_id)
     task = tasks.get_task(db, key)
     if task is None:

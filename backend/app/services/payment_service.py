@@ -169,10 +169,10 @@ def bypass_payment_gate(
     accurate_po_id: str,
     reason: str,
 ) -> dict[str, Any]:
-    """Bypass mengikuti grant Master ``payment-bypass`` / approve — selalu teraudit.
+    """Canonical Payment Bypass: ``operations.full`` OR explicit bypass grant.
 
-    Super Admin lolos via task_engine.can_act. Role lain hanya jika Master
-    memberikan aksi approve pada jenis pekerjaan payment-bypass.
+    Does NOT auto-open the gate on permission grant — actor must call this
+    with accepted PO + mandatory reason. Always audited.
     """
     try:
         require_action(db, user, task_type="payment-bypass", action="approve")
@@ -180,6 +180,17 @@ def bypass_payment_gate(
         raise PaymentPermissionError(str(exc)) from exc
     if not reason.strip():
         raise ValueError("Alasan bypass wajib diisi.")
+
+    from app.repositories.po_repository import get_by_accurate_id
+    from app.services.po_acceptance import is_po_accepted
+
+    po_doc = get_by_accurate_id(db, str(accurate_po_id))
+    if po_doc is None:
+        raise LookupError(f"PO tidak ditemukan: {accurate_po_id}")
+    if not is_po_accepted(po_doc):
+        raise PaymentPermissionError(
+            "PO belum diterima Kepala Produksi — Bypass Payment ditolak."
+        )
 
     actor = str(user.get("email_normalized") or "")
     doc = gates.set_gate(

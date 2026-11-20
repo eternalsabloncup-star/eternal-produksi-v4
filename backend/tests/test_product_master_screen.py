@@ -17,6 +17,7 @@ HEAD = {
     "email_normalized": "kp@eternal.local",
     "role": "user",
     "operational_role": "production-head",
+    "effective_module_permissions": ["access.all_branches"],
 }
 
 

@@ -6,6 +6,7 @@ import {
   allocationReviseBounds,
   allowTaskAction,
   filterTasksByStatus,
+  filterTasksForActor,
   formatCountBadge,
   isSchedulingTask,
   latestDraftSample,
@@ -131,6 +132,56 @@ describe("allowTaskAction", () => {
         action: "confirm",
       }),
     ).toBe(false);
+  });
+});
+
+describe("filterTasksForActor", () => {
+  it("does not hide tasks by assignment metadata (Owner contract)", () => {
+    const rows = [
+      task({
+        task_key: "t1",
+        task_type: "cetak",
+        status: "belum_dikerjakan",
+        context: { operator_email: "opa@eternal.local" },
+      }),
+      task({
+        task_key: "t2",
+        task_type: "cetak",
+        status: "belum_dikerjakan",
+        context: { operator_email: "opb@eternal.local" },
+      }),
+      task({
+        task_key: "d-empty",
+        task_type: "pengiriman",
+        status: "belum_dikerjakan",
+        context: {},
+      }),
+    ];
+    const filtered = filterTasksForActor(rows, {
+      isSuperAdmin: false,
+      actorEmail: "opa@eternal.local",
+      operationalRole: "operator",
+    });
+    expect(filtered.map((t) => t.task_key)).toEqual(["t1", "t2", "d-empty"]);
+  });
+
+  it("passes through for operations.full", () => {
+    const rows = [
+      task({
+        task_key: "x1",
+        task_type: "pengiriman",
+        status: "belum_dikerjakan",
+        context: {},
+      }),
+    ];
+    expect(
+      filterTasksForActor(rows, {
+        isSuperAdmin: false,
+        actorEmail: "ops@eternal.local",
+        operationalRole: "helper",
+        operationsFull: true,
+      }).map((t) => t.task_key),
+    ).toEqual(["x1"]);
   });
 });
 
