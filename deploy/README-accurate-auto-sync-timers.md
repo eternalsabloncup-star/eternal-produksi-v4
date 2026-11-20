@@ -14,6 +14,17 @@ ini adalah dokumentasi/template — **bukan** auto-deploy.
 Wrapper `scripts/vps_accurate_job_flock.sh` memakai `flock` global agar tiga
 job tidak bentrok request Accurate. Lock Mongo per-job tetap aktif di worker.
 
+### Timeout (wajib selaras)
+
+| Parameter | Nilai | Sumber |
+| --- | --- | --- |
+| `flock -w` | **60s** | `scripts/vps_accurate_job_flock.sh` |
+| Worker `DEFAULT_TIMEOUT_SECONDS` | **50s** | `po_job` / `invoice_job` / `receipt_job` |
+| `TimeoutStartSec` (systemd) | **180s** | `deploy/eternal-v4-accurate-*.service` |
+
+Syarat: `TimeoutStartSec` > `flock wait` + worker timeout + margin.  
+Bila lock sibuk melebihi 60s, wrapper keluar **nonzero** (kode **75**), bukan sukses.
+
 ## Kill switch
 
 Flags di `/etc/eternal-v4/backend/backend.env`:

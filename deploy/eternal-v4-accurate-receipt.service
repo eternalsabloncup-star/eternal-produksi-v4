@@ -12,7 +12,8 @@ EnvironmentFile=/etc/eternal-v4/backend/backend.env
 Environment=PYTHONPATH=/home/eternaladmin/eternal-production-v4/backend
 ExecStart=/home/eternaladmin/eternal-production-v4/scripts/vps_accurate_job_flock.sh receipt
 Nice=10
-TimeoutStartSec=240
+# > flock -w 60 + worker timeout 50s + margin startup/stop (~40s) → 180
+TimeoutStartSec=180
 
 [Install]
 WantedBy=multi-user.target

@@ -13,7 +13,8 @@ Environment=PYTHONPATH=/home/eternaladmin/eternal-production-v4/backend
 # Kill switch tetap dari EnvironmentFile; unit ini hanya memilih job.
 ExecStart=/home/eternaladmin/eternal-production-v4/scripts/vps_accurate_job_flock.sh po
 Nice=10
-TimeoutStartSec=240
+# > flock -w 60 + worker timeout 50s + margin startup/stop (~40s) → 180
+TimeoutStartSec=180
 
 [Install]
 WantedBy=multi-user.target
