@@ -1,4 +1,4 @@
-"""Negative + positive object-scope authorization (isolated Mongo only)."""
+"""Owner business contract — object auth / ops.full / payment bypass (isolated Mongo)."""
 
 from __future__ import annotations
 
@@ -17,7 +17,7 @@ from app.services import production_service as prod
 from app.services import scheduling_service
 from app.services.audit_log import ensure_audit_indexes, list_audit_events
 from app.services.object_auth import ObjectAuthError, assert_branch_access
-from app.services.task_engine import can_act
+from app.services.task_engine import can_act, can_approve_payment_bypass
 from tests.po_accept_helpers import mark_po_accepted
 from tests.sample_flow_helpers import draft_and_confirm
 
@@ -69,12 +69,17 @@ DRV_B = {
     "operational_role": "driver",
     "branch_ids": [BRANCH],
 }
-WAREHOUSE = {
-    "email_normalized": "gudang@eternal.local",
+OPS_FULL = {
+    "email_normalized": "opsfull@eternal.local",
     "role": "user",
-    "operational_role": "production-head",
-    "branch_ids": [BRANCH],
-    # Loading memakai grant pengiriman.confirm (custom Master / test).
+    "operational_role": "helper",
+    "effective_module_permissions": ["operations.full"],
+}
+ALL_BRANCHES_ONLY = {
+    "email_normalized": "allbr@eternal.local",
+    "role": "user",
+    "operational_role": "driver",
+    "effective_module_permissions": ["access.all_branches"],
 }
 SA = {"email_normalized": "owner@eternal.local", "role": "super_admin"}
 ADMIN = {
@@ -85,6 +90,11 @@ ADMIN = {
         "reports.view",
         "access.all_branches",
     ],
+}
+ADMIN_NO_OPS = {
+    "email_normalized": "admin.noops@eternal.local",
+    "role": "user",
+    "effective_module_permissions": ["reports.view", "access.all_branches"],
 }
 
 
@@ -100,7 +110,12 @@ def _seed(db: Database) -> dict:
         )
     master.seed_master_defaults(db)
     ensure_audit_indexes(db)
-    # KP/gudang boleh Loading tanpa menjadi kurir (grant eksplisit di Master).
+    master.set_role_actions(
+        db,
+        role="helper",
+        task_type="pengiriman",
+        actions=["view", "confirm", "cancel", "manage_evidence"],
+    )
     master.set_role_actions(
         db,
         role="production-head",
@@ -172,31 +187,21 @@ def _sj_payload(sj_id: str, line_id: str = "106319", qty: float = 10.0) -> dict:
 
 
 def _upsert_sj(db: Database, sj_id: str, **extra: object) -> dict:
-    note = deliveries.upsert_delivery_note(db, _sj_payload(sj_id))
+    deliveries.upsert_delivery_note(db, _sj_payload(sj_id))
     deliveries.delivery_notes_collection(db).update_one(
         {"accurate_sj_id": sj_id},
         {"$set": {"branch_code": BRANCH, **extra}},
     )
-    return deliveries.get_delivery_note(db, sj_id) or note
+    return deliveries.get_delivery_note(db, sj_id) or {}
 
 
-def test_p0_operator_b_denied_on_alloc_a(db: Database) -> None:
+def test_operator_with_confirm_may_process_other_operator_metadata(db: Database) -> None:
     _seed(db)
     alloc = _alloc(db, "opa@eternal.local", 80)
     _prep_screen(db, alloc, 80)
-    with pytest.raises(ObjectAuthError):
-        prod.upload_sample_draft(
-            db,
-            OP_B,
-            allocation_id=alloc,
-            filename="x.png",
-            content_type="image/png",
-            content=PNG,
-        )
-    # Positive: owner of allocation
     up = prod.upload_sample_draft(
         db,
-        OP_A,
+        OP_B,
         allocation_id=alloc,
         filename="ok.png",
         content_type="image/png",
@@ -205,145 +210,63 @@ def test_p0_operator_b_denied_on_alloc_a(db: Database) -> None:
     assert up["sample"]["version"] == 1
 
 
-def test_p0_operator_b_denied_print_on_alloc_a(db: Database) -> None:
+def test_loading_does_not_stamp_driver(db: Database) -> None:
     _seed(db)
-    alloc = _alloc(db, "opa@eternal.local", 90)
-    _prep_screen(db, alloc, 90)
-    draft_and_confirm(db, OP_A, alloc)
-    prod.decide_sample(
-        db, HEAD, allocation_id=alloc, version=1, approved=True
-    )
-    with pytest.raises(ObjectAuthError):
-        prod.confirm_print(
-            db,
-            OP_B,
-            allocation_id=alloc,
-            qty=10,
-            idempotency_key="print-b-denied",
-        )
-    ok = prod.confirm_print(
-        db,
-        OP_A,
-        allocation_id=alloc,
-        qty=10,
-        idempotency_key="print-a-ok",
-    )
-    assert ok["duplicate"] is False
-
-
-def test_p0_driver_b_denied_on_sj_of_driver_a(db: Database) -> None:
-    _seed(db)
-    sj_id = "SJ-OBJ-D1"
+    sj_id = "SJ-OBJ-LOAD"
     _upsert_sj(db, sj_id)
     delivery.confirm_loading(
-        db, DRV_A, accurate_sj_id=sj_id, idempotency_key="load-d1"
+        db, HELPER, accurate_sj_id=sj_id, idempotency_key="load-helper-1"
     )
     note = deliveries.get_delivery_note(db, sj_id)
-    assert note.get("assigned_driver_email") == "drva@eternal.local"
-    with pytest.raises(ObjectAuthError):
-        delivery.confirm_delivery_success(
-            db,
-            DRV_B,
-            accurate_sj_id=sj_id,
-            recipient_name="X",
-            photos=[("a.jpg", "image/jpeg", JPG), ("b.jpg", "image/jpeg", JPG)],
-            signature=("s.png", "image/png", PNG),
-        )
+    loading = deliveries.get_loading_event(db, sj_id)
+    assert loading["actor_email"] == "helper@eternal.local"
+    assert not (note.get("assigned_driver_email") or note.get("driver_email"))
+    audits = list_audit_events(db, action="delivery.loading.confirm", limit=5)["items"]
+    assert audits[0]["detail"]["loading_actor_email"] == "helper@eternal.local"
+
+
+def test_any_eligible_courier_confirms_without_assignment(db: Database) -> None:
+    _seed(db)
+    sj_id = "SJ-OBJ-NO-ASSIGN"
+    _upsert_sj(db, sj_id)
+    delivery.confirm_loading(
+        db, HELPER, accurate_sj_id=sj_id, idempotency_key="load-na-1"
+    )
+    deliveries.delivery_notes_collection(db).update_one(
+        {"accurate_sj_id": sj_id},
+        {"$set": {"assigned_driver_email": "someone.else@eternal.local"}},
+    )
     event = delivery.confirm_delivery_success(
         db,
-        DRV_A,
+        DRV_B,
         accurate_sj_id=sj_id,
         recipient_name="Penerima",
         photos=[("a.jpg", "image/jpeg", JPG), ("b.jpg", "image/jpeg", JPG)],
         signature=("s.png", "image/png", PNG),
     )
     assert event.get("status") == deliveries.DELIVERY_SUCCESS
+    assert event.get("courier_email") == "drvb@eternal.local"
 
 
-def test_loading_warehouse_preserves_assigned_driver(db: Database) -> None:
-    """Loading oleh KP/gudang; pengiriman oleh kurir yang sudah ditugaskan."""
+def test_courier_without_permission_denied(db: Database) -> None:
     _seed(db)
-    sj_id = "SJ-OBJ-WH"
-    _upsert_sj(db, sj_id, assigned_driver_email="drva@eternal.local")
-    delivery.confirm_loading(
-        db, WAREHOUSE, accurate_sj_id=sj_id, idempotency_key="load-wh-1"
-    )
-    note = deliveries.get_delivery_note(db, sj_id)
-    loading = deliveries.get_loading_event(db, sj_id)
-    assert loading["actor_email"] == "gudang@eternal.local"
-    assert note.get("assigned_driver_email") == "drva@eternal.local"
-    assert note.get("assigned_driver_email") != loading["actor_email"]
-
-    with pytest.raises(ObjectAuthError):
-        delivery.confirm_delivery_success(
-            db,
-            DRV_B,
-            accurate_sj_id=sj_id,
-            recipient_name="X",
-            photos=[("a.jpg", "image/jpeg", JPG), ("b.jpg", "image/jpeg", JPG)],
-            signature=("s.png", "image/png", PNG),
-        )
-    ok = delivery.confirm_delivery_success(
-        db,
-        DRV_A,
-        accurate_sj_id=sj_id,
-        recipient_name="Penerima",
-        photos=[("a.jpg", "image/jpeg", JPG), ("b.jpg", "image/jpeg", JPG)],
-        signature=("s.png", "image/png", PNG),
-    )
-    assert ok.get("status") == deliveries.DELIVERY_SUCCESS
-
-    audits = list_audit_events(db, action="delivery.loading.confirm", limit=5)["items"]
-    assert audits
-    detail = audits[0].get("detail") or {}
-    assert detail.get("loading_actor_email") == "gudang@eternal.local"
-    assert detail.get("assigned_driver_email") == "drva@eternal.local"
-    assert detail.get("assignment_source") == "preserved"
-
-
-def test_loading_warehouse_explicit_assign_then_delivery(db: Database) -> None:
-    """Sumber otoritatif: assigned_driver_email eksplisit saat Loading (bukan aktor)."""
-    _seed(db)
-    sj_id = "SJ-OBJ-WH-REQ"
+    sj_id = "SJ-OBJ-NOP"
     _upsert_sj(db, sj_id)
     delivery.confirm_loading(
-        db,
-        WAREHOUSE,
-        accurate_sj_id=sj_id,
-        idempotency_key="load-wh-req",
-        assigned_driver_email="drva@eternal.local",
+        db, HELPER, accurate_sj_id=sj_id, idempotency_key="load-nop"
     )
-    note = deliveries.get_delivery_note(db, sj_id)
-    loading = deliveries.get_loading_event(db, sj_id)
-    assert loading["actor_email"] == "gudang@eternal.local"
-    assert note.get("assigned_driver_email") == "drva@eternal.local"
-    delivery.confirm_delivery_success(
-        db,
-        DRV_A,
-        accurate_sj_id=sj_id,
-        recipient_name="Penerima",
-        photos=[("a.jpg", "image/jpeg", JPG), ("b.jpg", "image/jpeg", JPG)],
-        signature=("s.png", "image/png", PNG),
-    )
+    from app.services.task_engine import TaskPermissionError
 
-
-def test_loading_warehouse_without_driver_does_not_invent_assignment(
-    db: Database,
-) -> None:
-    _seed(db)
-    sj_id = "SJ-OBJ-WH-NONE"
-    _upsert_sj(db, sj_id)
-    delivery.confirm_loading(
-        db, WAREHOUSE, accurate_sj_id=sj_id, idempotency_key="load-wh-none"
-    )
-    note = deliveries.get_delivery_note(db, sj_id)
-    loading = deliveries.get_loading_event(db, sj_id)
-    assert loading["actor_email"] == "gudang@eternal.local"
-    assert not (note.get("assigned_driver_email") or note.get("driver_email"))
-    with pytest.raises(ObjectAuthError):
+    bare = {
+        "email_normalized": "viewer@eternal.local",
+        "role": "user",
+        "operational_role": "designer",
+        "branch_ids": [BRANCH],
+    }
+    with pytest.raises(TaskPermissionError):
         delivery.confirm_delivery_success(
             db,
-            DRV_A,
+            bare,
             accurate_sj_id=sj_id,
             recipient_name="X",
             photos=[("a.jpg", "image/jpeg", JPG), ("b.jpg", "image/jpeg", JPG)],
@@ -351,101 +274,17 @@ def test_loading_warehouse_without_driver_does_not_invent_assignment(
         )
 
 
-def test_loading_does_not_overwrite_existing_driver(db: Database) -> None:
-    _seed(db)
-    sj_id = "SJ-OBJ-KEEP"
-    _upsert_sj(db, sj_id, assigned_driver_email="drva@eternal.local")
-    with pytest.raises(ObjectAuthError):
-        delivery.confirm_loading(
-            db,
-            WAREHOUSE,
-            accurate_sj_id=sj_id,
-            idempotency_key="load-overwrite-denied",
-            assigned_driver_email="drvb@eternal.local",
-        )
-    # Loading dengan request sama / tanpa request tetap preserve.
-    delivery.confirm_loading(
-        db, WAREHOUSE, accurate_sj_id=sj_id, idempotency_key="load-keep"
-    )
-    note = deliveries.get_delivery_note(db, sj_id)
-    assert note.get("assigned_driver_email") == "drva@eternal.local"
-
-
-def test_sj_revision_reload_keeps_driver_and_loading_actor_separate(
-    db: Database,
-) -> None:
-    _seed(db)
-    sj_id = "SJ-OBJ-REV"
-    _upsert_sj(db, sj_id, assigned_driver_email="drva@eternal.local")
-    delivery.confirm_loading(
-        db, WAREHOUSE, accurate_sj_id=sj_id, idempotency_key="load-rev-1"
-    )
-    delivery.cancel_loading(
-        db, WAREHOUSE, accurate_sj_id=sj_id, reason="revisi SJ opsi B"
-    )
-    note_mid = deliveries.get_delivery_note(db, sj_id)
-    assert note_mid.get("assigned_driver_email") == "drva@eternal.local"
-    delivery.confirm_loading(
-        db, WAREHOUSE, accurate_sj_id=sj_id, idempotency_key="load-rev-2"
-    )
-    note = deliveries.get_delivery_note(db, sj_id)
-    loading = deliveries.get_loading_event(db, sj_id)
-    assert note.get("assigned_driver_email") == "drva@eternal.local"
-    assert loading["actor_email"] == "gudang@eternal.local"
-    assert loading["sequence"] == 2
-
-
-def test_p0_cross_branch_mutate_denied(db: Database) -> None:
+def test_cross_branch_limited_user_denied(db: Database) -> None:
     _seed(db)
     db["accurate_sales_orders"].update_one(
         {"accurate_id": PO_ID}, {"$set": {"branch_code": "SMG"}}
-    )
-    helper_smg = {
-        **HELPER,
-        "branch_ids": ["SMG"],
-        "effective_module_permissions": [],
-    }
-    screener_smg = {
-        **SCREENER,
-        "branch_ids": ["SMG"],
-        "effective_module_permissions": [],
-    }
-    op_smg = {
-        **OP_A,
-        "branch_ids": ["SMG"],
-        "effective_module_permissions": [],
-    }
-    head_smg = {
-        **HEAD,
-        "branch_ids": ["SMG"],
-        "effective_module_permissions": [],
-    }
-    alloc = _alloc_for(db, head_smg, "opa@eternal.local", 70)
-    state = prod.helper_quota_state(
-        db, accurate_po_id=PO_ID, accurate_line_id=LINE
-    )
-    need = 70 - float(state.get("qty_available") or 0)
-    if need > 0:
-        prod.confirm_preparation(
-            db,
-            helper_smg,
-            accurate_po_id=PO_ID,
-            accurate_line_id=LINE,
-            qty=need,
-            idempotency_key="obj-prep-branch",
-        )
-    prod.confirm_screen(
-        db,
-        screener_smg,
-        allocation_id=alloc,
-        qty=10,
-        idempotency_key="obj-screen-branch",
     )
     jog = {
         **OP_A,
         "branch_ids": ["JOG"],
         "effective_module_permissions": [],
     }
+    alloc = _alloc(db, "opa@eternal.local", 50)
     with pytest.raises(ObjectAuthError):
         prod.upload_sample_draft(
             db,
@@ -455,31 +294,46 @@ def test_p0_cross_branch_mutate_denied(db: Database) -> None:
             content_type="image/png",
             content=PNG,
         )
+
+
+def test_ops_full_cross_branch_and_assignment(db: Database) -> None:
+    _seed(db)
+    # Prep under HQ, then move PO/SJ to foreign branches for ops.full checks.
+    alloc = _alloc(db, "opa@eternal.local", 55)
+    _prep_screen(db, alloc, 55)
+    db["accurate_sales_orders"].update_one(
+        {"accurate_id": PO_ID}, {"$set": {"branch_code": "SMG"}}
+    )
     up = prod.upload_sample_draft(
         db,
-        op_smg,
+        OPS_FULL,
         allocation_id=alloc,
-        filename="ok.png",
+        filename="ops.png",
         content_type="image/png",
         content=PNG,
     )
     assert up["sample"]["version"] == 1
 
-
-def _alloc_for(db: Database, head: dict, email: str, qty: float) -> str:
-    po = get_by_accurate_id(db, PO_ID)
-    created = scheduling_service.create_allocations(
-        db,
-        head,
-        po_doc=po,
-        accurate_line_id=LINE,
-        allocations=[{"operator_email": email, "qty": qty}],
-        idempotency_key=f"obj-alloc-br-{email}-{qty}",
+    sj_id = "SJ-OBJ-OPS"
+    _upsert_sj(db, sj_id)
+    deliveries.delivery_notes_collection(db).update_one(
+        {"accurate_sj_id": sj_id}, {"$set": {"branch_code": "JOG"}}
     )
-    return created["allocations"][0]["allocation_id"]
+    delivery.confirm_loading(
+        db, OPS_FULL, accurate_sj_id=sj_id, idempotency_key="load-ops"
+    )
+    ok = delivery.confirm_delivery_success(
+        db,
+        OPS_FULL,
+        accurate_sj_id=sj_id,
+        recipient_name="Ops",
+        photos=[("a.jpg", "image/jpeg", JPG), ("b.jpg", "image/jpeg", JPG)],
+        signature=("s.png", "image/png", PNG),
+    )
+    assert ok.get("status") == deliveries.DELIVERY_SUCCESS
 
 
-def test_p1_user_without_branch_ids_denied_even_on_legacy_object(db: Database) -> None:
+def test_empty_branch_ids_denied(db: Database) -> None:
     _seed(db)
     bare = {
         "email_normalized": "bare@eternal.local",
@@ -488,95 +342,103 @@ def test_p1_user_without_branch_ids_denied_even_on_legacy_object(db: Database) -
         "branch_ids": [],
     }
     with pytest.raises(ObjectAuthError):
-        assert_branch_access(bare, scope_object={})
-    with pytest.raises(ObjectAuthError):
         assert_branch_access(bare, scope_object={"branch_code": BRANCH})
-    # Objek tanpa branch_code juga ditolak untuk akun terbatas ber-branch.
-    scoped = {**OP_A}
     with pytest.raises(ObjectAuthError):
-        assert_branch_access(scoped, scope_object={})
+        assert_branch_access(bare, scope_object={})
 
 
-def test_p1_unassigned_driver_fail_closed(db: Database) -> None:
+def test_all_branches_does_not_grant_actions_or_bypass(db: Database) -> None:
     _seed(db)
-    sj_id = "SJ-OBJ-UNASSIGNED"
-    _upsert_sj(db, sj_id)
-    deliveries.insert_loading_event(
-        db,
-        accurate_sj_id=sj_id,
-        accurate_po_id=PO_ID,
-        sj_no=f"SJ/{sj_id}",
-        items=[
-            {
-                "sj_line_id": f"{sj_id}-L1",
-                "accurate_line_id": "106319",
-                "item_code": "BRG",
-                "qty": 10,
-                "unit": "PCS",
-                "process_kind": "Non-Cetak",
-            }
-        ],
-        actor_email="warehouse@eternal.local",
-        idempotency_key="orphan-load",
-        sj_version=1,
-        sequence=1,
-    )
-    with pytest.raises(ObjectAuthError):
-        delivery.confirm_delivery_success(
-            db,
-            DRV_A,
-            accurate_sj_id=sj_id,
-            recipient_name="X",
-            photos=[("a.jpg", "image/jpeg", JPG), ("b.jpg", "image/jpeg", JPG)],
-            signature=("s.png", "image/png", PNG),
+    assert can_act(db, ALL_BRANCHES_ONLY, task_type="cetak", action="confirm") is False
+    assert can_approve_payment_bypass(db, ALL_BRANCHES_ONLY) is False
+    with pytest.raises(payment_service.PaymentPermissionError):
+        payment_service.bypass_payment_gate(
+            db, ALL_BRANCHES_ONLY, accurate_po_id=PO_ID, reason="no"
         )
 
 
-def test_p1_all_branches_does_not_grant_actions(db: Database) -> None:
+def test_ops_full_payment_bypass_pass(db: Database) -> None:
     _seed(db)
-    assert can_act(db, ADMIN, task_type="cetak", action="confirm") is False
-    assert can_act(db, ADMIN, task_type="pengiriman", action="confirm") is False
-
-
-def test_p1_04_super_admin_bypass_payment(db: Database) -> None:
-    _seed(db)
+    assert can_approve_payment_bypass(db, OPS_FULL) is True
     doc = payment_service.bypass_payment_gate(
-        db, SA, accurate_po_id=PO_ID, reason="Owner uji bypass"
+        db, OPS_FULL, accurate_po_id=PO_ID, reason="Owner uji ops.full bypass"
     )
     payment = gates.get_gates(db, PO_ID)["payment"]
     assert payment["state"] == gates.GATE_OPEN
-    assert (payment.get("detail") or doc.get("detail") or {}).get("bypass") is True or (
-        "Bypass Payment" in str(payment.get("reason") or "")
+    assert doc.get("detail", {}).get("bypass") is True or "Bypass" in str(
+        payment.get("reason") or ""
     )
 
+
+def test_admin_with_ops_full_bypass_pass(db: Database) -> None:
+    _seed(db)
+    payment_service.bypass_payment_gate(
+        db, ADMIN, accurate_po_id=PO_ID, reason="Admin ops.full"
+    )
+    assert gates.get_gates(db, PO_ID)["payment"]["state"] == gates.GATE_OPEN
+
+
+def test_super_admin_bypass_via_effective_ops_full(db: Database) -> None:
+    _seed(db)
+    assert can_approve_payment_bypass(db, SA) is True
+    payment_service.bypass_payment_gate(
+        db, SA, accurate_po_id=PO_ID, reason="SA via ops.full"
+    )
+
+
+def test_bypass_denied_without_grant_or_ops_full(db: Database) -> None:
+    _seed(db)
+    with pytest.raises(payment_service.PaymentPermissionError):
+        payment_service.bypass_payment_gate(
+            db, ADMIN_NO_OPS, accurate_po_id=PO_ID, reason="no grant"
+        )
+
+
+def test_bypass_denied_unaccepted_po(db: Database) -> None:
+    _seed(db)
     db["accurate_sales_orders"].update_one(
         {"accurate_id": PO_ID},
         {"$set": {"operational.acceptance.status": "pending"}},
     )
     with pytest.raises(payment_service.PaymentPermissionError):
         payment_service.bypass_payment_gate(
-            db, SA, accurate_po_id=PO_ID, reason="harus ditolak"
+            db, OPS_FULL, accurate_po_id=PO_ID, reason="too early"
         )
 
 
-def test_admin_without_bypass_grant_denied(db: Database) -> None:
+def test_bypass_denied_empty_reason(db: Database) -> None:
     _seed(db)
-    with pytest.raises(payment_service.PaymentPermissionError):
+    with pytest.raises(ValueError):
         payment_service.bypass_payment_gate(
-            db, ADMIN, accurate_po_id=PO_ID, reason="admin no grant"
+            db, OPS_FULL, accurate_po_id=PO_ID, reason="   "
         )
 
 
-def test_super_admin_cross_assignment_allowed(db: Database) -> None:
+def test_explicit_master_payment_bypass_grant(db: Database) -> None:
     _seed(db)
-    alloc = _alloc(db, "opa@eternal.local", 60)
-    _prep_screen(db, alloc, 60)
-    up = prod.upload_sample_draft(
+    master.set_role_actions(
         db,
-        SA,
-        allocation_id=alloc,
-        filename="sa.png",
-        content_type="image/png",
-        content=PNG,
+        role="production-head",
+        task_type="payment-bypass",
+        actions=["approve"],
     )
-    assert up["sample"]["version"] == 1
+    assert can_approve_payment_bypass(db, HEAD) is True
+    payment_service.bypass_payment_gate(
+        db, HEAD, accurate_po_id=PO_ID, reason="Master grant KP"
+    )
+
+
+def test_print_with_other_operator_metadata_and_gates(db: Database) -> None:
+    _seed(db)
+    alloc = _alloc(db, "opa@eternal.local", 90)
+    _prep_screen(db, alloc, 90)
+    draft_and_confirm(db, OP_A, alloc)
+    prod.decide_sample(db, HEAD, allocation_id=alloc, version=1, approved=True)
+    ok = prod.confirm_print(
+        db,
+        OP_B,
+        allocation_id=alloc,
+        qty=10,
+        idempotency_key="print-cross-op",
+    )
+    assert ok["duplicate"] is False

@@ -76,10 +76,12 @@ def _assert_alloc_mutate(
     *,
     allow_approver: bool = False,
 ) -> dict[str, Any]:
-    """Assignment + cabang sebelum mutasi alokasi (sample/print)."""
+    """Cabang sebelum mutasi alokasi — assignment metadata bukan gate (Owner)."""
     from app.repositories.po_repository import get_by_accurate_id
     from app.services.object_auth import object_branch_code
 
+    _ = allow_approver
+    # Keep call for API compatibility; assert_operator_assignment is a no-op.
     assert_operator_assignment(
         db, user, allocation=alloc, allow_approver=allow_approver
     )

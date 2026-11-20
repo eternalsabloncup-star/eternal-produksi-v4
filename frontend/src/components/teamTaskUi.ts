@@ -128,15 +128,10 @@ export function allowTaskAction(
   return actions.includes(opts.action);
 }
 
-const ALLOC_SCOPED = new Set([
-  "screen",
-  "konfirmasi-sample",
-  "cetak",
-]);
-
 /**
- * Filter presentasional selaras backend object-scope (bukan sumber kebenaran).
- * Backend tetap memfilter ulang.
+ * Filter presentasional selaras backend (Owner: assignment bukan gate).
+ * Backend tetap memfilter ulang by branch + Master action.
+ * ``operationsFull`` / Super Admin melihat semua tugas yang sudah di-fetch.
  */
 export function filterTasksForActor(
   tasks: OperationalTask[],
@@ -144,29 +139,13 @@ export function filterTasksForActor(
     isSuperAdmin: boolean;
     actorEmail: string | null | undefined;
     operationalRole: string | null | undefined;
+    operationsFull?: boolean;
   },
 ): OperationalTask[] {
-  if (opts.isSuperAdmin) return tasks;
-  const actor = (opts.actorEmail || "").trim().toLowerCase();
-  if (!actor) return tasks;
-  const role = (opts.operationalRole || "").trim().toLowerCase();
-  return tasks.filter((t) => {
-    const ctx = t.context || {};
-    if (ALLOC_SCOPED.has(t.task_type) && role === "operator") {
-      const op = String(ctx.operator_email || "").trim().toLowerCase();
-      // Fail-closed selaras backend: assignment kosong ≠ milik aktor.
-      return Boolean(op) && op === actor;
-    }
-    if (t.task_type === "pengiriman" && role === "driver") {
-      const drv = String(
-        ctx.assigned_driver_email || ctx.driver_email || "",
-      )
-        .trim()
-        .toLowerCase();
-      return Boolean(drv) && drv === actor;
-    }
-    return true;
-  });
+  if (opts.isSuperAdmin || opts.operationsFull) return tasks;
+  // Assignment metadata does not hide permitted tasks (Owner contract).
+  // Branch filtering is enforced by backend list_tasks.
+  return tasks;
 }
 
 /** Eligibility tombol Ubah Qty — dari kontrak backend, bukan status tampilan. */

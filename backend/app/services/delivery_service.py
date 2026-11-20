@@ -16,11 +16,8 @@ from app.repositories.po_repository import get_by_accurate_id
 from app.services import production_service as production
 from app.services.audit_log import append_audit_event
 from app.services.object_auth import (
-    ObjectAuthError,
     actor_email,
     assert_branch_access,
-    assert_driver_assignment,
-    resolve_loading_driver_assignment,
 )
 from app.services.task_engine import require_action
 
@@ -252,12 +249,13 @@ def confirm_loading(
     idempotency_key: str,
     assigned_driver_email: str | None = None,
 ) -> dict[str, Any]:
-    """Satu aksi Loading untuk seluruh item SJ — Qty QC + Loading + Driver + audit atomik.
+    """Satu aksi Loading untuk seluruh item SJ — Qty QC + Loading + audit atomik.
 
-    Aktor Loading ≠ assignment kurir. Assignment hanya dari:
-    assignment yang sudah ada, ``assigned_driver_email`` eksplisit, atau
-    self-claim kurir (operational_role=driver) bila masih kosong.
+    Owner: Loading actor is NOT the courier. Do not stamp driver assignment.
+    ``assigned_driver_email`` is accepted for API compatibility but ignored
+    (no mandatory courier selection).
     """
+    _ = assigned_driver_email
     require_action(db, user, task_type=DRIVER_TASK, action="confirm")
     assigned_role = _prepare_delivery_txn(db)
 
@@ -290,12 +288,6 @@ def confirm_loading(
         raise LookupError(f"Surat Jalan tidak ditemukan: {accurate_sj_id}")
     assert_branch_access(user, scope_object=note)
     actor = actor_email(user) or str(user.get("email_normalized") or "")
-    try:
-        driver_assigned, assign_source = resolve_loading_driver_assignment(
-            user, note, requested_driver_email=assigned_driver_email
-        )
-    except ObjectAuthError:
-        raise
     sequence = deliveries.next_loading_sequence(db, accurate_sj_id)
 
     def _operation(session: Any) -> dict[str, Any]:
@@ -372,28 +364,10 @@ def confirm_loading(
                 reason="Surat Jalan direvisi selama konfirmasi Loading.",
                 session=session,
             )
-        # Loading actor ≠ kurir. Jangan timpa assignment valid; jangan invent dari gudang/KP.
-        note_assigned = dict(note)
-        if driver_assigned and assign_source in ("requested", "driver_self_claim"):
-            deliveries.delivery_notes_collection(db).update_one(
-                {"accurate_sj_id": str(accurate_sj_id)},
-                {
-                    "$set": {
-                        "assigned_driver_email": driver_assigned,
-                        "driver_email": driver_assigned,
-                    }
-                },
-                session=session,
-            )
-            note_assigned["assigned_driver_email"] = driver_assigned
-            note_assigned["driver_email"] = driver_assigned
-        elif driver_assigned:
-            note_assigned["assigned_driver_email"] = driver_assigned
-            note_assigned["driver_email"] = (
-                note_assigned.get("driver_email") or driver_assigned
-            )
+        # Owner: never stamp courier from Loading actor; leave historical metadata as-is.
+        note_for_task = dict(note)
         driver_task = _ensure_driver_task(
-            db, note_assigned, loading, assigned_role=assigned_role, session=session
+            db, note_for_task, loading, assigned_role=assigned_role, session=session
         )
         append_audit_event(
             db,
@@ -402,12 +376,10 @@ def confirm_loading(
             target_email=None,
             detail={
                 "accurate_sj_id": accurate_sj_id,
-                "sj_no": note_assigned["sj_no"],
+                "sj_no": note_for_task["sj_no"],
                 "loading_id": loading["loading_id"],
                 "sj_version": loading.get("sj_version"),
                 "loading_actor_email": actor,
-                "assigned_driver_email": driver_assigned,
-                "assignment_source": assign_source,
                 "item_count": len(loading["items"]),
                 "qty_by_line": [
                     {
@@ -792,7 +764,6 @@ def confirm_delivery_success(
     if note is None:
         raise LookupError(f"Surat Jalan tidak ditemukan: {accurate_sj_id}")
     assert_branch_access(user, scope_object=note)
-    assert_driver_assignment(db, user, note=note, allow_coordinator=False)
     _require_active_loading(db, accurate_sj_id)
     if len(photos) < MIN_DELIVERY_PHOTOS:
         raise DeliveryEvidenceError(
@@ -1000,7 +971,6 @@ def confirm_delivery_failure(
     if note is None:
         raise LookupError(f"Surat Jalan tidak ditemukan: {accurate_sj_id}")
     assert_branch_access(user, scope_object=note)
-    assert_driver_assignment(db, user, note=note, allow_coordinator=False)
     _require_active_loading(db, accurate_sj_id)
 
     # Fail-closed sebelum mutasi: tidak seed Master, tidak createIndex.
@@ -1080,7 +1050,6 @@ def soft_delete_delivery_evidence(
     if sj_id:
         note = deliveries.get_delivery_note(db, sj_id) or {"accurate_sj_id": sj_id}
         assert_branch_access(user, scope_object=note)
-        assert_driver_assignment(db, user, note=note, allow_coordinator=True)
     doc = evidence.soft_delete_evidence(
         db,
         evidence_id=evidence_id,

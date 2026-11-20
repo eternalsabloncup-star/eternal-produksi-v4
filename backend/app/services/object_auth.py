@@ -1,13 +1,14 @@
 """Object-level authorization — satu kontrak untuk mutasi & evidence.
 
-Elevated access (eksplisit):
-- Super Admin: bypass branch + assignment (tetap ikut gate/bisnis).
-- access.all_branches: bypass branch saja — bukan action/assignment.
-- operations.full: modul operasi (accept PO, sync, dll.) — BUKAN bypass
-  assignment/cabang pada objek tugas.
-
-Akun terbatas: fail-closed bila cabang objek tidak terbukti atau assignment
-otoritatif kosong/tidak cocok.
+Owner contract (PR #18):
+- Master Permission (task action) is the authority for actions.
+- ``operations.full`` = full operational access across all branches;
+  bypasses operational assignment restrictions; does NOT grant user/role/
+  settings admin. Payment bypass: YES (operations.full OR explicit grant).
+- ``access.all_branches`` = cross-branch only; still needs action grants.
+- Assignment metadata (operator_email / assigned_driver_email) is NOT an
+  authorization gate — audit records the actual actor.
+- Empty ``branch_ids`` = DENIED for branch-scoped resources unless elevated.
 """
 
 from __future__ import annotations
@@ -16,14 +17,17 @@ from typing import Any, Final
 
 from pymongo.database import Database
 
-from app.auth.permissions import PERM_ACCESS_ALL_BRANCHES, has_permission
+from app.auth.permissions import (
+    PERM_ACCESS_ALL_BRANCHES,
+    PERM_OPERATIONS_FULL,
+    has_permission,
+)
 from app.auth.roles import is_super_admin
 from app.models.user import normalize_email
-from app.services.task_engine import can_act
 
 
 class ObjectAuthError(PermissionError):
-    """Aktor tidak berizin pada cakupan objek (cabang/assignment)."""
+    """Aktor tidak berizin pada cakupan objek (cabang)."""
 
     def __init__(self, message: str = "Akses objek ditolak.") -> None:
         super().__init__(message)
@@ -61,21 +65,29 @@ def object_branch_code(obj: dict[str, Any] | None) -> str | None:
         if code is not None and str(code).strip():
             return str(code).strip().upper()
     elif branch is not None and str(branch).strip() and not str(branch).strip().startswith("{"):
-        # String kode cabang — bukan nama bebas.
         text = str(branch).strip()
         if len(text) <= 16 and " " not in text:
             return text.upper()
     return None
 
 
+def has_operations_full(user: dict[str, Any]) -> bool:
+    """Effective ``operations.full`` from session user — never trust client body."""
+    return has_permission(user, PERM_OPERATIONS_FULL)
+
+
 def bypasses_assignment(user: dict[str, Any]) -> bool:
-    """Hanya Super Admin yang melewati pembatasan assignment objek."""
-    return is_super_admin(user.get("role"))
+    """Assignment metadata is not an auth gate; kept for elevated evidence paths."""
+    if is_super_admin(user.get("role")):
+        return True
+    return has_operations_full(user)
 
 
 def bypasses_branch(user: dict[str, Any]) -> bool:
-    """Super Admin atau grant access.all_branches — bukan operations.full."""
+    """Super Admin, operations.full, or access.all_branches."""
     if is_super_admin(user.get("role")):
+        return True
+    if has_operations_full(user):
         return True
     return has_permission(user, PERM_ACCESS_ALL_BRANCHES)
 
@@ -85,12 +97,7 @@ def assert_branch_access(
     *,
     scope_object: dict[str, Any] | None,
 ) -> None:
-    """Fail-closed: butuh Super Admin / access.all_branches / cabang cocok.
-
-    Akun tanpa ``branch_ids`` tidak mendapat akses otomatis ke objek legacy
-    tanpa ``branch_code``. Owner harus mengisi cabang akun atau memberi
-    ``access.all_branches`` secara eksplisit.
-    """
+    """Fail-closed for limited accounts; elevated ops skip branch enumeration."""
     if bypasses_branch(user):
         return
     branches = user_branch_ids(user)
@@ -110,47 +117,12 @@ def assert_branch_access(
 
 
 def authoritative_driver_email(note: dict[str, Any] | None) -> str:
+    """Historical metadata only — not an authorization gate."""
     if not isinstance(note, dict):
         return ""
     return normalize_email(
         str(note.get("assigned_driver_email") or note.get("driver_email") or "")
     )
-
-
-def resolve_loading_driver_assignment(
-    user: dict[str, Any],
-    note: dict[str, Any],
-    *,
-    requested_driver_email: str | None = None,
-) -> tuple[str | None, str]:
-    """Pisahkan aktor Loading dari assignment kurir.
-
-    Returns ``(assigned_email_or_none, source)`` where source is one of:
-    ``preserved`` | ``requested`` | ``driver_self_claim`` | ``none``.
-
-    - Tidak menimpa assignment kurir yang sudah valid.
-    - Tidak membuat assignment palsu dari aktor gudang/KP.
-    - Kurir (operational_role=driver) boleh self-claim hanya jika kosong.
-    - ``requested_driver_email`` eksplisit hanya dipakai jika assignment kosong.
-    """
-    existing = authoritative_driver_email(note)
-    if existing:
-        requested = normalize_email(str(requested_driver_email or ""))
-        if requested and requested != existing:
-            raise ObjectAuthError(
-                "Assignment kurir sudah ada dan tidak boleh ditimpa saat Loading."
-            )
-        return existing, "preserved"
-
-    requested = normalize_email(str(requested_driver_email or ""))
-    if requested:
-        return requested, "requested"
-
-    actor = actor_email(user)
-    role = str(user.get("operational_role") or "").strip().lower()
-    if actor and role == "driver":
-        return actor, "driver_self_claim"
-    return None, "none"
 
 
 def assert_operator_assignment(
@@ -160,25 +132,9 @@ def assert_operator_assignment(
     allocation: dict[str, Any],
     allow_approver: bool = False,
 ) -> None:
-    """Operator hanya alokasi miliknya; approver KP boleh melihat/approve."""
-    if bypasses_assignment(user):
-        return
-    if allow_approver and (
-        can_act(db, user, task_type="approval-sampel", action="view")
-        or can_act(db, user, task_type="approval-sampel", action="approve")
-    ):
-        return
-    # production-head dengan penjadwalan boleh mengelola alokasi (bukan cetak/sample).
-    assigned = normalize_email(str(allocation.get("operator_email") or ""))
-    actor = actor_email(user)
-    if not assigned:
-        raise ObjectAuthError(
-            "Alokasi tanpa assignment operator otoritatif — akses ditolak."
-        )
-    if not actor or actor != assigned:
-        raise ObjectAuthError(
-            "Alokasi di luar assignment operator Anda."
-        )
+    """No-op: Owner contract — task action + branch authorize; not operator_email."""
+    _ = (db, user, allocation, allow_approver)
+    return
 
 
 def assert_driver_assignment(
@@ -188,31 +144,9 @@ def assert_driver_assignment(
     note: dict[str, Any],
     allow_coordinator: bool = False,
 ) -> None:
-    if bypasses_assignment(user):
-        return
-    if allow_coordinator and (
-        can_act(db, user, task_type="pengiriman-gagal-koordinasi", action="view")
-        or can_act(db, user, task_type="pengiriman-gagal-koordinasi", action="confirm")
-        or can_act(db, user, task_type="qty-loading-sj-berbeda", action="view")
-        or can_act(db, user, task_type="qty-loading-sj-berbeda", action="confirm")
-    ):
-        return
-    driver = normalize_email(
-        str(
-            note.get("assigned_driver_email")
-            or note.get("driver_email")
-            or ""
-        )
-    )
-    actor = actor_email(user)
-    if not driver:
-        raise ObjectAuthError(
-            "Surat Jalan tanpa assignment kurir otoritatif — akses ditolak."
-        )
-    if not actor or actor != driver:
-        raise ObjectAuthError(
-            "Surat Jalan di luar assignment kurir Anda."
-        )
+    """No-op: Owner contract — no mandatory/exclusive courier assignment."""
+    _ = (db, user, note, allow_coordinator)
+    return
 
 
 ALLOCATION_SCOPED_TASKS: Final[frozenset[str]] = frozenset(
@@ -237,25 +171,18 @@ def filter_tasks_for_actor(
     user: dict[str, Any],
     items: list[dict[str, Any]],
 ) -> list[dict[str, Any]]:
-    """Saring daftar tugas sesuai assignment/cabang — Super Admin melihat semua."""
-    if is_super_admin(user.get("role")):
+    """Filter by branch only — assignment metadata does not hide permitted tasks."""
+    if is_super_admin(user.get("role")) or has_operations_full(user):
         return items
-    from app.repositories import schedule_repository as schedules
-    from app.repositories.po_repository import get_by_accurate_id
     from app.repositories import delivery_repository as deliveries
+    from app.repositories.po_repository import get_by_accurate_id
 
     out: list[dict[str, Any]] = []
-    actor = actor_email(user)
     all_branches = bypasses_branch(user)
-    user_branches = user_branch_ids(user)
 
     for task in items:
-        tt = str(task.get("task_type") or "")
-        ref = task.get("ref") if isinstance(task.get("ref"), dict) else {}
-        ctx = task.get("context") if isinstance(task.get("context"), dict) else {}
-
-        # Branch filter via PO / SJ when codes exist.
         if not all_branches:
+            ref = task.get("ref") if isinstance(task.get("ref"), dict) else {}
             scope_obj: dict[str, Any] | None = None
             sj_id = ref.get("accurate_delivery_note_id")
             po_id = ref.get("accurate_po_id")
@@ -267,42 +194,6 @@ def filter_tasks_for_actor(
                 assert_branch_access(user, scope_object=scope_obj)
             except ObjectAuthError:
                 continue
-
-        if tt in ALLOCATION_SCOPED_TASKS and not bypasses_assignment(user):
-            # Approver melihat approval-sampel semua cabang yang diizinkan.
-            if tt == "approval-sampel" and (
-                can_act(db, user, task_type="approval-sampel", action="view")
-                or can_act(db, user, task_type="approval-sampel", action="approve")
-            ):
-                out.append(task)
-                continue
-            alloc_id = ref.get("allocation_id")
-            op = normalize_email(str(ctx.get("operator_email") or ""))
-            if alloc_id and not op:
-                alloc = schedules.get_allocation(db, str(alloc_id)) or {}
-                op = normalize_email(str(alloc.get("operator_email") or ""))
-            if not op or op != actor:
-                continue
-
-        if tt == "pengiriman" and not bypasses_assignment(user):
-            drv = normalize_email(
-                str(ctx.get("assigned_driver_email") or ctx.get("driver_email") or "")
-            )
-            if not drv:
-                sj_id = ref.get("accurate_delivery_note_id")
-                note = (
-                    deliveries.get_delivery_note(db, str(sj_id)) if sj_id else None
-                ) or {}
-                drv = normalize_email(
-                    str(
-                        note.get("assigned_driver_email")
-                        or note.get("driver_email")
-                        or ""
-                    )
-                )
-            if not drv or drv != actor:
-                continue
-
         out.append(task)
     return out
 
@@ -325,7 +216,6 @@ def resolve_scope_object_for_task(
     if tt in ALLOCATION_SCOPED_TASKS:
         alloc_id = ref.get("allocation_id")
         alloc = schedules.get_allocation(db, str(alloc_id)) if alloc_id else None
-        # Preferensi: PO (sumber cabang) → alokasi bertema branch_code → alloc mentah.
         if po_doc and object_branch_code(po_doc):
             return po_doc
         if alloc and object_branch_code(alloc):

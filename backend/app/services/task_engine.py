@@ -6,6 +6,11 @@ from typing import Any
 
 from pymongo.database import Database
 
+from app.auth.permissions import (
+    PERM_BYPASS_PAYMENT,
+    PERM_OPERATIONS_FULL,
+    has_permission,
+)
 from app.auth.roles import is_super_admin
 from app.domain.operational import normalize_operational_role
 from app.repositories import master_repository as master
@@ -20,40 +25,40 @@ class TaskPermissionError(PermissionError):
 def _assert_task_object_scope(
     db: Database, user: dict[str, Any], task: dict[str, Any]
 ) -> None:
-    """Cabang + assignment sebelum konfirmasi generik ``/api/tasks/.../confirm``."""
+    """Cabang sebelum konfirmasi generik — assignment metadata bukan gate."""
     from app.services.object_auth import (
         assert_branch_access,
-        assert_driver_assignment,
-        assert_operator_assignment,
         resolve_scope_object_for_task,
     )
-    from app.repositories import schedule_repository as schedules
 
-    tt = str(task.get("task_type") or "")
     scope = resolve_scope_object_for_task(db, task)
     assert_branch_access(user, scope_object=scope)
-
-    ref = task.get("ref") if isinstance(task.get("ref"), dict) else {}
-    # Screen dikerjakan screener (bukan operator assignment).
-    # Sample/cetak: wajib assignment operator.
-    if tt in {"konfirmasi-sample", "cetak"}:
-        alloc_id = ref.get("allocation_id")
-        alloc = schedules.get_allocation(db, str(alloc_id)) if alloc_id else None
-        if alloc is None:
-            raise TaskPermissionError(
-                "Alokasi tugas tidak ditemukan — akses ditolak."
-            )
-        assert_operator_assignment(db, user, allocation=alloc)
-    elif tt == "pengiriman":
-        if scope is None:
-            raise TaskPermissionError(
-                "Surat Jalan tugas tidak ditemukan — akses ditolak."
-            )
-        assert_driver_assignment(db, user, note=scope)
 
 
 def actor_operational_role(user: dict[str, Any]) -> str | None:
     return normalize_operational_role(user.get("operational_role"))
+
+
+def can_approve_payment_bypass(db: Database, user: dict[str, Any]) -> bool:
+    """Canonical Payment Bypass policy (Owner):
+
+    Allow when effective ``operations.full`` OR ``payment.bypass`` module
+    permission OR Master ``payment-bypass``/approve.
+
+    Super Admin follows this policy via effective permissions (SA has
+    ``operations.full`` through ``has_permission``) — no separate can_act
+    shortcut for this sensitive action.
+    """
+    if has_permission(user, PERM_OPERATIONS_FULL):
+        return True
+    if has_permission(user, PERM_BYPASS_PAYMENT):
+        return True
+    role = actor_operational_role(user)
+    if role is None:
+        return False
+    return master.role_can(
+        db, role=role, task_type="payment-bypass", action="approve"
+    )
 
 
 def can_act(
@@ -64,7 +69,13 @@ def can_act(
     action: str,
 ) -> bool:
     """Izin diperiksa backend, bukan sekadar tombol tersembunyi di UI."""
+    if task_type == "payment-bypass":
+        return action == "approve" and can_approve_payment_bypass(db, user)
+
     if is_super_admin(user.get("role")):
+        return True
+    # Owner: operations.full = full operational task authority.
+    if has_permission(user, PERM_OPERATIONS_FULL):
         return True
     role = actor_operational_role(user)
     if role is None:

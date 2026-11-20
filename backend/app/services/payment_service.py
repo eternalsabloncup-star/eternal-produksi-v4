@@ -169,10 +169,10 @@ def bypass_payment_gate(
     accurate_po_id: str,
     reason: str,
 ) -> dict[str, Any]:
-    """Bypass mengikuti grant Master ``payment-bypass`` / approve — selalu teraudit.
+    """Canonical Payment Bypass: ``operations.full`` OR explicit bypass grant.
 
-    Super Admin lolos via task_engine.can_act. Role lain hanya jika Master
-    memberikan aksi approve pada jenis pekerjaan payment-bypass.
+    Does NOT auto-open the gate on permission grant — actor must call this
+    with accepted PO + mandatory reason. Always audited.
     """
     try:
         require_action(db, user, task_type="payment-bypass", action="approve")

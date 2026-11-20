@@ -136,7 +136,7 @@ describe("allowTaskAction", () => {
 });
 
 describe("filterTasksForActor", () => {
-  it("hides foreign operator allocations for operator role", () => {
+  it("does not hide tasks by assignment metadata (Owner contract)", () => {
     const rows = [
       task({
         task_key: "t1",
@@ -150,65 +150,38 @@ describe("filterTasksForActor", () => {
         status: "belum_dikerjakan",
         context: { operator_email: "opb@eternal.local" },
       }),
+      task({
+        task_key: "d-empty",
+        task_type: "pengiriman",
+        status: "belum_dikerjakan",
+        context: {},
+      }),
     ];
     const filtered = filterTasksForActor(rows, {
       isSuperAdmin: false,
       actorEmail: "opa@eternal.local",
       operationalRole: "operator",
     });
-    expect(filtered.map((t) => t.task_key)).toEqual(["t1"]);
+    expect(filtered.map((t) => t.task_key)).toEqual(["t1", "t2", "d-empty"]);
   });
 
-  it("hides foreign driver tasks", () => {
+  it("passes through for operations.full", () => {
     const rows = [
       task({
-        task_key: "d1",
+        task_key: "x1",
         task_type: "pengiriman",
         status: "belum_dikerjakan",
-        context: { assigned_driver_email: "drva@eternal.local" },
-      }),
-      task({
-        task_key: "d2",
-        task_type: "pengiriman",
-        status: "belum_dikerjakan",
-        context: { assigned_driver_email: "drvb@eternal.local" },
+        context: {},
       }),
     ];
-    const filtered = filterTasksForActor(rows, {
-      isSuperAdmin: false,
-      actorEmail: "drva@eternal.local",
-      operationalRole: "driver",
-    });
-    expect(filtered.map((t) => t.task_key)).toEqual(["d1"]);
-  });
-
-  it("hides empty assignment for operator and driver (fail-closed)", () => {
-    const printEmpty = task({
-      task_key: "c-empty",
-      task_type: "cetak",
-      status: "belum_dikerjakan",
-      context: {},
-    });
-    const deliveryEmpty = task({
-      task_key: "d-empty",
-      task_type: "pengiriman",
-      status: "belum_dikerjakan",
-      context: {},
-    });
     expect(
-      filterTasksForActor([printEmpty], {
+      filterTasksForActor(rows, {
         isSuperAdmin: false,
-        actorEmail: "opa@eternal.local",
-        operationalRole: "operator",
+        actorEmail: "ops@eternal.local",
+        operationalRole: "helper",
+        operationsFull: true,
       }).map((t) => t.task_key),
-    ).toEqual([]);
-    expect(
-      filterTasksForActor([deliveryEmpty], {
-        isSuperAdmin: false,
-        actorEmail: "drva@eternal.local",
-        operationalRole: "driver",
-      }).map((t) => t.task_key),
-    ).toEqual([]);
+    ).toEqual(["x1"]);
   });
 });
 

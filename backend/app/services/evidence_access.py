@@ -13,8 +13,6 @@ from pymongo.database import Database
 from app.services.object_auth import (
     ObjectAuthError,
     assert_branch_access,
-    assert_driver_assignment,
-    assert_operator_assignment,
     bypasses_assignment,
 )
 from app.services.task_engine import can_act
@@ -68,9 +66,7 @@ def assert_sample_evidence_access(
     ):
         raise EvidenceAccessDenied("Tidak berizin melihat bukti sampel.")
 
-    assert_operator_assignment(
-        db, user, allocation=allocation, allow_approver=True
-    )
+    # Assignment metadata is not an auth gate (Owner contract).
     assert_branch_access(user, scope_object=po_doc or allocation)
 
 
@@ -90,5 +86,5 @@ def assert_delivery_evidence_access(
     ):
         raise EvidenceAccessDenied("Tidak berizin melihat bukti pengiriman.")
 
-    assert_driver_assignment(db, user, note=note, allow_coordinator=True)
+    # No exclusive courier assignment (Owner contract).
     assert_branch_access(user, scope_object=note)
