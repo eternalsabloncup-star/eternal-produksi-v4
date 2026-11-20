@@ -106,43 +106,97 @@ def sync_sales_order_payload(
 ) -> dict[str, Any]:
     """Normalisasi + upsert. Aman dijalankan berulang tanpa duplikasi header.
 
-    Cabang kanonis: isi ``branch_id`` dari Accurate ``branchId`` bila dokumen
-    belum punya identitas. Re-ingest / edit manual tidak ditimpa diam-diam.
-    Mapping Master tidak diperlukan untuk otorisasi.
+    Guard sama dengan auto-sync: date floor transDate + cabang kanonis Master.
+    Cabang existing/manual tidak ditimpa; konflik ditandai review.
     """
     from app.repositories.po_repository import set_branch_id_if_empty
-    from app.services.branch_identity import (
-        extract_accurate_branch_id,
-        normalize_branch_identity,
+    from app.services.po_ingest_guards import (
+        date_floor_reject_or_none,
+        mark_branch_conflict_review,
+        resolve_branch_for_ingest,
     )
-    from app.services.object_auth import object_branch_code
 
     _guard_db(db, mongo_guard=mongo_guard)
+    accurate_id = str(payload.get("id") or payload.get("accurate_id") or "").strip()
+    floor_hit = date_floor_reject_or_none(payload, accurate_id=accurate_id or "unknown")
+    if floor_hit is not None:
+        return {
+            "po": None,
+            "document": None,
+            "accurate_id": accurate_id or None,
+            "po_no": None,
+            "line_count": 0,
+            "was_insert": False,
+            "duplicate_prevented": True,
+            "count_after": count_by_accurate_id(db, accurate_id) if accurate_id else 0,
+            "line_diff": {
+                "added_line_ids": [],
+                "removed_line_ids": [],
+                "changed_line_ids": [],
+                "previous_line_count": 0,
+                "current_line_count": 0,
+            },
+            "operational_preserved": True,
+            "branch_apply": "rejected",
+            "outcome": floor_hit.get("outcome"),
+            "reason": floor_hit.get("reason"),
+            "writes": 0,
+        }
+
     po: PoHeaderModel = normalize_sales_order(payload)
     try:
         before_doc = get_by_accurate_id(db, po.accurate_id or "")
         before = 1 if before_doc else 0
         line_diff = diff_synced_lines(before_doc, po)
-        stored = upsert_sales_order(db, po, line_diff=line_diff)
-        accurate_branch_id = extract_accurate_branch_id(stored)
-        if accurate_branch_id is None and isinstance(po.raw_sync_meta, dict):
-            accurate_branch_id = normalize_branch_identity(
-                po.raw_sync_meta.get("accurate_branch_id")
-            )
-        branch_apply = "preserve_existing"
-        if object_branch_code(before_doc):
-            branch_apply = "preserve_existing"
-        elif accurate_branch_id:
-            filled = set_branch_id_if_empty(
-                db, po.accurate_id or "", accurate_branch_id
-            )
+        branch_res = resolve_branch_for_ingest(db, po=po, existing=before_doc)
+        if not branch_res.get("ok"):
+            if before_doc is None or not before_doc.get("branch_id"):
+                return {
+                    "po": po,
+                    "document": before_doc,
+                    "accurate_id": po.accurate_id,
+                    "po_no": po.po_no,
+                    "line_count": len(po.items),
+                    "was_insert": False,
+                    "duplicate_prevented": True,
+                    "count_after": count_by_accurate_id(db, po.accurate_id or ""),
+                    "line_diff": line_diff,
+                    "operational_preserved": True,
+                    "branch_apply": "rejected",
+                    "outcome": branch_res.get("outcome"),
+                    "reason": branch_res.get("reason"),
+                    "writes": 0,
+                }
+        branch_action = str(branch_res.get("action") or "preserve")
+        branch_id = branch_res.get("branch_id")
+        stored = upsert_sales_order(
+            db,
+            po,
+            line_diff=line_diff,
+            branch_id_on_insert=(
+                str(branch_id) if branch_action == "set" and branch_id else None
+            ),
+        )
+        if branch_action == "set" and branch_id and not stored.get("branch_id"):
+            filled = set_branch_id_if_empty(db, po.accurate_id or "", str(branch_id))
             if filled is not None:
                 stored = filled
                 branch_apply = "set_from_accurate"
             else:
-                branch_apply = "leave_unset"
+                branch_apply = "preserve_existing"
+        elif branch_action == "set" and branch_id:
+            branch_apply = "set_from_accurate"
+        elif branch_action == "conflict":
+            mark_branch_conflict_review(
+                db,
+                accurate_id=str(po.accurate_id or ""),
+                existing_branch_id=str(branch_res.get("branch_id")),
+                source_branch_id=str(branch_res.get("source_branch_id")),
+            )
+            stored = get_by_accurate_id(db, po.accurate_id or "") or stored
+            branch_apply = "conflict_preserved"
         else:
-            branch_apply = "leave_unset"
+            branch_apply = "preserve_existing"
         after = count_by_accurate_id(db, po.accurate_id or "")
     except UnsafeMongoTargetError:
         raise
@@ -163,8 +217,9 @@ def sync_sales_order_payload(
         "duplicate_prevented": after == 1,
         "count_after": after,
         "line_diff": line_diff,
-        "operational_preserved": isinstance(stored.get("operational"), dict),
+        "operational_preserved": isinstance((stored or {}).get("operational"), dict),
         "branch_apply": branch_apply,
+        "writes": 1,
     }
 
 

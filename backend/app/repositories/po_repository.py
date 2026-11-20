@@ -97,10 +97,12 @@ def upsert_sales_order(
     po: PoHeaderModel,
     *,
     line_diff: dict[str, Any] | None = None,
+    branch_id_on_insert: str | None = None,
 ) -> dict[str, Any]:
     """Simpan/perbarui sumber Accurate. Idempotent by accurate_id.
 
     Field ``operational`` (riwayat/manual V4) tidak ditimpa sync.
+    ``branch_id_on_insert`` hanya masuk ``$setOnInsert`` — tidak menimpa cabang existing.
     """
     require_po_indexes(db)
     doc = _to_document(po)
@@ -123,16 +125,23 @@ def upsert_sales_order(
             "previous_line_count": line_diff.get("previous_line_count"),
             "current_line_count": line_diff.get("current_line_count"),
         }
+    set_on_insert: dict[str, Any] = {
+        "created_at": doc["updated_at"],
+        "accurate_id": doc["accurate_id"],
+        # Slot operasional internal V4 — jangan dihapus saat sumber Accurate berubah.
+        "operational": {},
+    }
+    if branch_id_on_insert:
+        from app.services.branch_identity import normalize_branch_identity
+
+        nid = normalize_branch_identity(branch_id_on_insert)
+        if nid:
+            set_on_insert["branch_id"] = nid
     result = coll.find_one_and_update(
         {"accurate_id": doc["accurate_id"]},
         {
             "$set": set_fields,
-            "$setOnInsert": {
-                "created_at": doc["updated_at"],
-                "accurate_id": doc["accurate_id"],
-                # Slot operasional internal V4 — jangan dihapus saat sumber Accurate berubah.
-                "operational": {},
-            },
+            "$setOnInsert": set_on_insert,
         },
         upsert=True,
         return_document=ReturnDocument.AFTER,

@@ -160,8 +160,14 @@ def _upsert_unaccepted(
     *,
     line_diff: dict[str, Any],
     owner_token: str,
+    branch_id: str | None = None,
+    set_branch_on_insert: bool = False,
 ) -> dict[str, Any]:
-    """Insert/update penuh hanya jika PO belum accepted (atomic filter)."""
+    """Insert/update penuh hanya jika PO belum accepted (atomic filter).
+
+    ``branch_id`` kanonis hanya di ``$setOnInsert`` / ``$set`` saat kosong —
+    tidak menimpa cabang manual/existing.
+    """
     require_owns_job_lock(db, job="po", owner_token=owner_token)
     require_po_indexes(db)
     doc = _to_document(po)
@@ -183,16 +189,19 @@ def _upsert_unaccepted(
             "current_line_count": line_diff.get("current_line_count"),
         },
     }
+    set_on_insert: dict[str, Any] = {
+        "created_at": now,
+        "accurate_id": accurate_id,
+        "operational": {"inbox_status": "PO Baru"},
+    }
+    if set_branch_on_insert and branch_id:
+        set_on_insert["branch_id"] = branch_id
     try:
         result = po_collection(db).find_one_and_update(
             _not_accepted_filter(accurate_id),
             {
                 "$set": set_fields,
-                "$setOnInsert": {
-                    "created_at": now,
-                    "accurate_id": accurate_id,
-                    "operational": {"inbox_status": "PO Baru"},
-                },
+                "$setOnInsert": set_on_insert,
             },
             upsert=True,
             return_document=ReturnDocument.AFTER,
@@ -203,6 +212,14 @@ def _upsert_unaccepted(
 
     if result is None:
         return {"outcome": "skipped", "reason": "acceptance_race", "accurate_id": accurate_id}
+
+    # Dokumen lama tanpa branch_id: isi sekali secara CAS (tidak menimpa).
+    if branch_id and not result.get("branch_id"):
+        from app.repositories.po_repository import set_branch_id_if_empty
+
+        filled = set_branch_id_if_empty(db, accurate_id, branch_id)
+        if filled is not None:
+            result = filled
 
     return {
         "outcome": "updated",
@@ -249,6 +266,10 @@ def sync_one_listed_sales_order(
     payload = client.fetch_sales_order_detail(accurate_id)
     require_owns_job_lock(db, job="po", owner_token=owner_token)
     from app.services.accurate_auto_sync.date_floor import detail_scope_outcome
+    from app.services.po_ingest_guards import (
+        mark_branch_conflict_review,
+        resolve_branch_for_ingest,
+    )
 
     gated = detail_scope_outcome(payload, accurate_id=str(accurate_id))
     if gated is not None:
@@ -257,8 +278,54 @@ def sync_one_listed_sales_order(
     before = get_by_accurate_id(db, po.accurate_id or accurate_id)
     line_diff = diff_synced_lines(before, po)
 
+    branch_res = resolve_branch_for_ingest(db, po=po, existing=before)
+    if not branch_res.get("ok"):
+        # Insert baru / update tanpa cabang valid — zero write.
+        if before is None:
+            return {
+                "outcome": branch_res.get("outcome") or "failed",
+                "reason": branch_res.get("reason"),
+                "code": branch_res.get("code"),
+                "accurate_id": str(po.accurate_id or accurate_id),
+                "writes": 0,
+            }
+        # Existing tanpa cabang kanonis + source invalid: jangan perluas scope palsu.
+        if not before.get("branch_id"):
+            return {
+                "outcome": branch_res.get("outcome") or "failed",
+                "reason": branch_res.get("reason"),
+                "code": branch_res.get("code"),
+                "accurate_id": str(po.accurate_id or accurate_id),
+                "writes": 0,
+            }
+
+    branch_action = str(branch_res.get("action") or "preserve")
+    branch_id = branch_res.get("branch_id")
+    if branch_action == "conflict":
+        mark_branch_conflict_review(
+            db,
+            accurate_id=str(po.accurate_id or accurate_id),
+            existing_branch_id=str(branch_res.get("branch_id")),
+            source_branch_id=str(branch_res.get("source_branch_id")),
+        )
+
     if before is None:
-        result = _upsert_unaccepted(db, po, line_diff=line_diff, owner_token=owner_token)
+        if branch_action != "set" or not branch_id:
+            return {
+                "outcome": "failed",
+                "reason": "missing_branch_id",
+                "code": "missing_branch_id",
+                "accurate_id": str(po.accurate_id or accurate_id),
+                "writes": 0,
+            }
+        result = _upsert_unaccepted(
+            db,
+            po,
+            line_diff=line_diff,
+            owner_token=owner_token,
+            branch_id=str(branch_id),
+            set_branch_on_insert=True,
+        )
         if result.get("outcome") == "skipped":
             before2 = get_by_accurate_id(db, str(po.accurate_id))
             if before2 is not None and is_po_accepted(before2):
@@ -287,6 +354,7 @@ def sync_one_listed_sales_order(
             "outcome": "created",
             "accurate_id": str(po.accurate_id),
             "line_diff": line_diff,
+            "branch_id": str(branch_id),
         }
 
     if is_po_accepted(before):
@@ -319,14 +387,25 @@ def sync_one_listed_sales_order(
     header_changed = any(
         before_header.get(key) != getattr(po, key, None) for key in header_keys
     )
-    if not _material_line_change(line_diff) and not header_changed:
+    if (
+        not _material_line_change(line_diff)
+        and not header_changed
+        and branch_action != "conflict"
+    ):
         return {
             "outcome": "unchanged",
             "accurate_id": str(po.accurate_id),
             "line_diff": line_diff,
         }
 
-    result = _upsert_unaccepted(db, po, line_diff=line_diff, owner_token=owner_token)
+    result = _upsert_unaccepted(
+        db,
+        po,
+        line_diff=line_diff,
+        owner_token=owner_token,
+        branch_id=str(branch_id) if branch_action == "set" and branch_id else None,
+        set_branch_on_insert=False,
+    )
     if result.get("outcome") == "skipped":
         before2 = get_by_accurate_id(db, str(po.accurate_id))
         if before2 is not None and is_po_accepted(before2):
@@ -348,11 +427,15 @@ def sync_one_listed_sales_order(
             )
         return {"outcome": "skipped", "reason": "acceptance_race", "accurate_id": str(po.accurate_id)}
 
-    return {
+    out: dict[str, Any] = {
         "outcome": "updated",
         "accurate_id": str(po.accurate_id),
         "line_diff": line_diff,
     }
+    if branch_action == "conflict":
+        out["branch_conflict"] = True
+        out["reason"] = "branch_conflict"
+    return out
 
 
 def run_po_auto_sync(

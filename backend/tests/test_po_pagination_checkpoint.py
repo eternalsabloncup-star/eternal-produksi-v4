@@ -25,6 +25,7 @@ def _payload(so_id: int, *, ship_zone: str = "K", qty: float = 10) -> dict[str, 
     p = copy.deepcopy(SAMPLE_SALES_ORDER_STRUCTURE)
     p["id"] = so_id
     p["number"] = f"PO/{so_id}"
+    p["branchId"] = 50
     p["charField3"] = ship_zone
     p["charField5"] = "Non - Buffer"
     p["detailItem"][0]["quantity"] = qty
@@ -129,6 +130,14 @@ class UniverseClient:
 def pdb(db: Database) -> Database:
     ensure_auto_sync_status_indexes(db)
     ensure_po_indexes(db)
+    from app.repositories.org_master_repository import (
+        ensure_org_master_indexes,
+        upsert_branch,
+    )
+
+    ensure_org_master_indexes(db)
+    upsert_branch(db, code="50", name="Yogyakarta", is_active=True)
+    upsert_branch(db, code="150", name="Semarang", is_active=True)
     return db
 
 

@@ -59,6 +59,9 @@ def test_new_po_gets_accurate_branch_id_without_mapping(db: Database) -> None:
     from app.repositories.po_repository import ensure_po_indexes
     from app.services.object_auth import object_branch_code
 
+    org.ensure_org_master_indexes(db)
+    org.upsert_branch(db, code="50", name="Cabang 50", is_active=True)
+    org.upsert_branch(db, code="150", name="Cabang 150", is_active=True)
     ensure_po_indexes(db)
     sync_sales_order_payload(db, _so("8001", 150), mongo_guard="test")
     doc = get_by_accurate_id(db, "8001")
@@ -90,6 +93,9 @@ def test_user_50_denied_po_150(db: Database) -> None:
 def test_multi_branch_user_can_access_allowed(db: Database) -> None:
     from app.repositories.po_repository import ensure_po_indexes
 
+    org.ensure_org_master_indexes(db)
+    org.upsert_branch(db, code="50", name="Cabang 50", is_active=True)
+    org.upsert_branch(db, code="150", name="Cabang 150", is_active=True)
     ensure_po_indexes(db)
     sync_sales_order_payload(db, _so("8003", 50), mongo_guard="test")
     doc = get_by_accurate_id(db, "8003")
@@ -105,9 +111,17 @@ def test_multi_branch_user_can_access_allowed(db: Database) -> None:
 def test_missing_branch_fail_closed(db: Database) -> None:
     from app.repositories.po_repository import ensure_po_indexes
 
+    org.ensure_org_master_indexes(db)
+    org.upsert_branch(db, code="50", name="Cabang 50", is_active=True)
     ensure_po_indexes(db)
-    sync_sales_order_payload(db, _so("8004", None), mongo_guard="test")
-    doc = get_by_accurate_id(db, "8004")
+    rejected = sync_sales_order_payload(db, _so("8004", None), mongo_guard="test")
+    assert rejected.get("writes") == 0
+    assert get_by_accurate_id(db, "8004") is None
+    # Dokumen historis tanpa cabang tetap fail-closed untuk user terbatas.
+    doc = {
+        "accurate_id": "8004",
+        "header": {"raw_sync_meta": {}},
+    }
     user = {
         "email_normalized": "u@eternal.local",
         "role": "user",
@@ -124,6 +138,9 @@ def test_ops_full_cross_branch(db: Database) -> None:
     from app.repositories.po_repository import ensure_po_indexes
     from app.auth.permissions import PERM_OPERATIONS_FULL
 
+    org.ensure_org_master_indexes(db)
+    org.upsert_branch(db, code="50", name="Cabang 50", is_active=True)
+    org.upsert_branch(db, code="150", name="Cabang 150", is_active=True)
     ensure_po_indexes(db)
     sync_sales_order_payload(db, _so("8005", 150), mongo_guard="test")
     doc = get_by_accurate_id(db, "8005")
@@ -198,6 +215,9 @@ def test_edit_branch_audited(app_client: TestClient, db: Database) -> None:
 def test_reingest_preserves_manual_branch(db: Database) -> None:
     from app.repositories.po_repository import ensure_po_indexes
 
+    org.ensure_org_master_indexes(db)
+    org.upsert_branch(db, code="50", name="Cabang 50", is_active=True)
+    org.upsert_branch(db, code="150", name="Cabang 150", is_active=True)
     ensure_po_indexes(db)
     sync_sales_order_payload(db, _so("8008", 150), mongo_guard="test")
     db["accurate_sales_orders"].update_one(
@@ -206,6 +226,7 @@ def test_reingest_preserves_manual_branch(db: Database) -> None:
     sync_sales_order_payload(db, _so("8008", 150), mongo_guard="test")
     doc = get_by_accurate_id(db, "8008")
     assert doc.get("branch_id") == "50"
+    assert (doc.get("operational") or {}).get("branch_review", {}).get("status") == "conflict"
 
 
 def test_dry_run_categories_stable() -> None:
