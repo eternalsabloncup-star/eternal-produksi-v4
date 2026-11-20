@@ -247,7 +247,9 @@ def test_loading_blocked_then_driver_flow_over_http(
     # harus tetap menunggu konfirmasi terpisah, bukan auto-complete.
     pending = db["tasks"].find_one({"task_key": task["task_key"]})
     assert pending is not None
-    assert pending.get("status") != "done"
+    from app.repositories import task_repository as task_repo
+
+    assert pending.get("status") != task_repo.TASK_STATUS_DONE
     assert (
         task["context"]["message"]
         == "Mohon konfirmasi ke administrasi karena qty loading dan SJ berbeda"
