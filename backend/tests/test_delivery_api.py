@@ -206,8 +206,10 @@ def test_loading_blocked_then_driver_flow_over_http(
 ) -> None:
     _seed_users(db)
     _seed_packed(db, qty=100)
-    # M5 Master: production-head default loading-sj = view/edit/cancel (tanpa confirm).
-    # Samakan grant dengan test_delivery agar discrepancy KP valid tanpa melemahkan spek.
+    # Kontrak Owner terbaru: Kepala Produksi berhak view/confirm/edit/cancel.
+    # Grant ini hanya fixture DB test; bootstrap Settings saat release milik M5.
+    # Tidak ada input Qty Loading manual: hanya aksi Sesuai/Tidak Sesuai.
+    # Hak confirm tidak boleh otomatis menyelesaikan tugas koordinasi selisih.
     from app.repositories import master_repository as master
 
     master.set_role_actions(
@@ -241,6 +243,11 @@ def test_loading_blocked_then_driver_flow_over_http(
     assert discrepancy.status_code == 200
     task = discrepancy.json()
     assert task["coordination"] is True
+    # Meski Kepala Produksi sendiri memilih Tidak Sesuai, tugas selisih
+    # harus tetap menunggu konfirmasi terpisah, bukan auto-complete.
+    pending = db["tasks"].find_one({"task_key": task["task_key"]})
+    assert pending is not None
+    assert pending.get("status") != "done"
     assert (
         task["context"]["message"]
         == "Mohon konfirmasi ke administrasi karena qty loading dan SJ berbeda"
