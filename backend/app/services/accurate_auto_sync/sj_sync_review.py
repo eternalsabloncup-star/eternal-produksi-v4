@@ -2,11 +2,13 @@
 
 Kontrak:
 - MULTI_SO_NOT_SUPPORTED → review terbuka, tidak menulis ``accurate_delivery_notes``.
+- DELIVERY_NOTE_IDENTITY → quarantine data (line/SO hilang/konflik); cooldown panjang.
 - po_not_registered → deferred retryable setelah PO terdaftar.
 - Upsert idempotent per ``accurate_sj_id`` (``_id`` stabil).
 - Tanpa createIndex di request path — identitas unik lewat ``_id``.
 - Payload mentah / PII pelanggan tidak disimpan.
 - Fair budget: discovery mendapat jatah minimum; replay bounded + eligibility.
+- Gagal tulis review → exception ke discovery (page_failed); jangan majukan checkpoint.
 """
 
 from __future__ import annotations
@@ -23,6 +25,8 @@ COLLECTION = "accurate_sj_sync_reviews"
 
 REASON_MULTI_SO = "MULTI_SO_NOT_SUPPORTED"
 REASON_PO_NOT_REGISTERED = "po_not_registered"
+# Identitas SJ/SO/line tidak lengkap atau konflik — bukan MULTI_SO.
+REASON_DELIVERY_NOTE_IDENTITY = "DELIVERY_NOTE_IDENTITY"
 
 STATUS_OPEN = "open"
 STATUS_RESOLVED = "resolved"
@@ -30,6 +34,8 @@ STATUS_RESOLVED = "resolved"
 # Backoff detik (bounded). Legacy review tanpa field tetap eligible sekali.
 _PO_NOT_REGISTERED_BACKOFFS = (300, 900, 1800, 3600, 7200, 14400)
 _MULTI_SO_BACKOFF_SECONDS = 6 * 3600
+# Identity gap: cooldown panjang — data Accurate jarang berubah tiap 5 menit.
+_IDENTITY_BACKOFF_SECONDS = 6 * 3600
 _DISCOVERY_MIN_RATIO_DEFAULT = 0.70
 _DISCOVERY_MIN_RATIO_LO = 0.50
 _DISCOVERY_MIN_RATIO_HI = 0.90
@@ -100,6 +106,8 @@ def _backoff_seconds(reason: str, attempt_count: int) -> int:
     if reason == REASON_MULTI_SO:
         # Multi-SO: jangan retry tiap 5 menit; interval panjang bounded.
         return int(_MULTI_SO_BACKOFF_SECONDS)
+    if reason == REASON_DELIVERY_NOTE_IDENTITY:
+        return int(_IDENTITY_BACKOFF_SECONDS)
     idx = min(attempts, len(_PO_NOT_REGISTERED_BACKOFFS) - 1)
     return int(_PO_NOT_REGISTERED_BACKOFFS[idx])
 
@@ -121,6 +129,7 @@ def upsert_sj_sync_review(
     sj_no: str | None = None,
     retryable: bool = False,
     last_error_code: str | None = None,
+    last_error_detail: str | None = None,
     schedule_retry: bool = True,
 ) -> dict[str, Any]:
     """Idempotent upsert review. Tidak menulis delivery note."""
@@ -133,6 +142,10 @@ def upsert_sj_sync_review(
     po_id = as_text(accurate_po_id) or None
     number = as_text(sj_no) or None
     code = as_text(last_error_code) or reason
+    # Detail aman: potong; tanpa payload mentah / PII.
+    detail = as_text(last_error_detail)
+    if detail and len(detail) > 240:
+        detail = detail[:240]
 
     existing = db[COLLECTION].find_one({"_id": doc_id})
     if existing is None:
@@ -160,7 +173,9 @@ def upsert_sj_sync_review(
                 else now
             ),
         }
-        # MULTI_SO: cooldown segera agar tidak direplay siklus berikutnya.
+        if detail:
+            doc["last_error_detail"] = detail
+        # MULTI_SO / identity: cooldown segera agar tidak direplay tiap siklus.
         # po_not_registered: next_retry_at=now → eligible; gate PO lokal menahan Accurate.
         if reason == REASON_PO_NOT_REGISTERED and retryable:
             doc["next_retry_at"] = now
@@ -174,6 +189,8 @@ def upsert_sj_sync_review(
         "retryable": bool(retryable),
         "seen_count": int(existing.get("seen_count") or 0) + 1,
     }
+    if detail:
+        updates["last_error_detail"] = detail
     if so_ids:
         updates["source_so_ids"] = so_ids
     if po_id:
@@ -186,8 +203,11 @@ def upsert_sj_sync_review(
     # Jangan hapus attempt_count / next_retry_at legacy-compatible; set default bila absen.
     if "attempt_count" not in existing:
         updates["attempt_count"] = int(existing.get("attempt_count") or 0)
-    if schedule_retry and retryable and reason == REASON_MULTI_SO:
-        # Re-upsert multi-SO dari discovery: perpanjang cooldown, jangan flood.
+    if schedule_retry and retryable and reason in {
+        REASON_MULTI_SO,
+        REASON_DELIVERY_NOTE_IDENTITY,
+    }:
+        # Re-upsert dari discovery: perpanjang cooldown, jangan flood.
         attempts = int(existing.get("attempt_count") or 0)
         updates["next_retry_at"] = compute_next_retry_at(
             reason=reason, attempt_count=attempts, now=now

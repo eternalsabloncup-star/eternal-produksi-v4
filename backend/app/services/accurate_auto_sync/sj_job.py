@@ -24,6 +24,7 @@ from app.services.accurate_auto_sync.status import (
     record_job_result,
 )
 from app.services.accurate_auto_sync.sj_sync_review import (
+    REASON_DELIVERY_NOTE_IDENTITY,
     REASON_MULTI_SO,
     REASON_PO_NOT_REGISTERED,
     allocate_sj_cycle_budgets,
@@ -213,7 +214,7 @@ def replay_open_sj_reviews(
                 "replay_budget": replay_budget,
             }
 
-        # Jadwalkan cooldown setelah percobaan (MULTI_SO / skipped tetap open).
+        # Jadwalkan cooldown setelah percobaan (MULTI_SO / identity / skipped tetap open).
         out_reason = str(result.get("reason") or reason)
         if key in {"review_required", "skipped"}:
             mark_sj_review_attempt(
@@ -221,7 +222,11 @@ def replay_open_sj_reviews(
                 accurate_sj_id=sj_id,
                 reason=out_reason
                 if out_reason
-                in {REASON_MULTI_SO, REASON_PO_NOT_REGISTERED}
+                in {
+                    REASON_MULTI_SO,
+                    REASON_PO_NOT_REGISTERED,
+                    REASON_DELIVERY_NOTE_IDENTITY,
+                }
                 else reason,
             )
 
