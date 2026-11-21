@@ -119,10 +119,13 @@ def test_legacy_allocation_without_new_fields_still_reads(
     _seed(db)
     _open_gates(db)
     csrf = _login(app_client, "kp@eternal.local")
+    # Alokasi tanpa print_color/screen_kind tetap sah bila operator Master valid.
     res = app_client.post(
         f"/api/scheduling/{PO_ID}/lines/{LINE_A}/allocations",
         json={
-            "allocations": [{"operator_email": "legacy@eternal.local", "qty": 100}],
+            "allocations": [
+                {"operator_email": "op.warna@eternal.local", "qty": 100}
+            ],
             "idempotency_key": "alloc-legacy-1",
         },
         headers={"X-CSRF-Token": csrf},
