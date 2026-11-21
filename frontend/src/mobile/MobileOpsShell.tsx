@@ -1,0 +1,129 @@
+import { useEffect, useMemo, useState } from "react";
+import { Link, useLocation } from "react-router-dom";
+import { formatOpenTaskBadge } from "../api/openTaskCounts";
+import { useAuth } from "../auth";
+import { ApiSimulationBanner } from "../sim/ApiSimulationBanner";
+import { useOpenTeamTaskCounts } from "../hooks/useOpenTeamTaskCounts";
+import { TEAM_TASK_ROLES, type TeamTaskRoleId } from "../app/nav";
+import { MobileBottomNav } from "./MobileBottomNav";
+import { MobileOpsProvider, useMobileOps } from "./MobileOpsContext";
+import { mobileTabByPath, MOBILE_OPS_TABS } from "./mobileNav";
+import { MobileDeliveryPage } from "./pages/MobileDeliveryPage";
+import { MobileMonitoringPage } from "./pages/MobileMonitoringPage";
+import { MobileMyTasksPage } from "./pages/MobileMyTasksPage";
+import { MobileSchedulePage } from "./pages/MobileSchedulePage";
+import { registerOpsServiceWorker } from "./registerOpsSw";
+import "./mobile.css";
+
+function MobileOpsChrome() {
+  const location = useLocation();
+  const { user, logout } = useAuth();
+  const ops = useMobileOps();
+  const tab = mobileTabByPath(location.pathname);
+  const { counts, status } = useOpenTeamTaskCounts();
+
+  const [visited, setVisited] = useState<Record<string, boolean>>({
+    tasks: true,
+  });
+
+  useEffect(() => {
+    setVisited((v) => (v[tab.id] ? v : { ...v, [tab.id]: true }));
+  }, [tab.id]);
+
+  useEffect(() => {
+    void registerOpsServiceWorker();
+  }, []);
+
+  const badge = useMemo(() => {
+    if (!ops?.role) return null;
+    if (status !== "ready" && status !== "truncated") return null;
+    const n = counts[ops.role.id] ?? 0;
+    return formatOpenTaskBadge(n, status);
+  }, [ops?.role, counts, status]);
+
+  return (
+    <div className="ep-m-app" data-testid="mobile-ops-shell">
+      <header className="ep-m-header">
+        <div className="ep-m-header-brand">
+          <strong>Eternal Ops</strong>
+          <span className="ep-m-header-tab">{tab.label}</span>
+        </div>
+        <div className="ep-m-header-meta">
+          {ops?.role ? (
+            <span className="ep-m-role" data-testid="mobile-ops-role">
+              {ops.role.label}
+            </span>
+          ) : (
+            <span className="ep-m-role is-locked" data-testid="mobile-ops-role-locked">
+              Role belum di-assign
+            </span>
+          )}
+          {ops?.canPickRole ? (
+            <label className="ep-m-rolepick">
+              <span className="sr-only">Pilih peran</span>
+              <select
+                value={ops.role?.id ?? "production-head"}
+                onChange={(e) =>
+                  ops.setRoleOverride(e.target.value as TeamTaskRoleId)
+                }
+                aria-label="Pilih peran operasional"
+              >
+                {TEAM_TASK_ROLES.map((r) => (
+                  <option key={r.id} value={r.id}>
+                    {r.label}
+                  </option>
+                ))}
+              </select>
+            </label>
+          ) : null}
+          <Link className="ep-m-linkdesk" to="/app/schedule">
+            Desktop
+          </Link>
+          <button
+            type="button"
+            className="ep-m-logout"
+            onClick={() => void logout()}
+          >
+            Keluar
+          </button>
+        </div>
+        {user?.email ? (
+          <p className="ep-m-user">{user.display_name || user.email}</p>
+        ) : null}
+      </header>
+
+      <main className="ep-m-main">
+        <ApiSimulationBanner />
+        {/* Keep-alive tab panels — filter/scroll state bertahan antar tab. */}
+        {MOBILE_OPS_TABS.map((t) => {
+          if (!visited[t.id] && t.id !== tab.id) return null;
+          const hidden = t.id !== tab.id;
+          return (
+            <div
+              key={t.id}
+              className={`ep-m-panel${hidden ? " is-hidden" : ""}`}
+              hidden={hidden}
+              aria-hidden={hidden}
+              data-tab={t.id}
+            >
+              {t.id === "tasks" ? <MobileMyTasksPage /> : null}
+              {t.id === "schedule" ? <MobileSchedulePage /> : null}
+              {t.id === "delivery" ? <MobileDeliveryPage /> : null}
+              {t.id === "monitoring" ? <MobileMonitoringPage /> : null}
+            </div>
+          );
+        })}
+      </main>
+
+      <MobileBottomNav openTaskBadge={badge} />
+    </div>
+  );
+}
+
+export function MobileOpsShell() {
+  return (
+    <MobileOpsProvider>
+      <MobileOpsChrome />
+    </MobileOpsProvider>
+  );
+}

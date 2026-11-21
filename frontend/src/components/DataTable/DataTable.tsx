@@ -8,6 +8,11 @@ import {
   type MouseEvent as ReactMouseEvent,
   type ReactNode,
 } from "react";
+import { useMobileOpsActive } from "../../mobile/MobileOpsContext";
+import {
+  shouldSuppressRowActivate,
+} from "../../mobile/tablePinchZoom";
+import { TableZoomViewport } from "../../mobile/TableZoomViewport";
 import { ColumnHeaderFilter } from "./ColumnHeaderFilter";
 import { ColumnVisibility } from "./ColumnVisibility";
 import { Pagination } from "./Pagination";
@@ -166,9 +171,18 @@ export function DataTable<T>({
     setExpanded((prev) => ({ ...prev, [key]: !prev[key] }));
   }, []);
 
+  const pinchZoom = useMobileOpsActive();
+  const scrollRef = useRef<HTMLDivElement | null>(null);
+  const [scrollEl, setScrollEl] = useState<HTMLElement | null>(null);
+  const bindScrollEl = useCallback((el: HTMLDivElement | null) => {
+    scrollRef.current = el;
+    setScrollEl((prev) => (prev === el ? prev : el));
+  }, []);
+
   const handleRowActivate = useCallback(
     (row: T, e: ReactMouseEvent) => {
       if (!onRowActivate) return;
+      if (shouldSuppressRowActivate()) return;
       const t = e.target as HTMLElement | null;
       if (!t) return;
       if (
@@ -404,177 +418,200 @@ export function DataTable<T>({
         </div>
       ) : null}
       {filterNode}
-      <div className="ep-tblscroll">
-        <table
-          className={`ep-tbl ep-tbl-sheet${canExpand ? " is-expandable" : ""}`}
-        >
-          <thead>
-            <tr className="ep-tbl-headrow">
-              {canExpand ? (
-                <th
-                  className="ep-th-expand sticky-expand"
-                  style={{ width: 40, minWidth: 40 }}
-                  aria-label="Perluas baris"
-                >
-                  <div className="ep-th-inner ep-th-inner-expand">
-                    <span className="ep-th-label" aria-hidden>
-                      {" "}
-                    </span>
-                  </div>
-                </th>
-              ) : null}
-              {visible.map((col) => (
-                <th
-                  key={col.id}
-                  className={[
-                    stickyClass(col),
-                    draggingId === col.id ? "is-dragging" : "",
-                    resizingId === col.id ? "is-resizing" : "",
-                  ]
-                    .filter(Boolean)
-                    .join(" ")}
-                  style={{ width: colWidth(col), minWidth: col.minWidth ?? 72 }}
-                  onDragOver={(e) => onDragOver(e, col.id)}
-                  onDrop={() => onDrop(col.id)}
-                >
-                  <div className="ep-th-inner">
-                    <span
-                      className="ep-th-label"
-                      title="Seret untuk memindah kolom"
-                      draggable
-                      onDragStart={() => onDragStart(col.id)}
-                      onDragEnd={() => {
-                        dragCol.current = null;
-                        setDraggingId(null);
-                      }}
+      <div
+        className={`ep-tblscroll${pinchZoom ? " is-pinch-zoom" : ""}`}
+        ref={bindScrollEl}
+      >
+        {(() => {
+          const tableNode = (
+            <table
+              className={`ep-tbl ep-tbl-sheet${canExpand ? " is-expandable" : ""}`}
+            >
+              <thead>
+                <tr className="ep-tbl-headrow">
+                  {canExpand ? (
+                    <th
+                      className="ep-th-expand sticky-expand"
+                      style={{ width: 40, minWidth: 40 }}
+                      aria-label="Perluas baris"
                     >
-                      {col.label}
-                    </span>
-                    {col.filterable !== false && col.getFilterValue ? (
-                      <ColumnHeaderFilter
-                        columnId={col.id}
-                        label={col.label}
-                        filterType={col.filterType ?? "text"}
-                        uniqueValues={uniqueByCol.get(col.id) ?? []}
-                        state={
-                          headerFilters[col.id] ?? {
-                            selected: null,
-                            sortDir: null,
-                          }
-                        }
-                        open={openFilterId === col.id}
-                        onOpenChange={(open) =>
-                          setOpenFilterId(open ? col.id : null)
-                        }
-                        onApply={(next) => patchFilter(col.id, next)}
-                        onClear={() => clearColumnFilter(col.id)}
-                        onSort={(dir) => setSortOnly(col.id, dir)}
-                      />
-                    ) : null}
-                    <span
-                      className="ep-th-resize"
-                      title="Seret untuk mengubah lebar"
-                      onMouseDown={(e) => {
-                        e.preventDefault();
-                        e.stopPropagation();
-                        startResize(col.id, e.clientX, colWidth(col));
-                      }}
-                    />
-                  </div>
-                </th>
-              ))}
-            </tr>
-          </thead>
-          <tbody>
-            {displayRows.length === 0 ? (
-              <tr>
-                <td colSpan={Math.max(masterColSpan, 1)}>
-                  <div className="ep-empty">
-                    {emptyMessage ?? (
-                      <>
-                        Tidak ada data sesuai filter.
-                        <br />
-                        <small>Coba ubah filter kolom atau filter global.</small>
-                      </>
-                    )}
-                  </div>
-                </td>
-              </tr>
-            ) : (
-              displayRows.map((row) => {
-                const key = rowKey(row);
-                const rowExpandable =
-                  canExpand &&
-                  (isRowExpandable ? isRowExpandable(row) : true);
-                const isOpen = Boolean(expanded[key]);
-                return (
-                  <Fragment key={key}>
-                    <tr
+                      <div className="ep-th-inner ep-th-inner-expand">
+                        <span className="ep-th-label" aria-hidden>
+                          {" "}
+                        </span>
+                      </div>
+                    </th>
+                  ) : null}
+                  {visible.map((col) => (
+                    <th
+                      key={col.id}
                       className={[
-                        isOpen ? "ep-tbl-row-open" : "",
-                        onRowActivate ? "ep-tbl-row-clickable" : "",
+                        stickyClass(col),
+                        draggingId === col.id ? "is-dragging" : "",
+                        resizingId === col.id ? "is-resizing" : "",
                       ]
                         .filter(Boolean)
-                        .join(" ") || undefined}
-                      onClick={
-                        onRowActivate
-                          ? (e) => handleRowActivate(row, e)
-                          : undefined
-                      }
+                        .join(" ")}
+                      style={{
+                        width: colWidth(col),
+                        minWidth: col.minWidth ?? 72,
+                      }}
+                      onDragOver={(e) => onDragOver(e, col.id)}
+                      onDrop={() => onDrop(col.id)}
                     >
-                      {canExpand ? (
-                        <td className="ep-td-expand sticky-expand">
-                          {rowExpandable ? (
-                            <button
-                              type="button"
-                              className={`ep-expand-btn${isOpen ? " is-open" : ""}`}
-                              aria-expanded={isOpen}
-                              aria-label={
-                                isOpen
-                                  ? "Tutup detail item"
-                                  : "Buka detail item"
-                              }
-                              onClick={(e) => {
-                                e.stopPropagation();
-                                toggleExpand(key);
-                              }}
-                            >
-                              {isOpen ? "▾" : "▸"}
-                            </button>
-                          ) : (
-                            <span className="ep-expand-spacer" aria-hidden />
-                          )}
-                        </td>
-                      ) : null}
-                      {visible.map((col) => (
-                        <td
-                          key={col.id}
-                          className={stickyClass(col)}
-                          style={{
-                            width: colWidth(col),
-                            minWidth: col.minWidth ?? 72,
+                      <div className="ep-th-inner">
+                        <span
+                          className="ep-th-label"
+                          title="Seret untuk memindah kolom"
+                          draggable
+                          onDragStart={() => onDragStart(col.id)}
+                          onDragEnd={() => {
+                            dragCol.current = null;
+                            setDraggingId(null);
                           }}
                         >
-                          {col.render(row)}
-                        </td>
-                      ))}
-                    </tr>
-                    {rowExpandable && isOpen && renderExpandedRow ? (
-                      <tr className="ep-tbl-expandrow">
-                        <td
-                          className="ep-td-expand-panel"
-                          colSpan={Math.max(masterColSpan, 1)}
+                          {col.label}
+                        </span>
+                        {col.filterable !== false && col.getFilterValue ? (
+                          <ColumnHeaderFilter
+                            columnId={col.id}
+                            label={col.label}
+                            filterType={col.filterType ?? "text"}
+                            uniqueValues={uniqueByCol.get(col.id) ?? []}
+                            state={
+                              headerFilters[col.id] ?? {
+                                selected: null,
+                                sortDir: null,
+                              }
+                            }
+                            open={openFilterId === col.id}
+                            onOpenChange={(open) =>
+                              setOpenFilterId(open ? col.id : null)
+                            }
+                            onApply={(next) => patchFilter(col.id, next)}
+                            onClear={() => clearColumnFilter(col.id)}
+                            onSort={(dir) => setSortOnly(col.id, dir)}
+                          />
+                        ) : null}
+                        <span
+                          className="ep-th-resize"
+                          title="Seret untuk mengubah lebar"
+                          onMouseDown={(e) => {
+                            e.preventDefault();
+                            e.stopPropagation();
+                            startResize(col.id, e.clientX, colWidth(col));
+                          }}
+                        />
+                      </div>
+                    </th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {displayRows.length === 0 ? (
+                  <tr>
+                    <td colSpan={Math.max(masterColSpan, 1)}>
+                      <div className="ep-empty">
+                        {emptyMessage ?? (
+                          <>
+                            Tidak ada data sesuai filter.
+                            <br />
+                            <small>
+                              Coba ubah filter kolom atau filter global.
+                            </small>
+                          </>
+                        )}
+                      </div>
+                    </td>
+                  </tr>
+                ) : (
+                  displayRows.map((row) => {
+                    const key = rowKey(row);
+                    const rowExpandable =
+                      canExpand &&
+                      (isRowExpandable ? isRowExpandable(row) : true);
+                    const isOpen = Boolean(expanded[key]);
+                    return (
+                      <Fragment key={key}>
+                        <tr
+                          className={
+                            [
+                              isOpen ? "ep-tbl-row-open" : "",
+                              onRowActivate ? "ep-tbl-row-clickable" : "",
+                            ]
+                              .filter(Boolean)
+                              .join(" ") || undefined
+                          }
+                          onClick={
+                            onRowActivate
+                              ? (e) => handleRowActivate(row, e)
+                              : undefined
+                          }
                         >
-                          {renderExpandedRow(row)}
-                        </td>
-                      </tr>
-                    ) : null}
-                  </Fragment>
-                );
-              })
-            )}
-          </tbody>
-        </table>
+                          {canExpand ? (
+                            <td className="ep-td-expand sticky-expand">
+                              {rowExpandable ? (
+                                <button
+                                  type="button"
+                                  className={`ep-expand-btn${isOpen ? " is-open" : ""}`}
+                                  aria-expanded={isOpen}
+                                  aria-label={
+                                    isOpen
+                                      ? "Tutup detail item"
+                                      : "Buka detail item"
+                                  }
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    toggleExpand(key);
+                                  }}
+                                >
+                                  {isOpen ? "▾" : "▸"}
+                                </button>
+                              ) : (
+                                <span
+                                  className="ep-expand-spacer"
+                                  aria-hidden
+                                />
+                              )}
+                            </td>
+                          ) : null}
+                          {visible.map((col) => (
+                            <td
+                              key={col.id}
+                              className={stickyClass(col)}
+                              style={{
+                                width: colWidth(col),
+                                minWidth: col.minWidth ?? 72,
+                              }}
+                            >
+                              {col.render(row)}
+                            </td>
+                          ))}
+                        </tr>
+                        {rowExpandable && isOpen && renderExpandedRow ? (
+                          <tr className="ep-tbl-expandrow">
+                            <td
+                              className="ep-td-expand-panel"
+                              colSpan={Math.max(masterColSpan, 1)}
+                            >
+                              {renderExpandedRow(row)}
+                            </td>
+                          </tr>
+                        ) : null}
+                      </Fragment>
+                    );
+                  })
+                )}
+              </tbody>
+            </table>
+          );
+          if (!pinchZoom) return tableNode;
+          return (
+            <TableZoomViewport scrollParent={scrollEl}>
+              {tableNode}
+            </TableZoomViewport>
+          );
+        })()}
       </div>
       <Pagination
         page={page}
