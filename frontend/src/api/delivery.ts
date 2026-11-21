@@ -211,6 +211,7 @@ export type LoadingEvent = {
   sj_version: number;
   status: string;
   actor_email: string;
+  actor_display_name?: string;
   created_at?: string;
   cancelled_by?: string | null;
   cancel_reason?: string | null;
@@ -238,6 +239,7 @@ export type DeliveryEvent = {
   attempt: number;
   status: string;
   courier_email: string;
+  actor_display_name?: string;
   recipient_name: string | null;
   failure_reason: string | null;
   photo_evidence_ids: string[];

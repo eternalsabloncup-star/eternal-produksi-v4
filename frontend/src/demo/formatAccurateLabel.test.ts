@@ -38,7 +38,7 @@ describe("resolveInboxPoSourceMode", () => {
   });
 
   it("API mode has distinct badge from DEMO", () => {
-    expect(shellModeBadgeLabel("api")).toBe("Accurate · MongoDB V4");
+    expect(shellModeBadgeLabel("api")).toBe("Accurate");
     expect(shellModeBadgeLabel("demo")).toBe("● DEMO");
     expect(shellModeBadgeLabel("api")).not.toBe(shellModeBadgeLabel("demo"));
     expect(resolveShellDataMode("/app/inbox", "api")).toBe("api");

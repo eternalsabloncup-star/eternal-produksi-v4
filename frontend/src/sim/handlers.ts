@@ -183,6 +183,7 @@ function applyConfirm(
     idempotency_key: idempotencyKey,
     qty,
     actor_email: SIM_ACTOR,
+    actor_display_name: SIM_USER.display_name,
     actor_role: "super_admin",
     note: note ?? null,
     created_at: new Date().toISOString(),

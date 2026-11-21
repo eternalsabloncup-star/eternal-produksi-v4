@@ -186,6 +186,26 @@ def test_task_enrichment_po_line_and_sj(db: Database) -> None:
     assert tasks[2]["ship_dates"] == []
 
 
+def test_enrich_actor_display_names_batch(db: Database) -> None:
+    from tests.scheduling_operator_fixtures import upsert_test_user
+
+    upsert_test_user(
+        db,
+        email="screener@eternal.local",
+        display_name="Screener Satu",
+        operational_role="screener",
+    )
+    rows = [
+        {"actor_email": "screener@eternal.local", "qty": 10},
+        {"actor_email": "unknown@eternal.local", "qty": 1},
+    ]
+    enrich.enrich_actor_display_names(db, rows)
+    assert rows[0]["actor_display_name"] == "Screener Satu"
+    assert rows[1]["actor_display_name"] == "Nama belum tersedia"
+    # Storage email identity preserved.
+    assert rows[0]["actor_email"] == "screener@eternal.local"
+
+
 def test_task_enrichment_item_name_from_po_line(db: Database) -> None:
     """Nama Barang dari PO line via accurate_line_id — bukan item_code sebagai nama."""
     po = _seed_po(db)

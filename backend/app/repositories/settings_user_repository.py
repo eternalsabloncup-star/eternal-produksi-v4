@@ -57,11 +57,55 @@ def _is_operator_operational_role(value: Any) -> bool:
 
 
 def operator_display_label(display_name: Any, email: str) -> str:
-    """Nama manusiawi; fallback email agar kandidat valid tidak hilang tanpa alasan."""
+    """Nama manusiawi; fallback email agar kandidat valid tidak hilang tanpa alasan.
+
+    Dipakai saat identitas teknis masih perlu terbaca (admin/debug).
+    Untuk label operasional UI, pakai ``operational_display_name``.
+    """
     name = str(display_name or "").strip()
     if name:
         return name
     return str(email or "").strip()
+
+
+USER_NAME_UNAVAILABLE = "Nama belum tersedia"
+
+
+def operational_display_name(display_name: Any) -> str:
+    """Label aktor operasional — tanpa fallback email."""
+    name = str(display_name or "").strip()
+    return name if name else USER_NAME_UNAVAILABLE
+
+
+def display_names_by_emails(
+    db: Database, emails: list[str] | set[str]
+) -> dict[str, str]:
+    """Batch lookup Master display_name by email_normalized (aktif/non-aktif).
+
+    Return map email_normalized → display_name mentah (boleh kosong).
+    Tidak mengekspos daftar pengguna penuh — hanya email yang diminta.
+    """
+    needles: list[str] = []
+    seen: set[str] = set()
+    for raw in emails:
+        email_n = normalize_email(str(raw or ""))
+        if not email_n or email_n in seen:
+            continue
+        seen.add(email_n)
+        needles.append(email_n)
+    if not needles:
+        return {}
+    out: dict[str, str] = {}
+    cursor = users_collection(db).find(
+        {"email_normalized": {"$in": needles}},
+        {"email_normalized": 1, "display_name": 1},
+    )
+    for doc in cursor:
+        email_n = str(doc.get("email_normalized") or "").strip()
+        if not email_n:
+            continue
+        out[email_n] = str(doc.get("display_name") or "").strip()
+    return out
 
 
 def list_active_operators(db: Database) -> list[dict[str, Any]]:

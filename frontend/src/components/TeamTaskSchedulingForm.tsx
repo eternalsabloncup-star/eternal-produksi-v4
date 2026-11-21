@@ -567,7 +567,10 @@ export function TeamTaskSchedulingForm({
                       >
                         <td
                           className="ep-sched-td-text"
-                          title={a.operator_email}
+                          title={
+                            (a.operator_display_name || "").trim() ||
+                            "Nama belum tersedia"
+                          }
                         >
                           {operatorLabel(a)}
                         </td>

@@ -57,6 +57,10 @@ export type OperationalTask = {
    * Mirror ref.item_name — tidak mengganti field teknis line/allocation.
    */
   item_name?: string;
+  /**
+   * Warna Cat dari allocation.print_color (input KP) — bukan Accurate item.color.
+   */
+  print_color?: string;
   /** D3: tanggal kirim SJ aktif unik (kalender). */
   ship_dates?: string[];
   ref: {
@@ -78,6 +82,8 @@ export type TaskConfirmation = {
   idempotency_key: string;
   qty: number;
   actor_email: string;
+  /** Enrichment Master display_name — label UI; email tetap di storage. */
+  actor_display_name?: string;
   actor_role: string;
   note?: string | null;
   created_at: string;

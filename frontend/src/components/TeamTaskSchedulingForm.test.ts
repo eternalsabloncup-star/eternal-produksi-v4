@@ -27,7 +27,7 @@ describe("Tambah Alokasi operator options", () => {
     expect(state.status).toBe("ok");
     if (state.status !== "ok") return;
     expect(state.items).toHaveLength(2);
-    expect(operatorCandidateLabel(state.items[0])).toBe("op@eternal.local");
+    expect(operatorCandidateLabel(state.items[0])).toBe("Nama belum tersedia");
   });
 
   it("keeps selected email stable while other fields change conceptually", () => {

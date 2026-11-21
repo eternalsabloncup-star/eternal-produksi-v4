@@ -4,6 +4,7 @@ import { formatOpenTaskBadge } from "../api/openTaskCounts";
 import type { TeamTaskRoleId } from "../app/nav";
 import { TEAM_TASK_ROLES } from "../app/nav";
 import { useAuth } from "../auth";
+import { userDisplayName } from "../lib/userDisplayName";
 import { ApiSimulationBanner } from "../sim/ApiSimulationBanner";
 import { useOpenTeamTaskCounts } from "../hooks/useOpenTeamTaskCounts";
 import { MobileBottomNav } from "./MobileBottomNav";
@@ -131,8 +132,8 @@ function MobileOpsChrome() {
             Keluar
           </button>
         </div>
-        {user?.email ? (
-          <p className="ep-m-user">{user.display_name || user.email}</p>
+        {user ? (
+          <p className="ep-m-user">{userDisplayName(user.display_name)}</p>
         ) : null}
       </header>
 

@@ -59,17 +59,17 @@ export function resolveShellDataMode(
 }
 
 export function shellModeBadgeLabel(mode: ShellDataMode): string | null {
-  if (mode === "api") return "Accurate · MongoDB V4";
+  if (mode === "api") return "Accurate";
   if (mode === "demo") return "● DEMO";
   return null;
 }
 
 export function shellModeFooterHint(mode: ShellDataMode): string {
   if (mode === "api") {
-    return "Eternal Production V4 · Data operasional dari MongoDB V4 (bukan DEMO).";
+    return "Eternal Production V4 · Data operasional (bukan DEMO).";
   }
   if (mode === "demo") {
-    return "Eternal Production V4 · Modul ini memakai data DEMO browser — tidak menulis MongoDB.";
+    return "Eternal Production V4 · Modul ini memakai data DEMO browser — tidak menulis data produksi.";
   }
   return "Eternal Production V4 · Kerangka navigasi — modul belum terhubung data produksi.";
 }
@@ -78,13 +78,13 @@ export function shellSidefootCopy(mode: ShellDataMode): { title: string; sub: st
   if (mode === "api") {
     return {
       title: "Inbox · Accurate",
-      sub: "MongoDB V4 · read-only",
+      sub: "Accurate · read-only",
     };
   }
   if (mode === "demo") {
     return {
       title: "UI Shell · DEMO",
-      sub: "Simulasi · tidak menulis MongoDB",
+      sub: "Simulasi · tidak menulis data produksi",
     };
   }
   return {

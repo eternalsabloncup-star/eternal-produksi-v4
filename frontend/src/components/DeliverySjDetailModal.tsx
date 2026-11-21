@@ -14,6 +14,7 @@ import {
   qtyText,
   revisionStatusLabel,
 } from "../lib/deliverySj";
+import { actorDisplayLabel } from "../lib/userDisplayName";
 import { SjApiLineItems } from "./SjApiLineItems";
 
 function qtyOrDash(value: number | null | undefined): string {
@@ -267,7 +268,11 @@ export function DeliverySjDetailModal({
                         <td>{event.sequence}</td>
                         <td>{event.sj_version}</td>
                         <td>{loadingEventStatusLabel(event.status)}</td>
-                        <td>{display(event.actor_email)}</td>
+                        <td>
+                          {actorDisplayLabel({
+                            actor_display_name: event.actor_display_name,
+                          })}
+                        </td>
                         <td>{display(event.cancelled_by)}</td>
                         <td>{display(event.cancel_reason)}</td>
                       </tr>
@@ -300,7 +305,10 @@ export function DeliverySjDetailModal({
                             Status: {loadingEventStatusLabel(event.status)}
                           </div>
                           <div className="ep-sj-mobile-row-meta ep-sj-mobile-row-wrap">
-                            Petugas: {display(event.actor_email)}
+                            Petugas:{" "}
+                            {actorDisplayLabel({
+                              actor_display_name: event.actor_display_name,
+                            })}
                           </div>
                         </div>
                       </div>

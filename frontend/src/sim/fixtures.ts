@@ -201,6 +201,7 @@ export let simTasks: OperationalTask[] = [
     status: "belum_dikerjakan",
     // Kontrak produksi: Screen tanpa qty_target (qty manual, tidak cap jadwal).
     item_name: "Cup 12oz Cetak",
+    print_color: "Hitam",
     outlet_name: "PT Contoh Kemasan",
     ref: {
       accurate_po_id: PO_ID,
@@ -339,6 +340,7 @@ export type SimConfirmation = {
   idempotency_key: string;
   qty: number;
   actor_email: string;
+  actor_display_name?: string;
   actor_role: string;
   note?: string | null;
   created_at: string;

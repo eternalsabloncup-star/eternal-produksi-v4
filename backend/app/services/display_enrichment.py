@@ -10,7 +10,13 @@ from typing import Any
 from pymongo.database import Database
 
 from app.repositories import delivery_repository as deliveries
+from app.repositories import schedule_repository as schedules
 from app.repositories.po_repository import get_by_accurate_id
+from app.repositories.settings_user_repository import (
+    display_names_by_emails,
+    operational_display_name,
+)
+from app.models.user import normalize_email
 
 
 def outlet_name_from_po(po_doc: dict[str, Any] | None) -> str:
@@ -202,14 +208,18 @@ def enrich_operational_tasks(
 
     po_ids: set[str] = set()
     sj_ids: set[str] = set()
+    alloc_ids: set[str] = set()
     for task in task_rows:
         ref = task.get("ref") if isinstance(task.get("ref"), dict) else {}
         po_id = str(ref.get("accurate_po_id") or "").strip()
         sj_id = str(ref.get("accurate_delivery_note_id") or "").strip()
+        alloc_id = str(ref.get("allocation_id") or "").strip()
         if po_id:
             po_ids.add(po_id)
         if sj_id:
             sj_ids.add(sj_id)
+        if alloc_id:
+            alloc_ids.add(alloc_id)
 
     po_by_id: dict[str, dict[str, Any]] = {}
     for po_id in po_ids:
@@ -235,6 +245,15 @@ def enrich_operational_tasks(
         if is_active_delivery_note(note):
             sj_note_by_id[sj_id] = note  # type: ignore[assignment]
             sj_line_identity[sj_id] = _sj_line_identity_index(note)
+
+    # Warna Cat SoT = allocation.print_color (input KP), bukan Accurate item.color.
+    print_color_by_alloc: dict[str, str] = {}
+    for alloc_id in alloc_ids:
+        alloc = schedules.get_allocation(db, alloc_id)
+        if not isinstance(alloc, dict):
+            continue
+        color = str(alloc.get("print_color") or "").strip()
+        print_color_by_alloc[alloc_id] = color
 
     for task in task_rows:
         ref = task.get("ref") if isinstance(task.get("ref"), dict) else {}
@@ -288,6 +307,12 @@ def enrich_operational_tasks(
         task["outlet_name"] = outlet
         task["ship_dates"] = ship_dates
 
+        alloc_id = str(ref.get("allocation_id") or "").strip()
+        if alloc_id:
+            task["print_color"] = print_color_by_alloc.get(alloc_id, "")
+        else:
+            task["print_color"] = ""
+
         # Enrich mismatched_items (koordinasi Loading–SJ) bila line diketahui.
         ctx = task.get("context") if isinstance(task.get("context"), dict) else None
         if ctx and isinstance(ctx.get("mismatched_items"), list):
@@ -306,3 +331,26 @@ def enrich_operational_tasks(
                     row["item_code"] = ident["item_code"]
 
     return task_rows
+
+
+def enrich_actor_display_names(
+    db: Database, rows: list[dict[str, Any]], *, email_field: str = "actor_email"
+) -> list[dict[str, Any]]:
+    """Tambah actor_display_name dari Master (batch) — tidak mengubah storage email."""
+    if not rows:
+        return rows
+    emails: list[str] = []
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        raw = str(row.get(email_field) or "").strip()
+        if raw:
+            emails.append(raw)
+    names = display_names_by_emails(db, emails)
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        email_n = normalize_email(str(row.get(email_field) or ""))
+        raw_name = names.get(email_n, "") if email_n else ""
+        row["actor_display_name"] = operational_display_name(raw_name)
+    return rows

@@ -4674,6 +4674,22 @@ td.ep-num,
   margin: 0 0 10px;
 }
 
+.ep-item-progress-kv {
+  margin-bottom: 8px;
+}
+
+.ep-item-progress-kv dt::after {
+  content: " :";
+  font-weight: 650;
+  color: #6b7c8a;
+}
+
+.ep-item-progress-divider {
+  border: 0;
+  border-top: 1px solid #d8e3db;
+  margin: 8px 0;
+}
+
 .ep-sched-revise-modal {
   width: min(420px, 94vw);
   max-height: min(88vh, 560px);

@@ -1,13 +1,12 @@
 import { SchedulingApiError, type SchedulingOperator } from "../api/scheduling";
+import { userDisplayName } from "../lib/userDisplayName";
 
-/** Label dropdown/tabel — nama Master, fallback email (identitas stabil tetap email). */
+/** Label dropdown/tabel operasional — Master display_name (tanpa fallback email). */
 export function operatorCandidateLabel(op: {
   email: string;
   display_name?: string | null;
 }): string {
-  const name = (op.display_name || "").trim();
-  if (name) return name;
-  return (op.email || "").trim() || "—";
+  return userDisplayName(op.display_name);
 }
 
 /** Kandidat dropdown: email wajib; nama kosong tetap lolos (label fallback). */

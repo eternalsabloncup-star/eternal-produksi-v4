@@ -35,6 +35,7 @@ import {
 } from "../api/poDetail";
 import { useAuth } from "../auth";
 import { formatDateDisplay, formatDateTimeDisplay } from "../lib/formatDate";
+import { actorDisplayLabel } from "../lib/userDisplayName";
 import { formatPwaBranchLabel } from "../mobile/branchDisplay";
 import { useMobileOpsActive } from "../mobile/MobileOpsContext";
 import { hasViewAllTasks, isSuperAdmin } from "../roles";
@@ -61,7 +62,6 @@ import {
   sampleStatusClass,
   sampleStatusLabel,
   screenAllocQty,
-  shortfallLabel,
   statusBadgeClass,
   statusLabel,
   taskDisplayLabel,
@@ -100,7 +100,7 @@ function signatureBlob(canvas: HTMLCanvasElement): Promise<Blob | null> {
   return new Promise((resolve) => canvas.toBlob(resolve, "image/png"));
 }
 
-/** Tugas peran dari task engine MongoDB V4 — tanpa fixture DEMO. */
+/** Tugas peran dari task engine — tanpa fixture DEMO. */
 export function TeamTaskApiPanel({
   role,
   roleLabel,
@@ -484,23 +484,17 @@ export function TeamTaskApiPanel({
         filterType: "text",
         defaultWidth: 200,
         getFilterValue: (t) => {
+          // Filter may still match code/line for searchability; display is name-only.
           const name = taskItemDisplayName(t);
           const meta = taskItemSecondaryMeta(t);
           return meta ? `${name} ${meta}` : name;
         },
         getSortValue: (t) => taskItemDisplayName(t),
-        render: (t) => {
-          const name = taskItemDisplayName(t);
-          const meta = taskItemSecondaryMeta(t);
-          return (
-            <span className="ep-sched-td-text" data-testid="task-item-name-cell">
-              <span className="ep-sched-item-name">{name}</span>
-              {meta ? (
-                <span className="ep-sched-item-code">{meta}</span>
-              ) : null}
-            </span>
-          );
-        },
+        render: (t) => (
+          <span className="ep-sched-td-text" data-testid="task-item-name-cell">
+            <span className="ep-sched-item-name">{taskItemDisplayName(t)}</span>
+          </span>
+        ),
       },
       {
         id: "qtyTarget",
@@ -975,7 +969,7 @@ export function TeamTaskApiPanel({
       );
       const msg = res.duplicate
         ? "Konfirmasi sama sudah tercatat — Qty tidak digandakan."
-        : `Qty ${formatQty(qty)} tersimpan di MongoDB V4.`;
+        : `Qty ${formatQty(qty)} tersimpan.`;
       setActionNotice(msg);
       showSuccess(msg);
       setSelected(res.task);
@@ -1050,8 +1044,8 @@ export function TeamTaskApiPanel({
         onRowActivate={(t) => void openTask(t)}
         emptyMessage={
           loading
-            ? `Memuat tugas ${roleLabel} dari MongoDB V4…`
-            : `Belum ada tugas ${roleLabel} di MongoDB V4.`
+            ? `Memuat tugas ${roleLabel}…`
+            : `Belum ada tugas ${roleLabel}.`
         }
         filterSlot={(tools) => (
           <div className="ep-filterbar is-compact">
@@ -1357,137 +1351,115 @@ export function TeamTaskApiPanel({
                   </div>
                   <div className="ep-designer-summary-col">
                     <p className="ep-designer-summary-title">Item & Progres</p>
-                    <dl className="ep-kv ep-kv-compact">
-                      <dt>Jumlah item line</dt>
-                      <dd data-testid="designer-item-count">
-                        {poDetailLoading
-                          ? "…"
-                          : poDetail
-                            ? poDetail.itemCount
-                            : "—"}
-                      </dd>
-                      <dt>Item Cetak</dt>
-                      <dd data-testid="designer-print-list">
-                        {poDetailLoading ? (
-                          "Memuat…"
-                        ) : poDetail && poDetail.printLines.length > 0 ? (
-                          <ul className="ep-designer-print-list">
-                            {poDetail.printLines.map((line) => (
-                              <li key={line.accurateLineId || line.itemCode}>
-                                <span className="ep-designer-print-name">
-                                  {line.itemName}
-                                </span>
-                                <span className="ep-designer-print-sep" aria-hidden>
-                                  —
-                                </span>
-                                <span className="ep-designer-print-qty ep-num">
-                                  {formatQty(line.qty)}{" "}
-                                  {line.unit.toLowerCase()}
-                                </span>
-                              </li>
-                            ))}
-                          </ul>
-                        ) : poDetail ? (
-                          "Tidak ada item Cetak"
-                        ) : (
-                          "—"
-                        )}
-                      </dd>
-                      <dt title="Indikator progres tugas desain — bukan Qty cup">
-                        Qty Target tugas
-                      </dt>
-                      <dd className="ep-num">
-                        {formatQty(selected.qty_target)}
-                      </dd>
-                      <dt>Qty Terkonfirmasi</dt>
-                      <dd className="ep-num">
-                        {formatQty(selected.qty_confirmed)}
-                      </dd>
-                      <dt>
-                        {shortfallLabel(
-                          selected.task_type,
-                          selected.ref.process_kind ||
-                            (selected.context?.process_kind as string | undefined),
-                        )}
-                      </dt>
-                      <dd className="ep-num">
-                        {formatQty(
-                          selected.qty_target !== undefined
-                            ? (remainingQty(selected) ?? 0)
-                            : undefined,
-                        )}
-                      </dd>
-                    </dl>
+                    {poDetailLoading ? (
+                      <p className="ep-muted">Memuat…</p>
+                    ) : poDetail && poDetail.printLines.length > 0 ? (
+                      <div data-testid="designer-print-list">
+                        {poDetail.printLines.map((line, idx) => (
+                          <div key={line.accurateLineId || line.itemCode || idx}>
+                            {idx > 0 ? (
+                              <hr className="ep-item-progress-divider" />
+                            ) : null}
+                            <dl className="ep-kv ep-kv-compact ep-item-progress-kv">
+                              <dt>Nama Barang</dt>
+                              <dd>{line.itemName || "Nama barang belum tersedia"}</dd>
+                              <dt>Qty</dt>
+                              <dd className="ep-num">
+                                {formatQty(line.qty)} {line.unit.toLowerCase()}
+                              </dd>
+                            </dl>
+                          </div>
+                        ))}
+                        <dl className="ep-kv ep-kv-compact ep-item-progress-kv">
+                          <dt title="Indikator progres tugas desain — bukan Qty cup">
+                            Qty Target tugas
+                          </dt>
+                          <dd className="ep-num">
+                            {formatQty(selected.qty_target)}
+                          </dd>
+                          <dt>Qty Terkonfirmasi</dt>
+                          <dd className="ep-num">
+                            {formatQty(selected.qty_confirmed)}
+                          </dd>
+                          <dt>Status</dt>
+                          <dd>
+                            <span className={statusBadgeClass(selected.status)}>
+                              {statusLabel(selected.status)}
+                            </span>
+                          </dd>
+                        </dl>
+                      </div>
+                    ) : (
+                      <dl className="ep-kv ep-kv-compact ep-item-progress-kv">
+                        <dt>Item Cetak</dt>
+                        <dd data-testid="designer-item-count">
+                          {poDetail ? "Tidak ada item Cetak" : "—"}
+                        </dd>
+                        <dt>Qty Target tugas</dt>
+                        <dd className="ep-num">
+                          {formatQty(selected.qty_target)}
+                        </dd>
+                        <dt>Qty Terkonfirmasi</dt>
+                        <dd className="ep-num">
+                          {formatQty(selected.qty_confirmed)}
+                        </dd>
+                        <dt>Status</dt>
+                        <dd>
+                          <span className={statusBadgeClass(selected.status)}>
+                            {statusLabel(selected.status)}
+                          </span>
+                        </dd>
+                      </dl>
+                    )}
                   </div>
                 </div>
               ) : selectedIsScheduling ? null : selectedIsDriver ? null : (
                 <div
                   className="ep-task-progress-block"
-                  data-testid="task-progress-table"
+                  data-testid="task-progress-block"
                 >
                   <p className="ep-sectionlabel">Item & Progres</p>
-                  <div className="ep-tblscroll ep-tblscroll-embed">
-                    <table className="ep-table ep-sched-items-table">
-                      <thead>
-                        <tr>
-                          <th>Nama Barang</th>
-                          <th className="ep-num">
-                            {selected.task_type === "screen" &&
-                            selected.qty_target === undefined
-                              ? "Qty Alokasi"
-                              : "Qty Target"}
-                          </th>
-                          <th className="ep-num">Qty Terkonfirmasi</th>
-                          <th className="ep-num">
-                            {shortfallLabel(
-                              selected.task_type,
-                              selected.ref.process_kind ||
-                                (selected.context?.process_kind as
-                                  | string
-                                  | undefined),
-                            )}
-                          </th>
-                          <th>Status</th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        <tr>
-                          <td className="ep-sched-td-text">
-                            <span
-                              className="ep-sched-item-name"
-                              data-testid="task-popup-item-name"
-                            >
-                              {taskItemDisplayName(selected)}
-                            </span>
-                            <span className="ep-sched-item-code">
-                              {taskItemSecondaryMeta(selected) ||
-                                (selected.ref.allocation_id
-                                  ? `alloc:${selected.ref.allocation_id}`
-                                  : "—")}
-                            </span>
-                          </td>
-                          <td className="ep-num">
-                            {selected.qty_target !== undefined
-                              ? formatQty(selected.qty_target)
-                              : formatQty(screenAllocQty(selected) ?? undefined)}
-                          </td>
-                          <td className="ep-num">
-                            {formatQty(selected.qty_confirmed)}
-                          </td>
-                          <td className="ep-num">
-                            {selected.qty_target !== undefined
-                              ? formatQty(remainingQty(selected) ?? 0)
-                              : "—"}
-                          </td>
-                          <td>
-                            <span className={statusBadgeClass(selected.status)}>
-                              {statusLabel(selected.status)}
-                            </span>
-                          </td>
-                        </tr>
-                      </tbody>
-                    </table>
-                  </div>
+                  <dl
+                    className="ep-kv ep-kv-compact ep-item-progress-kv"
+                    data-testid="task-progress-kv"
+                  >
+                    <dt>Nama Barang</dt>
+                    <dd data-testid="task-popup-item-name">
+                      {taskItemDisplayName(selected)}
+                    </dd>
+                    <dt>
+                      {selected.task_type === "screen" &&
+                      selected.qty_target === undefined
+                        ? "Qty Alokasi"
+                        : "Qty Target"}
+                    </dt>
+                    <dd className="ep-num">
+                      {selected.qty_target !== undefined
+                        ? `${formatQty(selected.qty_target)} pcs`
+                        : screenAllocQty(selected) !== null
+                          ? `${formatQty(screenAllocQty(selected) ?? undefined)} pcs`
+                          : "—"}
+                    </dd>
+                    {(selected.print_color !== undefined ||
+                      selected.ref.allocation_id) && (
+                      <>
+                        <dt>Warna Cat</dt>
+                        <dd>
+                          {String(selected.print_color || "").trim() || "—"}
+                        </dd>
+                      </>
+                    )}
+                    <dt>Qty Terkonfirmasi</dt>
+                    <dd className="ep-num">
+                      {formatQty(selected.qty_confirmed)} pcs
+                    </dd>
+                    <dt>Status</dt>
+                    <dd>
+                      <span className={statusBadgeClass(selected.status)}>
+                        {statusLabel(selected.status)}
+                      </span>
+                    </dd>
+                  </dl>
                 </div>
               )}
 
@@ -1683,8 +1655,11 @@ export function TeamTaskApiPanel({
                   <ul className="ep-history">
                     {history.map((h) => (
                       <li key={h.idempotency_key}>
-                        {formatQty(h.qty)} · {h.actor_email} ·{" "}
-                        {formatDateTimeDisplay(h.created_at)}
+                        {formatQty(h.qty)} ·{" "}
+                        {actorDisplayLabel({
+                          actor_display_name: h.actor_display_name,
+                        })}{" "}
+                        · {formatDateTimeDisplay(h.created_at)}
                       </li>
                     ))}
                   </ul>
@@ -1721,16 +1696,6 @@ export function TeamTaskApiPanel({
                             const name =
                               String(it.item_name || "").trim() ||
                               "Nama barang belum tersedia";
-                            const meta = [
-                              it.item_code
-                                ? `Kode ${it.item_code}`
-                                : null,
-                              it.accurate_line_id
-                                ? `Line ${it.accurate_line_id}`
-                                : null,
-                            ]
-                              .filter(Boolean)
-                              .join(" · ");
                             return (
                               <tr
                                 key={String(it.accurate_line_id)}
@@ -1742,11 +1707,6 @@ export function TeamTaskApiPanel({
                                   <span className="ep-sched-item-name">
                                     {name}
                                   </span>
-                                  {meta ? (
-                                    <span className="ep-sched-item-code">
-                                      {meta}
-                                    </span>
-                                  ) : null}
                                 </td>
                                 <td className="ep-num">
                                   {formatQty(Number(it.qty))}
@@ -1846,14 +1806,6 @@ export function TeamTaskApiPanel({
                           const name =
                             String(m.item_name || "").trim() ||
                             "Nama barang belum tersedia";
-                          const meta = [
-                            m.item_code ? `Kode ${m.item_code}` : null,
-                            m.accurate_line_id
-                              ? `Line ${m.accurate_line_id}`
-                              : null,
-                          ]
-                            .filter(Boolean)
-                            .join(" · ");
                           return (
                             <tr
                               key={m.accurate_line_id}
@@ -1863,11 +1815,6 @@ export function TeamTaskApiPanel({
                                 <span className="ep-sched-item-name">
                                   {name}
                                 </span>
-                                {meta ? (
-                                  <span className="ep-sched-item-code">
-                                    {meta}
-                                  </span>
-                                ) : null}
                               </td>
                               <td className="ep-num">
                                 {formatQty(m.qty_sj)}
@@ -1902,7 +1849,11 @@ export function TeamTaskApiPanel({
                 <div data-testid="driver-block">
                   <dl className="ep-kv">
                     <dt>Driver (akun login)</dt>
-                    <dd>{user?.email || "—"}</dd>
+                    <dd>
+                      {actorDisplayLabel({
+                        display_name: user?.display_name,
+                      })}
+                    </dd>
                     <dt>No. SJ</dt>
                     <dd>
                       {selected.ref.sj_no ||
@@ -2048,16 +1999,6 @@ export function TeamTaskApiPanel({
                   className="ep-filterbar"
                   data-testid="qty-confirm-form"
                 >
-                  {selected.task_type === "screen" &&
-                  selected.qty_target === undefined ? (
-                    <p className="ep-notice" data-testid="screen-qty-hint">
-                      Screen: input Qty hasil pekerjaan (tidak dibatasi Qty
-                      jadwal). Qty harus &gt; 0.
-                      {screenAllocQty(selected) !== null
-                        ? ` Qty Alokasi: ${formatQty(screenAllocQty(selected) ?? undefined)}.`
-                        : ""}
-                    </p>
-                  ) : null}
                   <label htmlFor="qty-confirm">Qty</label>
                   <input
                     id="qty-confirm"
@@ -2091,7 +2032,7 @@ export function TeamTaskApiPanel({
                 {busy
                   ? "Memproses…"
                   : selectedIsDesigner
-                    ? "Desain · MongoDB V4"
+                    ? "Desain"
                     : selectedIsScheduling
                       ? "Penjadwalan · alokasi operator"
                       : "Backend tetap otorisasi final."}

@@ -281,12 +281,12 @@ export function BufferStockApiPanel() {
         }}
         emptyMessage={
           loading
-            ? "Memuat Buffer Stock dari MongoDB V4…"
-            : "Belum ada PO beratribut Buffer di MongoDB V4."
+            ? "Memuat Buffer Stock…"
+            : "Belum ada PO beratribut Buffer."
         }
         filterSlot={(tools) => (
           <div className="ep-filterbar is-compact">
-            <strong>Buffer Stock · MongoDB V4</strong>
+            <strong>Buffer Stock</strong>
             <div className="ep-search">
               <span style={{ fontSize: 14, color: "#97a8bc" }} aria-hidden>
                 ⌕

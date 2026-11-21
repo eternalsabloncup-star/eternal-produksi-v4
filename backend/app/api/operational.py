@@ -341,9 +341,13 @@ def get_task_confirmations(
         require_task_branch_access(db, auth.user, task)
     except ObjectAuthError as exc:
         raise HTTPException(status.HTTP_403_FORBIDDEN, str(exc)) from exc
+    from app.services.display_enrichment import enrich_actor_display_names
+
+    items = tasks.list_confirmations(db, task_key)
+    enrich_actor_display_names(db, items)
     return {
         "task_key": task_key,
-        "items": tasks.list_confirmations(db, task_key),
+        "items": items,
     }
 
 

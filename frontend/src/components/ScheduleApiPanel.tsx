@@ -206,7 +206,7 @@ export function ScheduleApiPanel() {
       {
         label: "Baris Item Cetak",
         value: printLines,
-        foot: "PO diterima · MongoDB V4",
+        foot: "PO diterima",
       },
     ];
   }, [boardKpi, totalRows]);
@@ -443,10 +443,22 @@ export function ScheduleApiPanel() {
         filterType: "text",
         defaultWidth: 160,
         getFilterValue: (row) =>
-          row.allocations.map((a) => a.operator_email).join(" "),
+          row.allocations
+            .map(
+              (a) =>
+                a.operator_display_name ||
+                a.operator_email ||
+                "",
+            )
+            .join(" "),
         render: (row) =>
           row.allocations.length
-            ? row.allocations.map((a) => a.operator_email).join(", ")
+            ? row.allocations
+                .map((a) =>
+                  (a.operator_display_name || "").trim() ||
+                  "Nama belum tersedia",
+                )
+                .join(", ")
             : "—",
       },
       {
@@ -580,8 +592,8 @@ export function ScheduleApiPanel() {
         }}
         emptyMessage={
           loading
-            ? "Memuat jadwal dari MongoDB V4…"
-            : "Belum ada item Cetak Accurate di MongoDB V4."
+            ? "Memuat jadwal…"
+            : "Belum ada item Cetak Accurate."
         }
         filterSlot={(tools) => (
           <div className="ep-filterbar is-compact">
@@ -687,7 +699,10 @@ export function ScheduleApiPanel() {
                       {selected.allocations.map((a) => (
                         <tr key={a.allocation_id}>
                           <td>{a.allocation_id}</td>
-                          <td>{a.operator_email}</td>
+                          <td>
+                            {(a.operator_display_name || "").trim() ||
+                              "Nama belum tersedia"}
+                          </td>
                           <td>{qty(a.qty)}</td>
                           <td>{a.schedule_date || "—"}</td>
                           <td>{qty(a.qty_printed || 0)}</td>
@@ -794,7 +809,10 @@ export function ScheduleApiPanel() {
                   <>
                     <dl className="ep-kv ep-kv-sched ep-sched-revise-kv">
                       <dt>Operator</dt>
-                      <dd>{reviseTarget.operator_email}</dd>
+                      <dd>
+                        {(reviseTarget.operator_display_name || "").trim() ||
+                          "Nama belum tersedia"}
+                      </dd>
                       <dt>Nama barang</dt>
                       <dd>{selected.item_name}</dd>
                       <dt>Qty alokasi saat ini</dt>
