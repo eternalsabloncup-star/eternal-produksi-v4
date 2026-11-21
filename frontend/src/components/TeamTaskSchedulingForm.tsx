@@ -397,7 +397,7 @@ export function TeamTaskSchedulingForm({
     !line?.scheduling_unlocked;
 
   function itemNameForLine(l: LineSchedule): string {
-    return l.item_name || l.item_code || "—";
+    return l.item_name || "Nama barang belum tersedia";
   }
 
   const latest = designState?.latest ?? null;
@@ -665,7 +665,7 @@ export function TeamTaskSchedulingForm({
                         key={l.accurate_line_id}
                         value={l.accurate_line_id}
                       >
-                        {l.item_name || l.item_code || "Nama barang belum tersedia"}
+                        {l.item_name || "Nama barang belum tersedia"}
                         {l.item_code || l.accurate_line_id
                           ? ` · ${[l.item_code ? `Kode ${l.item_code}` : null, `Line ${l.accurate_line_id}`]
                               .filter(Boolean)

@@ -246,6 +246,7 @@ def test_task_enrichment_item_name_from_po_line(db: Database) -> None:
     expected_name = str(line.get("item_name") or "").strip()
     expected_code = str(line.get("item_code") or "").strip()
     assert expected_name  # sample SoT harus punya nama
+    before_doc = db["operational_tasks"].find_one({})  # may be None
     tasks = [
         {
             "task_key": "t-screen",
@@ -296,6 +297,62 @@ def test_task_enrichment_item_name_from_po_line(db: Database) -> None:
     # Line tidak ada → jangan mengarang nama
     assert tasks[2]["item_name"] == ""
     assert "item_name" not in tasks[2]["ref"] or not tasks[2]["ref"].get("item_name")
+    # Enrichment read-only — tidak menulis collection tugas.
+    assert db["operational_tasks"].find_one({}) == before_doc
+
+
+def test_designer_po_scoped_item_name_from_print_lines(db: Database) -> None:
+    """Designer PO-scoped (tanpa line_id) → Nama dari print_lines, bukan first-line arbitrer."""
+    po = _seed_po(db)
+    print_line = next(
+        i
+        for i in po["header"]["items"]
+        if str(i.get("accurate_line_id")) == LINE_PRINT
+    )
+    expected = str(print_line.get("item_name") or "").strip()
+    assert expected
+    # Tambah Cetak kedua agar multi-item tidak boleh jadi first-line tunggal.
+    second_name = "Barang Simulasi Cetak Kedua"
+    db["accurate_sales_orders"].update_one(
+        {"accurate_id": PO_ID},
+        {
+            "$push": {
+                "header.items": {
+                    "accurate_line_id": "106320",
+                    "item_code": "BRG-SIM-003",
+                    "item_name": second_name,
+                    "qty": 500,
+                    "unit": "PCS",
+                    "process_kind": "Cetak",
+                }
+            }
+        },
+    )
+    design = {
+        "task_key": f"task:design:po:{PO_ID}",
+        "task_type": "design",
+        "scope": "po",
+        "ref": {"accurate_po_id": PO_ID, "po_no": "PO/18/11/2026/000010"},
+        "context": {"print_line_count": 2},
+    }
+    missing_po = {
+        "task_key": "task:design:po:OTHER-BRANCH",
+        "task_type": "design",
+        "scope": "po",
+        "ref": {"accurate_po_id": "PO-NOT-IN-DB"},
+    }
+    enrich.enrich_operational_tasks(db, [design, missing_po])
+    names = [r["item_name"] for r in design["item_lines"]]
+    assert expected in names
+    assert second_name in names
+    assert "\n" in design["item_name"]
+    assert expected in design["item_name"]
+    assert second_name in design["item_name"]
+    # Bukan hanya first-line: kedua nama hadir.
+    assert design["item_name"] != expected
+    # Cross-branch / PO absen → tidak mengarang nama dari PO lain.
+    assert missing_po["item_name"] == ""
+    assert missing_po["item_lines"] == []
 
 
 def test_calendar_sort_and_no_utc_shift() -> None:

@@ -165,14 +165,16 @@ export function remainingQty(task: OperationalTask): number | null {
   return Math.max(task.qty_target - task.qty_confirmed, 0);
 }
 
-const ITEM_NAME_FALLBACK = "Nama barang belum tersedia";
+export const ITEM_NAME_FALLBACK = "Nama barang belum tersedia";
 
-/**
- * Nama Barang utama untuk tampilan Tugas Tim.
- * Urutan: ref.item_name → top-level item_name → context.item_name → fallback jujur.
- * Tidak memakai item_code / accurate_line_id sebagai nama.
- */
-export function taskItemDisplayName(
+export type TaskItemLineView = {
+  accurateLineId: string;
+  itemName: string;
+  qty: number | null;
+  unit: string;
+};
+
+function _scalarItemName(
   task: Pick<OperationalTask, "ref" | "item_name" | "context">,
 ): string {
   const fromRef = String(task.ref?.item_name || "").trim();
@@ -186,7 +188,57 @@ export function taskItemDisplayName(
     ).trim();
     if (fromCtx) return fromCtx;
   }
+  return "";
+}
+
+/**
+ * Nama Barang utama untuk tampilan Tugas Tim.
+ * Urutan: ref.item_name → top-level item_name → item_lines → context.item_name → fallback jujur.
+ * Tidak memakai item_code / accurate_line_id sebagai nama.
+ */
+export function taskItemDisplayName(
+  task: Pick<OperationalTask, "ref" | "item_name" | "item_lines" | "context">,
+): string {
+  const scalar = _scalarItemName(task);
+  if (scalar) return scalar;
+  const fromLines = taskItemLines(task)
+    .map((l) => l.itemName)
+    .filter(Boolean);
+  if (fromLines.length) return fromLines.join("\n");
   return ITEM_NAME_FALLBACK;
+}
+
+/** Baris produk untuk Item & Progres vertikal (multi-item aman). */
+export function taskItemLines(
+  task: Pick<OperationalTask, "item_lines" | "ref" | "item_name" | "context">,
+): TaskItemLineView[] {
+  const raw = Array.isArray(task.item_lines) ? task.item_lines : [];
+  const rows: TaskItemLineView[] = [];
+  for (const row of raw) {
+    if (!row || typeof row !== "object") continue;
+    const name = String(row.item_name || "").trim();
+    if (!name) continue;
+    const qtyNum = Number(row.qty);
+    rows.push({
+      accurateLineId: String(row.accurate_line_id || "").trim(),
+      itemName: name,
+      qty: Number.isFinite(qtyNum) ? qtyNum : null,
+      unit: String(row.unit || "PCS").trim() || "PCS",
+    });
+  }
+  if (rows.length) return rows;
+  const single = _scalarItemName(task);
+  if (single) {
+    return [
+      {
+        accurateLineId: String(task.ref?.accurate_line_id || "").trim(),
+        itemName: single,
+        qty: null,
+        unit: "PCS",
+      },
+    ];
+  }
+  return [];
 }
 
 /** Subteks teknis: Kode · Line (tanpa allocation id sebagai identitas produk). */

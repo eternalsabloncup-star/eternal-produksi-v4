@@ -17,6 +17,7 @@ from app.repositories.settings_user_repository import (
     operational_display_name,
 )
 from app.models.user import normalize_email
+from app.services.po_tasks import print_lines
 
 
 def outlet_name_from_po(po_doc: dict[str, Any] | None) -> str:
@@ -194,14 +195,45 @@ def _sj_line_identity_index(
     return out
 
 
+def _print_item_lines_from_po(po_doc: dict[str, Any] | None) -> list[dict[str, Any]]:
+    """Baris Cetak relevan dari PO — klasifikasi sama ``print_lines`` (bukan first-line)."""
+    out: list[dict[str, Any]] = []
+    if not isinstance(po_doc, dict):
+        return out
+    for line in print_lines(po_doc):
+        if not isinstance(line, dict):
+            continue
+        name = str(line.get("item_name") or "").strip()
+        if not name:
+            continue
+        qty_raw = line.get("qty")
+        try:
+            qty_val: float | int | None = (
+                float(qty_raw) if qty_raw is not None and str(qty_raw).strip() != "" else None
+            )
+        except (TypeError, ValueError):
+            qty_val = None
+        out.append(
+            {
+                "accurate_line_id": str(line.get("accurate_line_id") or "").strip(),
+                "item_name": name,
+                "item_code": str(line.get("item_code") or "").strip(),
+                "qty": qty_val,
+                "unit": str(line.get("unit") or "PCS").strip() or "PCS",
+            }
+        )
+    return out
+
+
 def enrich_operational_tasks(
     db: Database, task_rows: list[dict[str, Any]]
 ) -> list[dict[str, Any]]:
     """Batch-enrich task list: outlet_name, ship_dates, item_name (setelah auth).
 
-    Nama Barang diambil dari PO item line yang terhubung (accurate_line_id),
-    bukan dari urutan baris atau pencocokan teks bebas. Read-only — tidak
-    menulis MongoDB / schema TaskRef.
+    Nama Barang:
+    - Line-scoped: exact ``accurate_line_id`` → header.items[].item_name
+    - PO-scoped (Designer dll.): semua print_lines PO (Cetak), bukan first-line
+    Read-only — tidak menulis MongoDB / schema TaskRef.
     """
     if not task_rows:
         return task_rows
@@ -229,6 +261,9 @@ def enrich_operational_tasks(
 
     line_identity_by_po: dict[str, dict[str, dict[str, str]]] = {
         po_id: _po_line_identity_index(doc) for po_id, doc in po_by_id.items()
+    }
+    print_lines_by_po: dict[str, list[dict[str, Any]]] = {
+        po_id: _print_item_lines_from_po(doc) for po_id, doc in po_by_id.items()
     }
 
     notes_by_po: dict[str, list[dict[str, Any]]] = {}
@@ -283,16 +318,52 @@ def enrich_operational_tasks(
 
         item_name = ""
         item_code = str(ref.get("item_code") or "").strip()
+        item_lines: list[dict[str, Any]] = []
         if po_id and line_id:
             identity = line_identity_by_po.get(po_id, {}).get(line_id) or {}
             item_name = identity.get("item_name") or ""
             if not item_code:
                 item_code = identity.get("item_code") or ""
+            if item_name:
+                # Satu line — tetap sediakan item_lines untuk popup vertikal seragam.
+                item_lines = [
+                    {
+                        "accurate_line_id": line_id,
+                        "item_name": item_name,
+                        "item_code": item_code,
+                        "qty": None,
+                        "unit": "PCS",
+                    }
+                ]
         elif sj_id and line_id:
             identity = sj_line_identity.get(sj_id, {}).get(line_id) or {}
             item_name = identity.get("item_name") or ""
             if not item_code:
                 item_code = identity.get("item_code") or ""
+            if item_name:
+                item_lines = [
+                    {
+                        "accurate_line_id": line_id,
+                        "item_name": item_name,
+                        "item_code": item_code,
+                        "qty": None,
+                        "unit": "PCS",
+                    }
+                ]
+        elif po_id and not line_id:
+            # Designer / PO-scoped: semua print lines (Cetak), bukan first-line.
+            item_lines = list(print_lines_by_po.get(po_id) or [])
+            if len(item_lines) == 1:
+                item_name = str(item_lines[0].get("item_name") or "").strip()
+                if not item_code:
+                    item_code = str(item_lines[0].get("item_code") or "").strip()
+            elif len(item_lines) > 1:
+                # Compact multiline untuk sel tabel; bukan identitas tunggal palsu.
+                item_name = "\n".join(
+                    str(row.get("item_name") or "").strip()
+                    for row in item_lines
+                    if str(row.get("item_name") or "").strip()
+                )
         # Fallback jujur dari context yang sudah tersimpan (bukan invent).
         if not item_name:
             ctx = task.get("context") if isinstance(task.get("context"), dict) else {}
@@ -304,6 +375,7 @@ def enrich_operational_tasks(
             ref["item_code"] = item_code
         # Top-level mirror (selaras outlet_name) untuk kontrak tampilan FE.
         task["item_name"] = item_name
+        task["item_lines"] = item_lines
         task["outlet_name"] = outlet
         task["ship_dates"] = ship_dates
 

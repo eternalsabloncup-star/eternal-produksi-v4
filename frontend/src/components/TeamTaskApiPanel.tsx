@@ -45,6 +45,7 @@ import { DEFAULT_TABLE_PAGE_SIZE } from "./DataTable/Pagination";
 import type { ColumnDef } from "./DataTable/types";
 import { DesignWorkflowPanel } from "./DesignWorkflowPanel";
 import { EvidenceContentPreview } from "./EvidenceContentPreview";
+import { TaskItemProgress } from "./TaskItemProgress";
 import { TeamTaskSchedulingForm } from "./TeamTaskSchedulingForm";
 import {
   allowTaskAction,
@@ -66,6 +67,7 @@ import {
   statusLabel,
   taskDisplayLabel,
   taskItemDisplayName,
+  taskItemLines,
   taskItemSecondaryMeta,
   TASK_LIST_FETCH_LIMIT,
   type StatusFilter,
@@ -1350,117 +1352,100 @@ export function TeamTaskApiPanel({
                     ) : null}
                   </div>
                   <div className="ep-designer-summary-col">
-                    <p className="ep-designer-summary-title">Item & Progres</p>
-                    {poDetailLoading ? (
-                      <p className="ep-muted">Memuat…</p>
-                    ) : poDetail && poDetail.printLines.length > 0 ? (
-                      <div data-testid="designer-print-list">
-                        {poDetail.printLines.map((line, idx) => (
-                          <div key={line.accurateLineId || line.itemCode || idx}>
-                            {idx > 0 ? (
-                              <hr className="ep-item-progress-divider" />
-                            ) : null}
-                            <dl className="ep-kv ep-kv-compact ep-item-progress-kv">
-                              <dt>Nama Barang</dt>
-                              <dd>{line.itemName || "Nama barang belum tersedia"}</dd>
-                              <dt>Qty</dt>
-                              <dd className="ep-num">
-                                {formatQty(line.qty)} {line.unit.toLowerCase()}
-                              </dd>
-                            </dl>
-                          </div>
-                        ))}
-                        <dl className="ep-kv ep-kv-compact ep-item-progress-kv">
-                          <dt title="Indikator progres tugas desain — bukan Qty cup">
-                            Qty Target tugas
-                          </dt>
-                          <dd className="ep-num">
-                            {formatQty(selected.qty_target)}
-                          </dd>
-                          <dt>Qty Terkonfirmasi</dt>
-                          <dd className="ep-num">
-                            {formatQty(selected.qty_confirmed)}
-                          </dd>
-                          <dt>Status</dt>
-                          <dd>
-                            <span className={statusBadgeClass(selected.status)}>
-                              {statusLabel(selected.status)}
-                            </span>
-                          </dd>
-                        </dl>
-                      </div>
-                    ) : (
-                      <dl className="ep-kv ep-kv-compact ep-item-progress-kv">
-                        <dt>Item Cetak</dt>
-                        <dd data-testid="designer-item-count">
-                          {poDetail ? "Tidak ada item Cetak" : "—"}
-                        </dd>
-                        <dt>Qty Target tugas</dt>
-                        <dd className="ep-num">
-                          {formatQty(selected.qty_target)}
-                        </dd>
-                        <dt>Qty Terkonfirmasi</dt>
-                        <dd className="ep-num">
-                          {formatQty(selected.qty_confirmed)}
-                        </dd>
-                        <dt>Status</dt>
-                        <dd>
-                          <span className={statusBadgeClass(selected.status)}>
-                            {statusLabel(selected.status)}
-                          </span>
-                        </dd>
-                      </dl>
-                    )}
+                    {(() => {
+                      const enriched = taskItemLines(selected);
+                      const fromPo =
+                        !poDetailLoading && poDetail
+                          ? poDetail.printLines.map((line) => ({
+                              accurateLineId: line.accurateLineId,
+                              itemName: line.itemName,
+                              qty: line.qty,
+                              unit: line.unit,
+                            }))
+                          : [];
+                      const items = enriched.length ? enriched : fromPo;
+                      if (poDetailLoading && !enriched.length) {
+                        return (
+                          <>
+                            <p className="ep-designer-summary-title">
+                              Item & Progres
+                            </p>
+                            <p className="ep-muted">Memuat…</p>
+                          </>
+                        );
+                      }
+                      return (
+                        <div data-testid="designer-print-list">
+                          <TaskItemProgress
+                            items={items}
+                            showItemQty
+                            fields={[
+                              {
+                                label: "Qty Terkonfirmasi",
+                                value: formatQty(selected.qty_confirmed),
+                                numeric: true,
+                              },
+                              {
+                                label: "Status",
+                                value: (
+                                  <span
+                                    className={statusBadgeClass(selected.status)}
+                                  >
+                                    {statusLabel(selected.status)}
+                                  </span>
+                                ),
+                              },
+                            ]}
+                          />
+                        </div>
+                      );
+                    })()}
                   </div>
                 </div>
               ) : selectedIsScheduling ? null : selectedIsDriver ? null : (
-                <div
-                  className="ep-task-progress-block"
-                  data-testid="task-progress-block"
-                >
-                  <p className="ep-sectionlabel">Item & Progres</p>
-                  <dl
-                    className="ep-kv ep-kv-compact ep-item-progress-kv"
-                    data-testid="task-progress-kv"
-                  >
-                    <dt>Nama Barang</dt>
-                    <dd data-testid="task-popup-item-name">
-                      {taskItemDisplayName(selected)}
-                    </dd>
-                    <dt>
-                      {selected.task_type === "screen" &&
-                      selected.qty_target === undefined
-                        ? "Qty Alokasi"
-                        : "Qty Target"}
-                    </dt>
-                    <dd className="ep-num">
-                      {selected.qty_target !== undefined
-                        ? `${formatQty(selected.qty_target)} pcs`
-                        : screenAllocQty(selected) !== null
-                          ? `${formatQty(screenAllocQty(selected) ?? undefined)} pcs`
-                          : "—"}
-                    </dd>
-                    {(selected.print_color !== undefined ||
-                      selected.ref.allocation_id) && (
-                      <>
-                        <dt>Warna Cat</dt>
-                        <dd>
-                          {String(selected.print_color || "").trim() || "—"}
-                        </dd>
-                      </>
-                    )}
-                    <dt>Qty Terkonfirmasi</dt>
-                    <dd className="ep-num">
-                      {formatQty(selected.qty_confirmed)} pcs
-                    </dd>
-                    <dt>Status</dt>
-                    <dd>
-                      <span className={statusBadgeClass(selected.status)}>
-                        {statusLabel(selected.status)}
-                      </span>
-                    </dd>
-                  </dl>
-                </div>
+                <TaskItemProgress
+                  items={taskItemLines(selected)}
+                  showItemQty={false}
+                  fields={[
+                    {
+                      label:
+                        selected.task_type === "screen" &&
+                        selected.qty_target === undefined
+                          ? "Qty Alokasi"
+                          : "Qty",
+                      value:
+                        selected.qty_target !== undefined
+                          ? `${formatQty(selected.qty_target)} pcs`
+                          : screenAllocQty(selected) !== null
+                            ? `${formatQty(screenAllocQty(selected) ?? undefined)} pcs`
+                            : "—",
+                      numeric: true,
+                    },
+                    ...(selected.print_color !== undefined ||
+                    selected.ref.allocation_id
+                      ? [
+                          {
+                            label: "Warna Cat",
+                            value:
+                              String(selected.print_color || "").trim() || "—",
+                          },
+                        ]
+                      : []),
+                    {
+                      label: "Qty Terkonfirmasi",
+                      value: `${formatQty(selected.qty_confirmed)} pcs`,
+                      numeric: true,
+                    },
+                    {
+                      label: "Status",
+                      value: (
+                        <span className={statusBadgeClass(selected.status)}>
+                          {statusLabel(selected.status)}
+                        </span>
+                      ),
+                    },
+                  ]}
+                />
               )}
 
               {selectedIsDesigner && selected.ref.accurate_po_id ? (

@@ -172,7 +172,21 @@ export let simTasks: OperationalTask[] = [
     assigned_role: "designer",
     status: "belum_dikerjakan",
     qty_target: 1,
-    ref: { accurate_po_id: PO_ID, po_no: PO_NO },
+    item_name: "Cup 12oz Cetak",
+    item_lines: [
+      {
+        accurate_line_id: LINE_CETAK,
+        item_name: "Cup 12oz Cetak",
+        item_code: "CUP-12OZ",
+        qty: 2000,
+        unit: "PCS",
+      },
+    ],
+    ref: {
+      accurate_po_id: PO_ID,
+      po_no: PO_NO,
+      item_name: "Cup 12oz Cetak",
+    },
   }),
   task({
     task_key: `po:${PO_ID}:line:${LINE_CETAK}:persiapan-cup`,
@@ -332,7 +346,21 @@ export let simTasks: OperationalTask[] = [
     status: "selesai",
     qty_target: 1,
     qty_confirmed: 1,
-    ref: { accurate_po_id: "10002", po_no: "SO-2026/11/002" },
+    item_name: "Cup 16oz Cetak",
+    item_lines: [
+      {
+        accurate_line_id: "L-300",
+        item_name: "Cup 16oz Cetak",
+        item_code: "CUP-16OZ",
+        qty: 1000,
+        unit: "PCS",
+      },
+    ],
+    ref: {
+      accurate_po_id: "10002",
+      po_no: "SO-2026/11/002",
+      item_name: "Cup 16oz Cetak",
+    },
   }),
 ];
 
