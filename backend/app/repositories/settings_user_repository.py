@@ -49,47 +49,67 @@ def list_users(db: Database, *, include_inactive: bool = True) -> list[dict[str,
     return [public_user_admin(d) for d in cursor]
 
 
+def _is_operator_operational_role(value: Any) -> bool:
+    """Role operasional Operator — slug resmi via normalize (bukan role modul Settings)."""
+    return normalize_operational_role(
+        str(value) if value is not None else None
+    ) == "operator"
+
+
+def operator_display_label(display_name: Any, email: str) -> str:
+    """Nama manusiawi; fallback email agar kandidat valid tidak hilang tanpa alasan."""
+    name = str(display_name or "").strip()
+    if name:
+        return name
+    return str(email or "").strip()
+
+
 def list_active_operators(db: Database) -> list[dict[str, Any]]:
-    """Operator aktif Master Pengguna — identifier email + nama tampilan."""
-    cursor = users_collection(db).find(
-        {"is_active": True, "operational_role": "operator"}
-    ).sort("display_name", ASCENDING)
+    """Operator aktif Master Pengguna — identifier email + label tampilan.
+
+    Kontrak: is_active + operational_role Operator (bukan Settings role_key).
+    Tidak memfilter cabang di sini — scope cabang mengikuti aturan alokasi existing.
+    """
+    cursor = users_collection(db).find({"is_active": True})
     items: list[dict[str, Any]] = []
     for doc in cursor:
+        if not _is_operator_operational_role(doc.get("operational_role")):
+            continue
         email = str(doc.get("email_normalized") or "").strip()
-        name = str(doc.get("display_name") or "").strip()
         if not email:
             continue
         items.append(
             {
                 "id": str(doc["_id"]),
                 "email": email,
-                "display_name": name,
+                "display_name": operator_display_label(doc.get("display_name"), email),
             }
         )
+    items.sort(key=lambda row: str(row["display_name"]).lower())
     return items
 
 
-def find_active_operator_by_email(db: Database, email: str) -> dict[str, Any] | None:
-    from app.models.user import normalize_email
-
+def find_user_by_email(db: Database, email: str) -> dict[str, Any] | None:
+    """Lookup Master Pengguna by email (aktif atau tidak)."""
     email_n = normalize_email(email)
     if not email_n:
         return None
-    doc = users_collection(db).find_one(
-        {
-            "email_normalized": email_n,
-            "is_active": True,
-            "operational_role": "operator",
-        }
-    )
+    return users_collection(db).find_one({"email_normalized": email_n})
+
+
+def find_active_operator_by_email(db: Database, email: str) -> dict[str, Any] | None:
+    doc = find_user_by_email(db, email)
     if doc is None:
         return None
-    name = str(doc.get("display_name") or "").strip()
+    if not bool(doc.get("is_active", False)):
+        return None
+    if not _is_operator_operational_role(doc.get("operational_role")):
+        return None
+    email_n = str(doc.get("email_normalized") or "").strip()
     return {
         "id": str(doc["_id"]),
         "email": email_n,
-        "display_name": name,
+        "display_name": operator_display_label(doc.get("display_name"), email_n),
     }
 
 

@@ -33,8 +33,10 @@ HEAD = {
 def _seed_po(db: Database) -> dict:
     upsert_sales_order(db, normalize_sales_order(SAMPLE_SALES_ORDER_STRUCTURE))
     from tests.po_accept_helpers import mark_po_accepted
+    from tests.scheduling_operator_fixtures import ensure_default_scheduling_operators
 
     mark_po_accepted(db)
+    ensure_default_scheduling_operators(db)
     return get_by_accurate_id(db, PO_ID)
 
 
@@ -78,27 +80,21 @@ def _seed_http(db: Database) -> None:
         password=PASSWORD,
         allow_if_admin_exists=True,
     )
-    db["users"].insert_one(
-        {
-            "email_normalized": normalize_email("kp@eternal.local"),
-            "display_name": "Kepala Produksi",
-            "password_hash": hash_password(PASSWORD),
-            "role": "user",
-            "operational_role": "production-head",
-            "is_active": True,
-            "effective_module_permissions": ["access.all_branches"]
-        }
+    from tests.scheduling_operator_fixtures import upsert_test_user
+
+    upsert_test_user(
+        db,
+        "kp@eternal.local",
+        operational_role="production-head",
+        display_name="Kepala Produksi",
+        password=PASSWORD,
     )
-    db["users"].insert_one(
-        {
-            "email_normalized": normalize_email("operator@eternal.local"),
-            "display_name": "Operator",
-            "password_hash": hash_password(PASSWORD),
-            "role": "user",
-            "operational_role": "operator",
-            "is_active": True,
-            "effective_module_permissions": ["access.all_branches"]
-        }
+    upsert_test_user(
+        db,
+        "operator@eternal.local",
+        operational_role="operator",
+        display_name="Operator",
+        password=PASSWORD,
     )
 
 

@@ -560,8 +560,13 @@ def line_schedule_state(
         op = users.find_active_operator_by_email(
             db, str(alloc.get("operator_email") or "")
         )
-        name = (op or {}).get("display_name") or ""
-        alloc["operator_display_name"] = name or None
+        email = str(alloc.get("operator_email") or "")
+        if op is not None:
+            alloc["operator_display_name"] = users.operator_display_label(
+                op.get("display_name"), str(op.get("email") or email)
+            )
+        else:
+            alloc["operator_display_name"] = None
         alloc_qty = float(alloc.get("qty") or 0)
         others = (
             max(allocated - alloc_qty, 0.0)
@@ -727,13 +732,18 @@ def _create_allocations_under_writer_lease(
                     "(terpisah dari ukuran screen Master Produk)."
                 )
 
+        # Alokasi baru: wajib Operator aktif di Master Pengguna (email identifier).
+        # Alokasi historis tetap terbaca meski operator sudah tidak memenuhi kontrak.
         master_op = users.find_active_operator_by_email(db, operator)
-        if master_op is not None and not master_op.get("display_name"):
+        if master_op is None:
             raise ScheduleQuantityError(
-                "Operator di Master Pengguna belum memiliki nama tampilan."
+                "Operator harus pengguna aktif ber-peran Operator di Master Pengguna."
             )
-        if master_op is not None:
-            operator = str(master_op["email"])
+        operator = str(master_op["email"])
+        if not operator:
+            raise ScheduleQuantityError(
+                "Operator Master tidak memiliki identifier email sah."
+            )
 
         pending.append(
             {

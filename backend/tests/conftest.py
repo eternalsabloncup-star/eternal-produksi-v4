@@ -121,6 +121,27 @@ def db(
         pass
 
 
+@pytest.fixture(autouse=True)
+def _auto_ensure_suite_operators_on_create(
+    db: Database, monkeypatch: pytest.MonkeyPatch
+) -> Generator[None, None, None]:
+    """Regresi suite: email alokasi default di-seed jika belum ada di Master.
+
+    Tidak membuat ghost; tidak menimpa helper/nonaktif yang sudah tersimpan.
+    """
+    from app.services import scheduling_service
+    from tests.scheduling_operator_fixtures import ensure_operators_for_allocations
+
+    original = scheduling_service.create_allocations
+
+    def _wrapped(db_arg: Database, actor: dict, **kwargs):  # type: ignore[no-untyped-def]
+        ensure_operators_for_allocations(db_arg, list(kwargs.get("allocations") or []))
+        return original(db_arg, actor, **kwargs)
+
+    monkeypatch.setattr(scheduling_service, "create_allocations", _wrapped)
+    yield
+
+
 @pytest.fixture()
 def app_client(db: Database, monkeypatch: pytest.MonkeyPatch):
     from app.api.tracking import reset_tracking_rate_limiter

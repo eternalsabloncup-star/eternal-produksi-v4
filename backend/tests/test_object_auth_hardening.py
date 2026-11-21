@@ -126,13 +126,17 @@ def _seed(db: Database) -> dict:
 
 
 def _alloc(db: Database, email: str, qty: float = 100.0) -> str:
+    from tests.scheduling_operator_fixtures import ensure_operators_for_allocations
+
     po = get_by_accurate_id(db, PO_ID)
+    allocations = [{"operator_email": email, "qty": qty}]
+    ensure_operators_for_allocations(db, allocations)
     created = scheduling_service.create_allocations(
         db,
         HEAD,
         po_doc=po,
         accurate_line_id=LINE,
-        allocations=[{"operator_email": email, "qty": qty}],
+        allocations=allocations,
         idempotency_key=f"obj-alloc-{email}-{qty}",
     )
     return created["allocations"][0]["allocation_id"]

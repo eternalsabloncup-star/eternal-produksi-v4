@@ -33,27 +33,21 @@ def _seed(db: Database) -> None:
         password=PASSWORD,
         allow_if_admin_exists=True,
     )
-    db["users"].insert_one(
-        {
-            "email_normalized": normalize_email("kp@eternal.local"),
-            "display_name": "Kepala Produksi",
-            "password_hash": hash_password(PASSWORD),
-            "role": "user",
-            "operational_role": "production-head",
-            "is_active": True,
-            "effective_module_permissions": ["access.all_branches"]
-        }
+    from tests.scheduling_operator_fixtures import upsert_test_user
+
+    upsert_test_user(
+        db,
+        "kp@eternal.local",
+        operational_role="production-head",
+        display_name="Kepala Produksi",
+        password=PASSWORD,
     )
-    db["users"].insert_one(
-        {
-            "email_normalized": normalize_email("op.warna@eternal.local"),
-            "display_name": "Budi Operator",
-            "password_hash": hash_password(PASSWORD),
-            "role": "user",
-            "operational_role": "operator",
-            "is_active": True,
-            "effective_module_permissions": ["access.all_branches"]
-        }
+    upsert_test_user(
+        db,
+        "op.warna@eternal.local",
+        operational_role="operator",
+        display_name="Budi Operator",
+        password=PASSWORD,
     )
 
 
@@ -119,10 +113,13 @@ def test_legacy_allocation_without_new_fields_still_reads(
     _seed(db)
     _open_gates(db)
     csrf = _login(app_client, "kp@eternal.local")
+    # Alokasi tanpa print_color/screen_kind tetap sah bila operator Master valid.
     res = app_client.post(
         f"/api/scheduling/{PO_ID}/lines/{LINE_A}/allocations",
         json={
-            "allocations": [{"operator_email": "legacy@eternal.local", "qty": 100}],
+            "allocations": [
+                {"operator_email": "op.warna@eternal.local", "qty": 100}
+            ],
             "idempotency_key": "alloc-legacy-1",
         },
         headers={"X-CSRF-Token": csrf},

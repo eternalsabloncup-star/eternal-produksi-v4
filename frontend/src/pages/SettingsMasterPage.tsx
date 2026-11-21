@@ -955,6 +955,26 @@ export function SettingsMasterPage() {
                         ))}
                       </select>
                     </label>
+                    <label className="ep-settings-field">
+                      <span className="ep-settings-field-label">Ops</span>
+                      <select
+                        aria-label="Peran operasional"
+                        value={newUser.operational_role}
+                        onChange={(e) =>
+                          setNewUser({
+                            ...newUser,
+                            operational_role: e.target.value,
+                          })
+                        }
+                      >
+                        <option value="">— Tidak ada —</option>
+                        {rolesOps.map((r) => (
+                          <option key={r} value={r}>
+                            {ROLE_LABEL[r] || r}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
                     <fieldset className="ep-settings-field ep-settings-field-span">
                       <legend className="ep-settings-field-label">Cabang</legend>
                       {assignableBranches.length === 0 ? (
@@ -1073,6 +1093,26 @@ export function SettingsMasterPage() {
                           ))}
                         </select>
                       </label>
+                      <label className="ep-settings-field">
+                        <span className="ep-settings-field-label">Ops</span>
+                        <select
+                          aria-label="Peran operasional"
+                          value={editUserForm.operational_role}
+                          onChange={(e) =>
+                            setEditUserForm({
+                              ...editUserForm,
+                              operational_role: e.target.value,
+                            })
+                          }
+                        >
+                          <option value="">— Tidak ada —</option>
+                          {rolesOps.map((r) => (
+                            <option key={r} value={r}>
+                              {ROLE_LABEL[r] || r}
+                            </option>
+                          ))}
+                        </select>
+                      </label>
                       <fieldset className="ep-settings-field ep-settings-field-span">
                         <legend className="ep-settings-field-label">Cabang</legend>
                         {editBranchOptions.length === 0 ? (
@@ -1165,7 +1205,12 @@ export function SettingsMasterPage() {
                               <td title={u.email}>{u.email}</td>
                               <td>{u.display_name}</td>
                               <td className="is-role">{u.role}</td>
-                              <td className="is-role">{u.operational_role || "—"}</td>
+                              <td className="is-role">
+                                {u.operational_role
+                                  ? ROLE_LABEL[u.operational_role] ||
+                                    u.operational_role
+                                  : "—"}
+                              </td>
                               <td title={formatUserBranches(u.branch_ids, branches)}>
                                 {formatUserBranches(u.branch_ids, branches)}
                               </td>

@@ -7,7 +7,6 @@ import {
   SchedulingApiError,
   type Allocation,
   type LineSchedule,
-  type SchedulingOperator,
   type ScreenKind,
 } from "../api/scheduling";
 import {
@@ -17,6 +16,13 @@ import {
 } from "../api/workflow";
 import { newIdempotencyKey, type OperationalTask } from "../api/operational";
 import { formatDateDisplay } from "../lib/formatDate";
+import {
+  operatorCandidateLabel,
+  operatorsBlockerMessage,
+  operatorsLoadFromError,
+  operatorsLoadFromSuccess,
+  type OperatorsLoadState,
+} from "./schedulingOperators";
 import {
   allocationCanReviseQty,
   allocationReviseBounds,
@@ -56,8 +62,10 @@ function operatorLabel(a: {
   operator_email: string;
   operator_display_name?: string | null;
 }): string {
-  const name = (a.operator_display_name || "").trim();
-  return name || "—";
+  return operatorCandidateLabel({
+    email: a.operator_email,
+    display_name: a.operator_display_name,
+  });
 }
 
 /**
@@ -81,8 +89,9 @@ export function TeamTaskSchedulingForm({
   const [line, setLine] = useState<LineSchedule | null>(null);
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
-  const [operators, setOperators] = useState<SchedulingOperator[]>([]);
-  const [operatorsError, setOperatorsError] = useState<string | null>(null);
+  const [operatorsState, setOperatorsState] = useState<OperatorsLoadState>({
+    status: "idle",
+  });
   const [operatorEmail, setOperatorEmail] = useState("");
   const [allocQty, setAllocQty] = useState("");
   const [scheduleDate, setScheduleDate] = useState("");
@@ -158,30 +167,19 @@ export function TeamTaskSchedulingForm({
 
   useEffect(() => {
     if (!canAllocate && !canRevise) {
-      setOperators([]);
+      setOperatorsState({ status: "idle" });
       return;
     }
     let cancelled = false;
+    setOperatorsState({ status: "loading" });
     void fetchSchedulingOperators()
       .then((res) => {
         if (cancelled) return;
-        setOperators(res.items);
-        setOperatorsError(null);
-        const usable = res.items.filter((o) => o.email && o.display_name.trim());
-        if (usable.length === 0) {
-          setOperatorsError(
-            "Tidak ada operator aktif bernama di Master Pengguna.",
-          );
-        }
+        setOperatorsState(operatorsLoadFromSuccess(res.items));
       })
       .catch((err) => {
         if (cancelled) return;
-        setOperators([]);
-        setOperatorsError(
-          err instanceof Error
-            ? err.message
-            : "Gagal memuat daftar operator Master.",
-        );
+        setOperatorsState(operatorsLoadFromError(err));
       });
     return () => {
       cancelled = true;
@@ -201,10 +199,13 @@ export function TeamTaskSchedulingForm({
       onError("Operator wajib dipilih dari Master Pengguna.");
       return;
     }
-    const op = operators.find((o) => o.email === operatorEmail);
-    if (!op || !op.display_name.trim()) {
+    const op =
+      operatorsState.status === "ok"
+        ? operatorsState.items.find((o) => o.email === operatorEmail)
+        : undefined;
+    if (!op || !(op.email || "").trim()) {
       onError(
-        "Operator tidak memiliki nama/identifier sah di Master Pengguna.",
+        "Operator tidak memiliki identifier sah di Master Pengguna.",
       );
       return;
     }
@@ -384,11 +385,13 @@ export function TeamTaskSchedulingForm({
   }, [onRegisterDesignOpen, onOpenDesign]);
 
   const isReschedule = task.task_type === "penjadwalan-ulang";
-  const usableOperators = operators.filter(
-    (o) => o.email && o.display_name.trim(),
-  );
+  const usableOperators =
+    operatorsState.status === "ok" ? operatorsState.items : [];
+  const operatorsError = operatorsBlockerMessage(operatorsState);
+  const operatorsLoading = operatorsState.status === "loading";
   const formBlocked =
     !canAllocate ||
+    operatorsLoading ||
     Boolean(operatorsError) ||
     usableOperators.length === 0 ||
     !line?.scheduling_unlocked;
@@ -629,6 +632,14 @@ export function TeamTaskSchedulingForm({
           {canAllocate && line && line.qty_unallocated > 0 ? (
             <>
               <p className="ep-sectionlabel">Tambah Alokasi</p>
+              {operatorsLoading ? (
+                <p
+                  className="ep-notice ep-notice-compact"
+                  data-testid="sched-op-loading"
+                >
+                  Memuat daftar operator…
+                </p>
+              ) : null}
               {operatorsError ? (
                 <p className="ep-error" role="alert" data-testid="sched-op-blocker">
                   {operatorsError}
@@ -661,13 +672,19 @@ export function TeamTaskSchedulingForm({
                   <select
                     aria-label="Operator"
                     value={operatorEmail}
-                    disabled={busy || usableOperators.length === 0}
+                    disabled={
+                      busy || operatorsLoading || usableOperators.length === 0
+                    }
                     onChange={(e) => setOperatorEmail(e.target.value)}
                   >
-                    <option value="">Pilih operator…</option>
+                    <option value="">
+                      {operatorsLoading
+                        ? "Memuat operator…"
+                        : "Pilih operator…"}
+                    </option>
                     {usableOperators.map((o) => (
                       <option key={o.id || o.email} value={o.email}>
-                        {o.display_name}
+                        {operatorCandidateLabel(o)}
                       </option>
                     ))}
                   </select>

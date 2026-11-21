@@ -21,16 +21,14 @@ PNG = b"\x89PNG sample-api"
 
 
 def _user(db: Database, email: str, role: str) -> None:
-    db["users"].insert_one(
-        {
-            "email_normalized": normalize_email(email),
-            "display_name": email,
-            "password_hash": hash_password(PASSWORD),
-            "role": "user",
-            "operational_role": role,
-            "is_active": True,
-            "effective_module_permissions": ["access.all_branches"]
-        }
+    from tests.scheduling_operator_fixtures import upsert_test_user
+
+    upsert_test_user(
+        db,
+        email,
+        operational_role=role,
+        display_name=email,
+        password=PASSWORD,
     )
 
 
