@@ -6,7 +6,6 @@ import { TEAM_TASK_ROLES } from "../app/nav";
 import { useAuth } from "../auth";
 import { ApiSimulationBanner } from "../sim/ApiSimulationBanner";
 import { useOpenTeamTaskCounts } from "../hooks/useOpenTeamTaskCounts";
-import { isHoldingRole } from "../roles";
 import { MobileBottomNav } from "./MobileBottomNav";
 import { MobileOpsProvider, useMobileOps } from "./MobileOpsContext";
 import { mobileTabByPath, MOBILE_OPS_TABS } from "./mobileNav";
@@ -81,7 +80,7 @@ function MobileOpsChrome() {
               decoding="async"
             />
           </span>
-          <strong className="ep-m-header-product">Eternal Ops</strong>
+          <strong className="ep-m-header-product">Eternal Packaging</strong>
           <span className="ep-m-header-tab">{tab.label}</span>
         </div>
         <div className="ep-m-header-meta">
@@ -91,9 +90,7 @@ function MobileOpsChrome() {
             </span>
           ) : ops?.canViewAllTasks ? (
             <span className="ep-m-role" data-testid="mobile-ops-role-viewall">
-              {isHoldingRole(user?.role)
-                ? "Holding · baca tugas"
-                : "Baca tugas (view_all)"}
+              Role
             </span>
           ) : (
             <span className="ep-m-role is-locked" data-testid="mobile-ops-role-locked">
