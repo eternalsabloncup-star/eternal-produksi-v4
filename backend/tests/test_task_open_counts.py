@@ -128,10 +128,23 @@ def test_loading_sj_assignee_visibility_parity() -> None:
         "role": "user",
         "effective_module_permissions": ["operations.full"],
     }
+    holding = {
+        "email_normalized": "holding@eternal.local",
+        "role": "holding",
+        "effective_module_permissions": ["operations.tasks.view_all"],
+    }
+    view_all_grant = {
+        "email_normalized": "viewer@eternal.local",
+        "role": "user",
+        "effective_module_permissions": ["operations.tasks.view_all"],
+    }
     assert loading_sj_visible_to_actor(drv_a, task) is True
     assert loading_sj_visible_to_actor(drv_b, task) is False
     assert loading_sj_visible_to_actor(sa, task) is True
     assert loading_sj_visible_to_actor(ops, task) is True
+    # Holding / view_all: read lintas assignee (mutation tetap terpisah).
+    assert loading_sj_visible_to_actor(holding, task) is True
+    assert loading_sj_visible_to_actor(view_all_grant, task) is True
     assert loading_sj_visible_to_actor(
         drv_b, {"task_type": "cetak", "context": {}}
     )

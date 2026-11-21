@@ -54,10 +54,10 @@ export function MobileMonitoringPage() {
         });
         if (cancelled) return;
         const scoped = filterTasksForActor(res.items, {
-          isSuperAdmin: elevated || Boolean(ops?.canViewAllTasks),
+          isSuperAdmin: elevated,
           actorEmail: user?.email,
           operationalRole: filterRole?.id ?? viewFilter,
-          operationsFull: Boolean(ops?.canViewAllTasks),
+          viewAllTasks: Boolean(ops?.canViewAllTasks),
         });
         setTasks(scoped);
         setTruncated(res.items.length >= TASK_LIST_FETCH_LIMIT);

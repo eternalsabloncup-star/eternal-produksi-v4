@@ -242,6 +242,56 @@ def test_view_all_respects_branch_scope(app_client: TestClient, db: Database) ->
         assert item["ref"]["accurate_po_id"] == PO_HQ
 
 
+def test_holding_sees_loading_sj_of_other_assignee(
+    app_client: TestClient, db: Database
+) -> None:
+    """Read parity: view_all melihat Loading SJ assignee lain; helper tetap isolasi."""
+    _seed_sa(db)
+    settings_roles.ensure_system_roles(db)
+    settings_roles.create_custom_role(
+        db, role_key=ROLE_HOLDING, label="Holding", module_permissions=[]
+    )
+    master.seed_master_defaults(db)
+    db["accurate_delivery_notes"].insert_one(
+        {"accurate_sj_id": "SJ-HOLD", "branch_id": BRANCH_HQ, "number": "SJ-HOLD"}
+    )
+    tasks.upsert_task(
+        db,
+        task_type="loading-sj",
+        scope="delivery_note",
+        assigned_role="helper",
+        ref=TaskRef(accurate_delivery_note_id="SJ-HOLD"),
+        label="load-other",
+        context={"assigned_user_email": "helper-a@eternal.local"},
+    )
+    _seed_user(db, "holding@eternal.local", role=ROLE_HOLDING, permissions=[])
+    _seed_user(db, "helper-a@eternal.local", operational_role="helper")
+    _seed_user(db, "helper-b@eternal.local", operational_role="helper")
+
+    def _has_assigned_load(items: list) -> bool:
+        return any(
+            i.get("task_type") == "loading-sj"
+            and (i.get("context") or {}).get("assigned_user_email")
+            == "helper-a@eternal.local"
+            for i in items
+        )
+
+    _login(app_client, "holding@eternal.local")
+    hold_list = app_client.get("/api/tasks?role=helper&task_type=loading-sj")
+    assert hold_list.status_code == 200
+    assert _has_assigned_load(hold_list.json()["items"])
+
+    _login(app_client, "helper-b@eternal.local")
+    other = app_client.get("/api/tasks?role=helper&task_type=loading-sj")
+    assert other.status_code == 200
+    assert not _has_assigned_load(other.json()["items"])
+
+    _login(app_client, "helper-a@eternal.local")
+    own = app_client.get("/api/tasks?role=helper&task_type=loading-sj")
+    assert own.status_code == 200
+    assert _has_assigned_load(own.json()["items"])
+
+
 def test_view_all_does_not_grant_can_act(db: Database) -> None:
     master.seed_master_defaults(db)
     user = {

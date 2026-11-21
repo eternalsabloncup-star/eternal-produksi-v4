@@ -37,7 +37,7 @@ import { useAuth } from "../auth";
 import { formatDateDisplay, formatDateTimeDisplay } from "../lib/formatDate";
 import { formatPwaBranchLabel } from "../mobile/branchDisplay";
 import { useMobileOpsActive } from "../mobile/MobileOpsContext";
-import { isSuperAdmin } from "../roles";
+import { hasViewAllTasks, isSuperAdmin } from "../roles";
 import { ConfirmationSuccessOverlay } from "./ConfirmationSuccessOverlay";
 import { DataTable } from "./DataTable/DataTable";
 import { DEFAULT_TABLE_PAGE_SIZE } from "./DataTable/Pagination";
@@ -238,14 +238,19 @@ export function TeamTaskApiPanel({
     };
   }, [role, readOnly]);
 
+  const viewAllTasks = hasViewAllTasks(user);
+
   const scopedTasks = useMemo(
     () =>
       filterTasksForActor(allTasks, {
         isSuperAdmin: elevated,
         actorEmail: user?.email,
         operationalRole: role,
+        // Selaras backend loading_sj_visible_to_actor — jangan drop Loading SJ
+        // yang sudah diizinkan oleh operations.tasks.view_all.
+        viewAllTasks,
       }),
-    [allTasks, elevated, user?.email, role],
+    [allTasks, elevated, user?.email, role, viewAllTasks],
   );
 
   const statusCounts = useMemo(
