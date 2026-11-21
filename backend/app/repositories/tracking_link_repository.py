@@ -284,19 +284,30 @@ def hash_token(raw_token: str) -> str:
 
 
 def _public_link(doc: dict[str, Any]) -> dict[str, Any]:
-    out = {k: v for k, v in doc.items() if k not in ("_id", "token_hash")}
+    # Jangan pernah expose hash/ciphertext/raw token ke klien list.
+    out = {
+        k: v
+        for k, v in doc.items()
+        if k not in ("_id", "token_hash", "token_sealed")
+    }
     if "_id" in doc:
         out["id"] = str(doc["_id"])
+    out["url_recoverable"] = bool(doc.get("token_sealed"))
     return out
 
 
-def find_active_for_po(db: Database, accurate_po_id: str) -> dict[str, Any] | None:
-    """Link aktif terbaru untuk PO (tanpa raw token)."""
+def find_active_doc_for_po(db: Database, accurate_po_id: str) -> dict[str, Any] | None:
+    """Dokumen Mongo aktif (termasuk token_sealed) — internal saja."""
     _ensure_once(db)
-    doc = links_collection(db).find_one(
+    return links_collection(db).find_one(
         {"accurate_po_id": str(accurate_po_id), "status": "active"},
         sort=[("created_at", -1)],
     )
+
+
+def find_active_for_po(db: Database, accurate_po_id: str) -> dict[str, Any] | None:
+    """Link aktif terbaru untuk PO (tanpa raw token / ciphertext)."""
+    doc = find_active_doc_for_po(db, accurate_po_id)
     return _public_link(doc) if doc else None
 
 
@@ -332,13 +343,18 @@ def create_link(
     _ensure_once(db)
     if find_active_for_po(db, str(accurate_po_id)):
         raise TrackingActiveLinkExists()
+    from app.services.tracking_token_seal import seal_raw_token
+
     raw = generate_raw_token()
+    sealed = seal_raw_token(raw)
     now = utcnow()
     exp = expires_at
     if exp is None and ttl_seconds is not None and ttl_seconds > 0:
         exp = now + timedelta(seconds=ttl_seconds)
     doc: dict[str, Any] = {
         "token_hash": hash_token(raw),
+        # Ciphertext Fernet — bukan plaintext. Di-strip dari _public_link.
+        "token_sealed": sealed,
         "accurate_po_id": str(accurate_po_id),
         "po_no": po_no,
         "customer_name": customer_name,

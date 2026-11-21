@@ -170,6 +170,16 @@ class Settings(BaseSettings):
             "V4_ACCURATE_SYNC_START_DATE",
         ),
     )
+    # Fernet key (url-safe base64 32-byte) untuk seal raw token Live Tracking.
+    # Production wajib di-set sebelum cutover; test/dev boleh kosong (derived).
+    # Jangan log / commit nilai ini.
+    tracking_link_seal_key: str = Field(
+        default="",
+        validation_alias=AliasChoices(
+            "V4_TRACKING_LINK_SEAL_KEY",
+            "TRACKING_LINK_SEAL_KEY",
+        ),
+    )
 
     @field_validator("mongodb_uri")
     @classmethod
@@ -247,6 +257,28 @@ class Settings(BaseSettings):
 
     def safe_summary(self) -> dict[str, object]:
         """Non-secret config summary for diagnostics."""
+
+        def _safe_tracking_seal_preflight() -> dict[str, object]:
+            try:
+                from app.services.tracking_token_seal import preflight_tracking_seal_key
+
+                seal = preflight_tracking_seal_key()
+                return {
+                    "configured": bool(seal.get("configured")),
+                    "key_format_ok": bool(seal.get("key_format_ok")),
+                    "roundtrip_ok": bool(seal.get("roundtrip_ok")),
+                    "production_ready": bool(seal.get("production_ready")),
+                    "status": str(seal.get("status") or "unknown"),
+                }
+            except Exception:  # noqa: BLE001
+                return {
+                    "configured": bool(self.tracking_link_seal_key.strip()),
+                    "key_format_ok": False,
+                    "roundtrip_ok": False,
+                    "production_ready": False,
+                    "status": "error",
+                }
+
         return {
             "app_env": self.app_env,
             "mongodb_db": self.mongodb_db,
@@ -260,6 +292,10 @@ class Settings(BaseSettings):
             "accurate_signature_configured": bool(
                 self.accurate_api_signature_secret.strip()
             ),
+            "tracking_link_seal_key_configured": bool(
+                self.tracking_link_seal_key.strip()
+            ),
+            "tracking_seal_preflight": _safe_tracking_seal_preflight(),
             "accurate_db_id_configured": bool(self.accurate_db_id.strip()),
             "accurate_db_id_length": (
                 len(self.accurate_db_id.strip()) if self.accurate_db_id.strip() else 0
@@ -316,4 +352,10 @@ def clear_settings_cache() -> None:
 
         clear_date_floor_cache()
     except Exception:  # noqa: BLE001 — cache helper opsional saat import parsial
+        pass
+    try:
+        from app.services.tracking_token_seal import clear_seal_cache
+
+        clear_seal_cache()
+    except Exception:  # noqa: BLE001
         pass

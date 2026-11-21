@@ -16,8 +16,14 @@ from app.repositories.tracking_link_repository import MissingRequiredTrackingInd
 from app.services import tracking_service as tracking
 from app.services.tracking_service import (
     TrackingConflict,
+    TrackingError,
     TrackingForbidden,
+    TrackingLegacyUnrecoverable,
     TrackingNotFound,
+)
+from app.services.tracking_token_seal import (
+    TrackingSealKeyInvalid,
+    TrackingSealKeyMissing,
 )
 
 router = APIRouter(tags=["tracking"])
@@ -78,6 +84,8 @@ def _no_store(response: Response) -> None:
 
 class GenerateLinkRequest(BaseModel):
     ttl_seconds: int | None = Field(default=None, ge=60, le=60 * 60 * 24 * 365)
+    # Pemulihan legacy: wajib sama dengan link aktif yang dikonfirmasi operator.
+    expected_active_link_id: str | None = Field(default=None, max_length=64)
 
 
 class RevokeLinkRequest(BaseModel):
@@ -158,6 +166,52 @@ def list_links(
     return {"items": rows, "accurate_po_id": accurate_po_id}
 
 
+@router.get("/api/tracking/{accurate_po_id}/links/active-url")
+def get_active_tracking_url(
+    accurate_po_id: str,
+    response: Response,
+    auth: AuthContext = Depends(require_session),
+) -> dict[str, Any]:
+    """Salin ulang path link aktif — authenticated, scoped PO, no-store.
+
+    Tidak regenerate. Tidak mengembalikan URL untuk revoked/expired.
+    Legacy hash-only → 409 legacy_unrecoverable (butuh persetujuan regenerate).
+    """
+    _require_ops(auth)
+    _no_store(response)
+    try:
+        return tracking.reveal_active_tracking_url(
+            get_db(),
+            accurate_po_id=accurate_po_id,
+            actor_email=auth.user.get("email_normalized"),
+        )
+    except MissingRequiredTrackingIndexError as exc:
+        raise _http_from_index_error(exc) from exc
+    except TrackingLegacyUnrecoverable as exc:
+        raise HTTPException(
+            status.HTTP_409_CONFLICT,
+            detail={
+                "code": exc.code,
+                "message": exc.message,
+                "link_id": exc.link_id,
+                "accurate_po_id": exc.accurate_po_id,
+                "requires_explicit_recovery": True,
+            },
+        ) from exc
+    except (TrackingSealKeyMissing, TrackingSealKeyInvalid) as exc:
+        raise HTTPException(
+            status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail={"code": exc.code, "message": str(exc)},
+        ) from exc
+    except TrackingNotFound as exc:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, exc.message) from exc
+    except TrackingError as exc:
+        raise HTTPException(
+            status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail={"code": exc.code, "message": exc.message},
+        ) from exc
+
+
 @router.post("/api/tracking/{accurate_po_id}/links", status_code=status.HTTP_201_CREATED)
 def post_generate_link(
     accurate_po_id: str,
@@ -177,6 +231,11 @@ def post_generate_link(
         )
     except MissingRequiredTrackingIndexError as exc:
         raise _http_from_index_error(exc) from exc
+    except (TrackingSealKeyMissing, TrackingSealKeyInvalid) as exc:
+        raise HTTPException(
+            status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail={"code": exc.code, "message": str(exc)},
+        ) from exc
     except TrackingConflict as exc:
         raise HTTPException(status.HTTP_409_CONFLICT, exc.message) from exc
     except TrackingNotFound as exc:
@@ -194,17 +253,22 @@ def post_regenerate_link(
     _require_ops(auth)
     _no_store(response)
     ttl = body.ttl_seconds if body else None
+    expected = body.expected_active_link_id if body else None
     try:
         return tracking.regenerate_tracking_link(
             get_db(),
             accurate_po_id=accurate_po_id,
             actor_email=auth.user.get("email_normalized"),
             ttl_seconds=ttl,
+            expected_active_link_id=expected,
         )
     except MissingRequiredTrackingIndexError as exc:
         raise _http_from_index_error(exc) from exc
     except TrackingConflict as exc:
-        raise HTTPException(status.HTTP_409_CONFLICT, exc.message) from exc
+        raise HTTPException(
+            status.HTTP_409_CONFLICT,
+            detail={"code": exc.code, "message": exc.message},
+        ) from exc
     except TrackingNotFound as exc:
         raise HTTPException(status.HTTP_404_NOT_FOUND, exc.message) from exc
 

@@ -53,6 +53,21 @@ class TrackingConflict(TrackingError):
         super().__init__(message, code="conflict")
 
 
+class TrackingLegacyUnrecoverable(TrackingError):
+    """Link aktif hash-only (pra-seal) — URL tidak dapat dipulihkan tanpa regenerate."""
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        link_id: str,
+        accurate_po_id: str,
+    ) -> None:
+        super().__init__(message, code="legacy_unrecoverable")
+        self.link_id = link_id
+        self.accurate_po_id = accurate_po_id
+
+
 def _header(po_doc: dict[str, Any]) -> dict[str, Any]:
     return dict(po_doc.get("header") or {})
 
@@ -134,13 +149,54 @@ def regenerate_tracking_link(
     actor_email: str | None,
     scopes: list[str] | None = None,
     ttl_seconds: int | None = None,
+    expected_active_link_id: str | None = None,
 ) -> dict[str, Any]:
-    revoked = links.revoke_active_for_po(
-        db,
-        accurate_po_id=str(accurate_po_id),
-        actor_email=actor_email,
-        reason="regenerate",
-    )
+    """Regenerate link aktif.
+
+    Jika ``expected_active_link_id`` diisi (pemulihan legacy terkendali):
+    - aktif harus masih sama dengan yang dikonfirmasi operator;
+    - jika berubah → TrackingConflict tanpa mencabut link baru/lain;
+    - jika sudah sealed (bukan legacy) → Conflict (pakai reveal, bukan regenerate).
+    """
+    po_id = str(accurate_po_id)
+    expected = str(expected_active_link_id or "").strip() or None
+    if expected:
+        active = _lazy_expire_active_doc(
+            db, links.find_active_doc_for_po(db, po_id)
+        )
+        if active is None:
+            raise TrackingNotFound(
+                "Tidak ada link aktif untuk dipulihkan — mungkin sudah diganti."
+            )
+        current_id = str(active.get("_id") or "")
+        if current_id != expected:
+            raise TrackingConflict(
+                "Link aktif berubah sejak konfirmasi operator — pemulihan dibatalkan "
+                "tanpa mencabut link yang sekarang aktif."
+            )
+        if active.get("token_sealed"):
+            raise TrackingConflict(
+                "Link aktif sudah dapat disalin ulang (sealed). "
+                "Pemulihan regenerate tidak diperlukan."
+            )
+        revoked_doc = links.revoke_link(
+            db,
+            link_id=expected,
+            actor_email=actor_email,
+            reason="legacy_recovery",
+        )
+        revoked = 1 if revoked_doc else 0
+        if revoked == 0:
+            raise TrackingConflict(
+                "Link yang dikonfirmasi tidak lagi aktif — pemulihan dibatalkan."
+            )
+    else:
+        revoked = links.revoke_active_for_po(
+            db,
+            accurate_po_id=po_id,
+            actor_email=actor_email,
+            reason="regenerate",
+        )
     result = generate_tracking_link(
         db,
         accurate_po_id=accurate_po_id,
@@ -155,9 +211,11 @@ def regenerate_tracking_link(
         actor_email=actor_email,
         target_email=None,
         detail={
-            "accurate_po_id": str(accurate_po_id),
+            "accurate_po_id": po_id,
             "revoked_previous": revoked,
             "link_id": result["link"].get("id"),
+            "expected_active_link_id": expected,
+            # Jangan log raw token.
         },
     )
     return result
@@ -188,6 +246,106 @@ def revoke_tracking_link(
 def list_tracking_links(db: Database, accurate_po_id: str) -> list[dict[str, Any]]:
     resolve_po(db, accurate_po_id)
     return links.list_links_for_po(db, str(accurate_po_id))
+
+
+def _lazy_expire_active_doc(db: Database, doc: dict[str, Any]) -> dict[str, Any] | None:
+    """Expire lazy; return None jika bukan aktif lagi."""
+    if not doc:
+        return None
+    if doc.get("status") == "revoked" or doc.get("revoked_at") is not None:
+        return None
+    exp = doc.get("expires_at")
+    if exp is not None:
+        if exp.tzinfo is None:
+            exp = exp.replace(tzinfo=timezone.utc)
+        if exp <= datetime.now(timezone.utc):
+            links.links_collection(db).update_one(
+                {"_id": doc["_id"], "status": "active"},
+                {"$set": {"status": "expired"}},
+            )
+            return None
+    if doc.get("status") != "active":
+        return None
+    return doc
+
+
+def reveal_active_tracking_url(
+    db: Database,
+    *,
+    accurate_po_id: str,
+    actor_email: str | None,
+) -> dict[str, Any]:
+    """Ambil path publik link aktif yang sama (tanpa regenerate).
+
+    - Active + sealed → path (token di-unseal server-side).
+    - Active hash-only legacy → TrackingLegacyUnrecoverable (bukan auto-regen).
+    - Revoked/expired/absent → TrackingNotFound.
+    Tidak menulis raw token ke audit/log.
+    """
+    from app.services.tracking_token_seal import (
+        TrackingSealError,
+        TrackingSealKeyMissing,
+        unseal_raw_token,
+    )
+
+    po = resolve_po(db, accurate_po_id)
+    po_id = str(po["accurate_id"])
+    doc = _lazy_expire_active_doc(db, links.find_active_doc_for_po(db, po_id))
+    if doc is None:
+        raise TrackingNotFound("Tidak ada link Live Tracking aktif untuk PO ini.")
+
+    link_id = str(doc.get("_id") or "")
+    sealed = doc.get("token_sealed")
+    if not sealed:
+        raise TrackingLegacyUnrecoverable(
+            "Link aktif ini dibuat sebelum penyimpanan URL terenkripsi. "
+            "Salin ulang memerlukan pemulihan terkendali (regenerate) dengan "
+            "persetujuan eksplisit operator — link lama akan dicabut.",
+            link_id=link_id,
+            accurate_po_id=po_id,
+        )
+
+    try:
+        raw = unseal_raw_token(str(sealed))
+    except TrackingSealKeyMissing:
+        raise
+    except TrackingSealError as exc:
+        raise TrackingError(
+            "Ciphertext Live Tracking tidak dapat dibuka. Periksa kunci seal server.",
+            code="seal_error",
+        ) from exc
+
+    if links.hash_token(raw) != doc.get("token_hash"):
+        raise TrackingError(
+            "Integritas token Live Tracking gagal diverifikasi.",
+            code="seal_integrity",
+        )
+
+    customer_slug = str(doc.get("customer_slug") or "")
+    po_slug = str(doc.get("po_slug") or "")
+    path = build_public_path(
+        customer_slug=customer_slug, po_slug=po_slug, raw_token=raw
+    )
+    append_audit_event(
+        db,
+        action="tracking.link.reveal_url",
+        actor_email=actor_email,
+        target_email=None,
+        detail={
+            "accurate_po_id": po_id,
+            "link_id": link_id,
+            # Jangan log raw token / path lengkap (mengandung token).
+        },
+    )
+    return {
+        "status": "ok",
+        "path": path,
+        "link_id": link_id,
+        "accurate_po_id": po_id,
+        "customer_slug": customer_slug,
+        "po_slug": po_slug,
+        "url_recoverable": True,
+    }
 
 
 def _customer_safe_header(header: dict[str, Any]) -> dict[str, Any]:

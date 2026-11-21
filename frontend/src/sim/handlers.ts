@@ -1239,6 +1239,36 @@ export function handleSimRequest(
   // `path` on list items previews Owner-approved recoverable storage — not production.
   if (path.startsWith("/api/tracking/") && method === "GET") {
     const poKey = extractTrackingPoKey(path);
+    if (path.endsWith("/links/active-url")) {
+      const active = getSimTrackingLinks(poKey).find((l) => l.status === "active");
+      if (!active?.path) {
+        if (active && !active.path) {
+          return json(
+            {
+              detail: {
+                code: "legacy_unrecoverable",
+                message:
+                  "Link aktif ini dibuat sebelum penyimpanan URL terenkripsi. Salin ulang memerlukan pemulihan terkendali.",
+                link_id: active.id,
+                accurate_po_id: poKey,
+                requires_explicit_recovery: true,
+              },
+            },
+            409,
+          );
+        }
+        return json({ detail: "Tidak ada link Live Tracking aktif untuk PO ini." }, 404);
+      }
+      return json({
+        status: "ok",
+        path: active.path,
+        link_id: active.id,
+        accurate_po_id: poKey,
+        customer_slug: active.customer_slug,
+        po_slug: active.po_slug,
+        url_recoverable: true,
+      });
+    }
     if (path.endsWith("/links")) {
       return json({ items: getSimTrackingLinks(poKey), accurate_po_id: poKey });
     }
