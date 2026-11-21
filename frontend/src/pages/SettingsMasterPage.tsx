@@ -258,6 +258,9 @@ export function SettingsMasterPage() {
   const [roles, setRoles] = useState<SettingsRole[]>([]);
   const [modulePerms, setModulePerms] = useState<string[]>([]);
   const [sensitivePerms, setSensitivePerms] = useState<string[]>([]);
+  const [policyGrants, setPolicyGrants] = useState<
+    Record<string, Array<{ permission: string; source: string; revocable: boolean; note?: string }>>
+  >({});
   const [draftPerms, setDraftPerms] = useState<string[]>([]);
   const [selectedRole, setSelectedRole] = useState<string>("");
   const [permReason, setPermReason] = useState("");
@@ -339,6 +342,7 @@ export function SettingsMasterPage() {
       const cat = await fetchSettingsCatalog();
       setModulePerms(cat.module_permissions);
       setSensitivePerms(cat.sensitive_module_permissions);
+      setPolicyGrants(cat.policy_grants ?? {});
       setPolicies(cat.workflow_policies.items);
       const [u, r, b, m, s, a, acc] = await Promise.all([
         fetchSettingsUsers().catch(() => ({ items: [] as SettingsUser[] })),
@@ -372,10 +376,15 @@ export function SettingsMasterPage() {
 
   useEffect(() => {
     const role = roles.find((x) => x.role_key === selectedRole);
-    setDraftPerms(role ? [...role.module_permissions] : []);
+    const base = role ? [...role.module_permissions] : [];
+    const policy = policyGrants[selectedRole] || [];
+    for (const g of policy) {
+      if (!g.revocable && !base.includes(g.permission)) base.push(g.permission);
+    }
+    setDraftPerms(base);
     setConfirmSensitive(false);
     setPermReason("");
-  }, [selectedRole, roles]);
+  }, [selectedRole, roles, policyGrants]);
 
   const selectedRoleDoc = roles.find((r) => r.role_key === selectedRole);
 
@@ -385,9 +394,16 @@ export function SettingsMasterPage() {
     return map;
   }, [draftGrants]);
 
-  const modulePermsDirty =
-    !!selectedRoleDoc &&
-    serializePerms(draftPerms) !== serializePerms(selectedRoleDoc.module_permissions);
+  const modulePermsDirty = (() => {
+    if (!selectedRoleDoc) return false;
+    const baseline = [...selectedRoleDoc.module_permissions];
+    for (const g of policyGrants[selectedRole] || []) {
+      if (!g.revocable && !baseline.includes(g.permission)) {
+        baseline.push(g.permission);
+      }
+    }
+    return serializePerms(draftPerms) !== serializePerms(baseline);
+  })();
 
   const opsGrantsDirty = serializeGrants(draftGrants) !== serializeGrants(grants);
 
@@ -1308,7 +1324,11 @@ export function SettingsMasterPage() {
                             </td>
                           </tr>
                         ) : (
-                          modulePerms.map((p) => (
+                          modulePerms.map((p) => {
+                            const policyHit = (policyGrants[selectedRole] || []).find(
+                              (g) => g.permission === p && !g.revocable,
+                            );
+                            return (
                             <tr key={p}>
                               <td>
                                 {p}
@@ -1317,13 +1337,32 @@ export function SettingsMasterPage() {
                                     sensitif
                                   </span>
                                 ) : null}
+                                {policyHit ? (
+                                  <span
+                                    className="ep-settings-pill"
+                                    style={{ marginLeft: 8 }}
+                                    title={policyHit.note || policyHit.source}
+                                    data-testid="policy-grant-badge"
+                                  >
+                                    kebijakan ({policyHit.source})
+                                  </span>
+                                ) : null}
                               </td>
                               <td className="is-check">
                                 <input
                                   type="checkbox"
-                                  checked={draftPerms.includes(p)}
-                                  disabled={selectedRole === "super_admin"}
+                                  checked={draftPerms.includes(p) || Boolean(policyHit)}
+                                  disabled={
+                                    selectedRole === "super_admin" || Boolean(policyHit)
+                                  }
+                                  title={
+                                    policyHit
+                                      ? policyHit.note ||
+                                        "Efektif dari kebijakan — tidak dapat dicabut lewat UI"
+                                      : undefined
+                                  }
                                   onChange={(e) => {
+                                    if (policyHit) return;
                                     setDraftPerms((prev) =>
                                       e.target.checked
                                         ? Array.from(new Set([...prev, p]))
@@ -1333,7 +1372,8 @@ export function SettingsMasterPage() {
                                 />
                               </td>
                             </tr>
-                          ))
+                            );
+                          })
                         )}
                       </tbody>
                     </table>

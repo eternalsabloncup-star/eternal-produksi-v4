@@ -5,6 +5,7 @@ import {
   type DemoAllocation,
 } from "../demo/productionHeadAlloc";
 import { formatDateDisplay } from "../lib/formatDate";
+import { useMobileOpsActive } from "../mobile/MobileOpsContext";
 import { DataTable } from "./DataTable/DataTable";
 import { DEFAULT_TABLE_PAGE_SIZE } from "./DataTable/Pagination";
 import type { ColumnDef } from "./DataTable/types";
@@ -20,6 +21,7 @@ type Filters = { q?: string };
  * Satu alokasi = satu baris; No. PO & Pelanggan diulang per baris (tanpa rowspan).
  */
 export function ScheduleProductionTable() {
+  const pwaOps = useMobileOpsActive();
   const [tick, setTick] = useState(0);
   const [filters, setFilters] = useState<Filters>({});
   const [page, setPage] = useState(1);
@@ -132,6 +134,7 @@ export function ScheduleProductionTable() {
       rowKey={(r) => r.id}
       enableColumnManager
       inlineColumnTools
+      dynamicStickyOffsets={pwaOps}
       page={page}
       pageSize={pageSize}
       total={allRows.length}
