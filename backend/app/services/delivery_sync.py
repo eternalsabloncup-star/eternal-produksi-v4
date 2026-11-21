@@ -222,9 +222,12 @@ def _sync_delivery_order_payload_under_writer_lease(
     writer_fence.assert_valid(db)
     _guard_db(db, mongo_guard=mongo_guard)
     from app.services.accurate_auto_sync.sj_sync_review import (
+        REASON_DELIVERY_NOTE_IDENTITY,
         REASON_MULTI_SO,
         REASON_PO_NOT_REGISTERED,
+        STATUS_OPEN,
         collect_line_sales_order_ids,
+        get_sj_sync_review,
         mark_sj_sync_review_resolved,
         upsert_sj_sync_review,
     )
@@ -232,32 +235,53 @@ def _sync_delivery_order_payload_under_writer_lease(
     try:
         note = deliveries.normalize_delivery_note(payload)
     except deliveries.DeliveryNoteIdentityError as exc:
-        # Hanya MULTI_SO yang di-quarantine sebagai review. Konflik identitas
-        # lain / kegagalan infrastruktur tetap fatal ke pemanggil.
-        if getattr(exc, "code", "") != REASON_MULTI_SO:
-            raise
+        # Identitas data (MULTI_SO / line-SO hilang / konflik) → quarantine durable.
+        # Tanpa SJ id tidak bisa dikarantina — fatal ke pemanggil.
+        # Kegagalan simpan review → re-raise agar discovery page_failed (jangan majukan
+        # checkpoint tanpa catatan gagal).
         sj_id = as_text(payload.get("id") or payload.get("accurate_sj_id"))
         if not sj_id:
             raise
+        exc_code = as_text(getattr(exc, "code", None)) or REASON_DELIVERY_NOTE_IDENTITY
+        if exc_code == REASON_MULTI_SO:
+            reason = REASON_MULTI_SO
+        else:
+            # SO_ID_CONFLICT / SO_NUMBER_CONFLICT / DELIVERY_NOTE_IDENTITY → umbrella.
+            reason = REASON_DELIVERY_NOTE_IDENTITY
         so_ids = collect_line_sales_order_ids(payload)
+        # Detail aman: pesan normalizer sudah tanpa PII pelanggan.
+        safe_detail = as_text(str(exc)) or None
+        # Kegagalan durable write (DB/lock) → exception ke discovery = page_failed.
+        # Jangan majukan checkpoint tanpa catatan gagal.
         upsert_sj_sync_review(
             db,
             accurate_sj_id=sj_id,
-            reason=REASON_MULTI_SO,
+            reason=reason,
             source_so_ids=so_ids,
             sj_no=as_text(payload.get("number") or payload.get("sj_no")) or None,
             # Retryable: siklus berikutnya boleh re-fetch; ingest hanya jika
-            # sumber sudah single-SO. Jangan map PO palsu.
+            # sumber sudah valid. Jangan map PO / line palsu.
             retryable=True,
-            last_error_code=REASON_MULTI_SO,
+            last_error_code=exc_code,
+            last_error_detail=safe_detail,
         )
+        persisted = get_sj_sync_review(db, sj_id)
+        if (
+            persisted is None
+            or persisted.get("status") != STATUS_OPEN
+            or as_text(persisted.get("reason")) != reason
+        ):
+            raise RuntimeError(
+                "SJ identity quarantine tidak durable — review tidak tersimpan."
+            )
         return {
             "outcome": "review_required",
-            "reason": REASON_MULTI_SO,
+            "reason": reason,
             "accurate_sj_id": sj_id,
             "source_so_ids": so_ids,
             "writes": 0,
             "quarantined": True,
+            "last_error_code": exc_code,
         }
 
     po_id = str(note["accurate_po_id"])
