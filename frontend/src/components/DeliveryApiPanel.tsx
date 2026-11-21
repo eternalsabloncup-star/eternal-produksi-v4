@@ -554,9 +554,9 @@ export function DeliveryApiPanel() {
         renderExpandedRow={(row) => <SjApiLineItems items={row.items} />}
         emptyMessage={
           loading
-            ? "Memuat Surat Jalan dari MongoDB V4…"
+            ? "Memuat Surat Jalan…"
             : rows.length === 0
-              ? "Belum ada Surat Jalan Accurate di MongoDB V4."
+              ? "Belum ada Surat Jalan Accurate."
               : "Tidak ada Surat Jalan pada filter aktif."
         }
         filterSlot={(tools) => (

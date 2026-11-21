@@ -5,6 +5,7 @@ import {
   allocationCanReviseQty,
   allocationReviseBounds,
   allowTaskAction,
+  canShowQtyConfirmForm,
   filterTasksByStatus,
   filterTasksForActor,
   formatCountBadge,
@@ -13,8 +14,11 @@ import {
   remainingQty,
   sampleStatusClass,
   sampleStatusLabel,
+  screenAllocQty,
   shortfallLabel,
   taskDisplayLabel,
+  taskItemDisplayName,
+  taskItemSecondaryMeta,
 } from "./teamTaskUi";
 
 function task(
@@ -115,6 +119,85 @@ describe("teamTaskUi labels & scheduling", () => {
   it("labels non-cetak packing shortfall", () => {
     expect(shortfallLabel("qc-packing", "Non-Cetak")).toBe("Belum Di-Packing");
     expect(shortfallLabel("qc-packing")).toBe("Belum Di-QC & Packing");
+  });
+
+  it("prefers Nama Barang over item_code / line id", () => {
+    expect(
+      taskItemDisplayName(
+        task({
+          task_key: "n1",
+          task_type: "screen",
+          status: "belum_dikerjakan",
+          ref: {
+            item_code: "100359",
+            accurate_line_id: "106318",
+            item_name: "12 oz Oval Inject Bening Super",
+          },
+        }),
+      ),
+    ).toBe("12 oz Oval Inject Bening Super");
+    expect(
+      taskItemSecondaryMeta({
+        ref: { item_code: "100359", accurate_line_id: "106318" },
+      }),
+    ).toBe("Kode 100359 · Line 106318");
+  });
+
+  it("falls back honestly when Nama Barang missing", () => {
+    expect(
+      taskItemDisplayName(
+        task({
+          task_key: "n2",
+          task_type: "screen",
+          status: "belum_dikerjakan",
+          ref: { item_code: "100359", accurate_line_id: "106318" },
+        }),
+      ),
+    ).toBe("Nama barang belum tersedia");
+  });
+
+  it("shows Screen qty confirm form without qty_target", () => {
+    expect(
+      canShowQtyConfirmForm({
+        task_type: "screen",
+        qty_target: undefined,
+      }),
+    ).toBe(true);
+    expect(
+      canShowQtyConfirmForm({
+        task_type: "cetak",
+        qty_target: undefined,
+      }),
+    ).toBe(false);
+    expect(
+      canShowQtyConfirmForm({
+        task_type: "cetak",
+        qty_target: 100,
+      }),
+    ).toBe(true);
+  });
+
+  it("reads Screen qty_alokasi as info only", () => {
+    expect(
+      screenAllocQty(
+        task({
+          task_key: "s1",
+          task_type: "screen",
+          status: "belum_dikerjakan",
+          context: { qty_alokasi: 250 },
+        }),
+      ),
+    ).toBe(250);
+    expect(
+      screenAllocQty(
+        task({
+          task_key: "c1",
+          task_type: "cetak",
+          status: "belum_dikerjakan",
+          context: { qty_alokasi: 250 },
+        }),
+      ),
+    ).toBeNull();
   });
 });
 

@@ -88,6 +88,7 @@ export type LoadingValidation = {
     sj_line_id: string;
     accurate_line_id: string;
     item_code: string;
+    item_name?: string;
     qty: number;
     unit: string;
     process_kind: string | null;
@@ -210,8 +211,11 @@ export type LoadingEvent = {
   sj_version: number;
   status: string;
   actor_email: string;
+  actor_display_name?: string;
   created_at?: string;
   cancelled_by?: string | null;
+  /** Enrichment Master display_name untuk pembatal — email tetap di storage. */
+  cancelled_by_display_name?: string;
   cancel_reason?: string | null;
   items: { accurate_line_id: string; qty: number; process_kind: string | null }[];
 };
@@ -237,6 +241,7 @@ export type DeliveryEvent = {
   attempt: number;
   status: string;
   courier_email: string;
+  actor_display_name?: string;
   recipient_name: string | null;
   failure_reason: string | null;
   photo_evidence_ids: string[];

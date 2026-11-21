@@ -1037,7 +1037,8 @@ def raise_quantity_discrepancy(
         "mismatched_items": [
             {
                 "accurate_line_id": c["accurate_line_id"],
-                "item_code": c["item_code"],
+                "item_code": c.get("item_code"),
+                "item_name": c.get("item_name"),
                 "qty_sj": c["qty"],
                 "qty_available": c["qty_available"],
                 "reason": c["reason"],

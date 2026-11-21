@@ -151,6 +151,7 @@ export let simTasks: OperationalTask[] = [
     status: "sebagian",
     qty_target: 5000,
     qty_confirmed: 2000,
+    item_name: "Cup 12oz Cetak",
     outlet_name: "PT Contoh Kemasan",
     ship_dates: ["2026-11-25"],
     ref: {
@@ -158,6 +159,7 @@ export let simTasks: OperationalTask[] = [
       po_no: PO_NO,
       accurate_line_id: LINE_CETAK,
       item_code: "CUP-12OZ",
+      item_name: "Cup 12oz Cetak",
       process_kind: "Cetak",
     },
     context: { item_name: "Cup 12oz Cetak" },
@@ -180,11 +182,13 @@ export let simTasks: OperationalTask[] = [
     assigned_role: "helper",
     status: "belum_dikerjakan",
     qty_target: 5000,
+    item_name: "Cup 12oz Cetak",
     ref: {
       accurate_po_id: PO_ID,
       po_no: PO_NO,
       accurate_line_id: LINE_CETAK,
       item_code: "CUP-12OZ",
+      item_name: "Cup 12oz Cetak",
       process_kind: "Cetak",
     },
   }),
@@ -195,14 +199,23 @@ export let simTasks: OperationalTask[] = [
     scope: "po_line_allocation",
     assigned_role: "screener",
     status: "belum_dikerjakan",
-    qty_target: 2500,
+    // Kontrak produksi: Screen tanpa qty_target (qty manual, tidak cap jadwal).
+    item_name: "Cup 12oz Cetak",
+    print_color: "Hitam",
+    outlet_name: "PT Contoh Kemasan",
     ref: {
       accurate_po_id: PO_ID,
       po_no: PO_NO,
       accurate_line_id: LINE_CETAK,
       allocation_id: ALLOC_A,
       item_code: "CUP-12OZ",
+      item_name: "Cup 12oz Cetak",
       process_kind: "Cetak",
+    },
+    context: {
+      operator_email: "op1@eternal.local",
+      qty_alokasi: 2500,
+      item_name: "Cup 12oz Cetak",
     },
   }),
   task({
@@ -214,12 +227,14 @@ export let simTasks: OperationalTask[] = [
     status: "sebagian",
     qty_target: 2500,
     qty_confirmed: 800,
+    item_name: "Cup 12oz Cetak",
     ref: {
       accurate_po_id: PO_ID,
       po_no: PO_NO,
       accurate_line_id: LINE_CETAK,
       allocation_id: ALLOC_A,
       item_code: "CUP-12OZ",
+      item_name: "Cup 12oz Cetak",
       process_kind: "Cetak",
     },
   }),
@@ -325,6 +340,7 @@ export type SimConfirmation = {
   idempotency_key: string;
   qty: number;
   actor_email: string;
+  actor_display_name?: string;
   actor_role: string;
   note?: string | null;
   created_at: string;

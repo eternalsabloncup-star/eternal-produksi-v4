@@ -52,6 +52,15 @@ export type OperationalTask = {
   coordination?: boolean;
   /** D1: nama customer/pelanggan terkait PO atau SJ. */
   outlet_name?: string;
+  /**
+   * Nama Barang dari enrichment read-time (PO item line via accurate_line_id).
+   * Mirror ref.item_name — tidak mengganti field teknis line/allocation.
+   */
+  item_name?: string;
+  /**
+   * Warna Cat dari allocation.print_color (input KP) — bukan Accurate item.color.
+   */
+  print_color?: string;
   /** D3: tanggal kirim SJ aktif unik (kalender). */
   ship_dates?: string[];
   ref: {
@@ -59,6 +68,8 @@ export type OperationalTask = {
     po_no?: string;
     accurate_line_id?: string;
     item_code?: string;
+    /** Nama Barang asli dari PO line (enrichment); opsional di dokumen lama. */
+    item_name?: string;
     process_kind?: string;
     allocation_id?: string;
     accurate_delivery_note_id?: string;
@@ -71,6 +82,8 @@ export type TaskConfirmation = {
   idempotency_key: string;
   qty: number;
   actor_email: string;
+  /** Enrichment Master display_name — label UI; email tetap di storage. */
+  actor_display_name?: string;
   actor_role: string;
   note?: string | null;
   created_at: string;

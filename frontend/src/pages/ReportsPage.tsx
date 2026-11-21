@@ -192,7 +192,7 @@ export function ReportsPage() {
         )}
       />
       <p className="ep-sectionlabel">
-        {rows.length} baris · sumber ledger MongoDB V4 · rumus tidak diubah
+        {rows.length} baris · sumber ledger · rumus tidak diubah
       </p>
     </div>
   );

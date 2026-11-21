@@ -877,9 +877,11 @@ def _create_follow_up_tasks(
             assigned_role=screen_role,
             ref=alloc_ref,
             label="Screen",
+            # Qty Screen diinput manual — tidak set qty_target (= tidak cap ke jadwal).
             context={
                 "operator_email": alloc["operator_email"],
                 "qty_alokasi": alloc["qty"],
+                "item_name": line.get("item_name"),
             },
             session=session,
         )

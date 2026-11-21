@@ -36,7 +36,7 @@ export function DashboardPage() {
   const kpis = useMemo((): KpiItem[] => {
     if (!metrics) return [];
     return [
-      { label: "PO Masuk", value: metrics.po_total, foot: "Accurate · MongoDB V4" },
+      { label: "PO Masuk", value: metrics.po_total, foot: "Accurate" },
       {
         label: "Menunggu Gate Design",
         value: metrics.po_waiting_design_gate,
@@ -83,7 +83,7 @@ export function DashboardPage() {
   }, [metrics]);
 
   if (loading) {
-    return <p>Memuat Dashboard dari MongoDB V4…</p>;
+    return <p>Memuat Dashboard…</p>;
   }
 
   if (error) {

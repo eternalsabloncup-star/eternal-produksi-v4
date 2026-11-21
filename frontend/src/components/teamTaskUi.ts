@@ -165,6 +165,67 @@ export function remainingQty(task: OperationalTask): number | null {
   return Math.max(task.qty_target - task.qty_confirmed, 0);
 }
 
+const ITEM_NAME_FALLBACK = "Nama barang belum tersedia";
+
+/**
+ * Nama Barang utama untuk tampilan Tugas Tim.
+ * Urutan: ref.item_name → top-level item_name → context.item_name → fallback jujur.
+ * Tidak memakai item_code / accurate_line_id sebagai nama.
+ */
+export function taskItemDisplayName(
+  task: Pick<OperationalTask, "ref" | "item_name" | "context">,
+): string {
+  const fromRef = String(task.ref?.item_name || "").trim();
+  if (fromRef) return fromRef;
+  const fromTop = String(task.item_name || "").trim();
+  if (fromTop) return fromTop;
+  const ctx = task.context;
+  if (ctx && typeof ctx === "object") {
+    const fromCtx = String(
+      (ctx as { item_name?: unknown }).item_name || "",
+    ).trim();
+    if (fromCtx) return fromCtx;
+  }
+  return ITEM_NAME_FALLBACK;
+}
+
+/** Subteks teknis: Kode · Line (tanpa allocation id sebagai identitas produk). */
+export function taskItemSecondaryMeta(
+  task: Pick<OperationalTask, "ref">,
+): string {
+  const parts: string[] = [];
+  const code = String(task.ref?.item_code || "").trim();
+  const line = String(task.ref?.accurate_line_id || "").trim();
+  if (code) parts.push(`Kode ${code}`);
+  if (line) parts.push(`Line ${line}`);
+  return parts.join(" · ");
+}
+
+/**
+ * Form konfirmasi Qty:
+ * - Screen: qty manual tanpa qty_target (kontrak backend) → tetap tampilkan form.
+ * - Tugas qty lain: butuh qty_target agar sisa sah terdefinisi.
+ */
+export function canShowQtyConfirmForm(
+  task: Pick<OperationalTask, "task_type" | "qty_target">,
+): boolean {
+  if (task.task_type === "screen") return true;
+  return task.qty_target !== undefined;
+}
+
+/**
+ * Qty Alokasi dari context Screen (info operasional).
+ * Bukan qty_target — Screen tidak dibatasi jadwal di backend.
+ */
+export function screenAllocQty(
+  task: Pick<OperationalTask, "task_type" | "context">,
+): number | null {
+  if (task.task_type !== "screen") return null;
+  const raw = task.context?.qty_alokasi;
+  const n = typeof raw === "number" ? raw : Number(raw);
+  return Number.isFinite(n) ? n : null;
+}
+
 /**
  * Cek grant Master untuk aksi. Super Admin: semua diizinkan di UI.
  * Grant belum/gagal dimuat → fail-closed (jangan buka mutasi).

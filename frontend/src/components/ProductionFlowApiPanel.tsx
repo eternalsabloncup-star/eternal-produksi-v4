@@ -384,7 +384,7 @@ export function ProductionFlowApiPanel({
         onRowActivate={(row) => setDetail(row)}
         emptyMessage={
           loading
-            ? "Memuat PO tahap dari MongoDB V4…"
+            ? "Memuat PO tahap…"
             : `Belum ada PO diterima yang aktif pada “${selectedStageLabel}”.`
         }
         filterSlot={(tools) => (
@@ -498,7 +498,7 @@ export function ProductionFlowApiPanel({
                     "accepted"}
                 </dd>
                 <dt>Sumber</dt>
-                <dd>State operasional MongoDB V4 (accepted only)</dd>
+                <dd>State operasional (accepted only)</dd>
                 {!detail.stage.has_print_items ? (
                   <>
                     <dt>Jenis</dt>

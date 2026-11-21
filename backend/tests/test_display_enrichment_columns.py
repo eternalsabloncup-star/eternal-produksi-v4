@@ -186,6 +186,118 @@ def test_task_enrichment_po_line_and_sj(db: Database) -> None:
     assert tasks[2]["ship_dates"] == []
 
 
+def test_enrich_actor_display_names_batch(db: Database) -> None:
+    from tests.scheduling_operator_fixtures import upsert_test_user
+
+    upsert_test_user(
+        db,
+        email="screener@eternal.local",
+        display_name="Screener Satu",
+        operational_role="screener",
+    )
+    upsert_test_user(
+        db,
+        email="kp@eternal.local",
+        display_name="Kepala Produksi",
+        operational_role="production-head",
+    )
+    rows = [
+        {"actor_email": "screener@eternal.local", "qty": 10},
+        {"actor_email": "unknown@eternal.local", "qty": 1},
+    ]
+    enrich.enrich_actor_display_names(db, rows)
+    assert rows[0]["actor_display_name"] == "Screener Satu"
+    assert rows[1]["actor_display_name"] == "Nama belum tersedia"
+    # Storage email identity preserved.
+    assert rows[0]["actor_email"] == "screener@eternal.local"
+
+    cancelled = [
+        {
+            "actor_email": "screener@eternal.local",
+            "cancelled_by": "kp@eternal.local",
+        },
+        {
+            "actor_email": "screener@eternal.local",
+            "cancelled_by": "ghost@eternal.local",
+        },
+        {"actor_email": "screener@eternal.local"},
+    ]
+    enrich.enrich_actor_display_names(db, cancelled)
+    enrich.enrich_actor_display_names(
+        db,
+        cancelled,
+        email_field="cancelled_by",
+        display_field="cancelled_by_display_name",
+    )
+    assert cancelled[0]["cancelled_by_display_name"] == "Kepala Produksi"
+    assert cancelled[0]["cancelled_by"] == "kp@eternal.local"
+    assert cancelled[1]["cancelled_by_display_name"] == "Nama belum tersedia"
+    assert "cancelled_by_display_name" not in cancelled[2]
+
+
+def test_task_enrichment_item_name_from_po_line(db: Database) -> None:
+    """Nama Barang dari PO line via accurate_line_id — bukan item_code sebagai nama."""
+    po = _seed_po(db)
+    line = next(
+        i
+        for i in (po["header"]["items"])
+        if str(i.get("accurate_line_id")) == LINE_PRINT
+    )
+    expected_name = str(line.get("item_name") or "").strip()
+    expected_code = str(line.get("item_code") or "").strip()
+    assert expected_name  # sample SoT harus punya nama
+    tasks = [
+        {
+            "task_key": "t-screen",
+            "task_type": "screen",
+            "ref": {
+                "accurate_po_id": PO_ID,
+                "accurate_line_id": LINE_PRINT,
+                "item_code": expected_code,
+                "allocation_id": f"alloc:{LINE_PRINT}:1",
+            },
+            "context": {"qty_alokasi": 100},
+        },
+        {
+            "task_key": "t-other-line",
+            "task_type": "persiapan-cup",
+            "ref": {
+                "accurate_po_id": PO_ID,
+                "accurate_line_id": LINE_NC,
+            },
+        },
+        {
+            "task_key": "t-missing-line",
+            "task_type": "cetak",
+            "ref": {
+                "accurate_po_id": PO_ID,
+                "accurate_line_id": "LINE-DOES-NOT-EXIST",
+            },
+        },
+    ]
+    enrich.enrich_operational_tasks(db, tasks)
+    assert tasks[0]["item_name"] == expected_name
+    assert tasks[0]["ref"]["item_name"] == expected_name
+    assert tasks[0]["ref"]["item_code"] == expected_code
+    # Line berbeda → nama berbeda (bila ada)
+    other = next(
+        (
+            i
+            for i in po["header"]["items"]
+            if str(i.get("accurate_line_id")) == LINE_NC
+        ),
+        None,
+    )
+    if other and str(other.get("item_name") or "").strip():
+        assert tasks[1]["item_name"] == str(other.get("item_name")).strip()
+        assert tasks[1]["item_name"] != tasks[0]["item_name"] or expected_name == str(
+            other.get("item_name")
+        ).strip()
+    # Line tidak ada → jangan mengarang nama
+    assert tasks[2]["item_name"] == ""
+    assert "item_name" not in tasks[2]["ref"] or not tasks[2]["ref"].get("item_name")
+
+
 def test_calendar_sort_and_no_utc_shift() -> None:
     dates = enrich.unique_sorted_ship_dates(
         ["27/11/2026", "25/11/2026", "25/11/2026", "01/12/2026"]

@@ -179,12 +179,33 @@ def get_delivery_note(
         raise HTTPException(status.HTTP_404_NOT_FOUND, str(exc)) from exc
     except ObjectAuthError as exc:
         raise HTTPException(status.HTTP_403_FORBIDDEN, str(exc)) from exc
+    from app.services.display_enrichment import enrich_actor_display_names
+
+    loadings = deliveries.list_loading_events(db, accurate_sj_id)
+    events = deliveries.list_delivery_events(db, accurate_sj_id)
+    enrich_actor_display_names(db, loadings)
+    enrich_actor_display_names(
+        db,
+        loadings,
+        email_field="cancelled_by",
+        display_field="cancelled_by_display_name",
+    )
+    enrich_actor_display_names(db, events, email_field="courier_email")
+    loading = deliveries.get_loading_event(db, accurate_sj_id)
+    if isinstance(loading, dict):
+        enrich_actor_display_names(db, [loading])
+        enrich_actor_display_names(
+            db,
+            [loading],
+            email_field="cancelled_by",
+            display_field="cancelled_by_display_name",
+        )
     return {
         "delivery_note": note,
-        "loading": deliveries.get_loading_event(db, accurate_sj_id),
-        "loadings": deliveries.list_loading_events(db, accurate_sj_id),
+        "loading": loading,
+        "loadings": loadings,
         "revisions": deliveries.list_note_revisions(db, accurate_sj_id),
-        "events": deliveries.list_delivery_events(db, accurate_sj_id),
+        "events": events,
         "evidence": delivery_service.active_delivery_evidence(db, accurate_sj_id),
     }
 
@@ -362,10 +383,20 @@ def get_revisions(
         raise HTTPException(status.HTTP_404_NOT_FOUND, str(exc)) from exc
     except ObjectAuthError as exc:
         raise HTTPException(status.HTTP_403_FORBIDDEN, str(exc)) from exc
+    from app.services.display_enrichment import enrich_actor_display_names
+
+    loadings = deliveries.list_loading_events(db, accurate_sj_id)
+    enrich_actor_display_names(db, loadings)
+    enrich_actor_display_names(
+        db,
+        loadings,
+        email_field="cancelled_by",
+        display_field="cancelled_by_display_name",
+    )
     return {
         "accurate_sj_id": accurate_sj_id,
         "revisions": deliveries.list_note_revisions(db, accurate_sj_id),
-        "loadings": deliveries.list_loading_events(db, accurate_sj_id),
+        "loadings": loadings,
     }
 
 

@@ -4,6 +4,7 @@ import { useAuth } from "../auth";
 import { EternalLogo } from "../brand/EternalLogo";
 import type { ShellDataMode } from "../demo/resolveInboxMode";
 import { shellModeBadgeLabel } from "../demo/resolveInboxMode";
+import { userDisplayName } from "../lib/userDisplayName";
 import type { AppNavItem } from "./nav";
 
 type Props = {
@@ -14,7 +15,7 @@ type Props = {
 export function Header({ current, dataMode }: Props) {
   const { user, logout } = useAuth();
   const [busy, setBusy] = useState(false);
-  const initials = (user?.display_name || user?.email || "EP")
+  const initials = (user?.display_name?.trim() || "EP")
     .split(/\s+/)
     .map((p) => p[0])
     .join("")
@@ -58,8 +59,8 @@ export function Header({ current, dataMode }: Props) {
         >
           Mobile
         </Link>
-        <span className="ep-sub" title={user?.email}>
-          {user?.display_name || user?.email}
+        <span className="ep-sub">
+          {userDisplayName(user?.display_name)}
           {user?.role ? ` · ${user.role}` : ""}
         </span>
         <span className="ep-avatar" aria-hidden>

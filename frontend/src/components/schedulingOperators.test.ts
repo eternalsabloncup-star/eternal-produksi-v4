@@ -18,10 +18,10 @@ describe("schedulingOperators", () => {
     expect(usable.map((o) => o.email)).toEqual(["a@x.local", "b@x.local"]);
   });
 
-  it("falls back label to email when display_name empty", () => {
+  it("uses Master display_name without email fallback", () => {
     expect(
       operatorCandidateLabel({ email: "op@x.local", display_name: "" }),
-    ).toBe("op@x.local");
+    ).toBe("Nama belum tersedia");
     expect(
       operatorCandidateLabel({ email: "op@x.local", display_name: "Budi" }),
     ).toBe("Budi");
@@ -52,6 +52,6 @@ describe("schedulingOperators", () => {
     expect(state.status).toBe("ok");
     if (state.status !== "ok") return;
     expect(state.items[0].email).toBe("op@x.local");
-    expect(operatorCandidateLabel(state.items[0])).toBe("op@x.local");
+    expect(operatorCandidateLabel(state.items[0])).toBe("Nama belum tersedia");
   });
 });

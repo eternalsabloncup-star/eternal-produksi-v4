@@ -34,7 +34,7 @@ export function InboxPage() {
             {
               label: "Total PO",
               value: m.total,
-              foot: "Accurate · MongoDB V4",
+              foot: "Accurate",
             },
             {
               label: "PO di Inbox",
@@ -101,7 +101,7 @@ export function InboxPage() {
         title="Inbox PO"
         subtitle={
           sourceMode === "api"
-            ? "PO Accurate dari MongoDB V4 — read-only, dipantau sebelum penjadwalan."
+            ? "PO Accurate — read-only, dipantau sebelum penjadwalan."
             : "PO masuk dipantau sebelum dialokasikan ke penjadwalan (DEMO)."
         }
       />
@@ -113,7 +113,7 @@ export function InboxPage() {
         </div>
       ) : (
         <div className="ep-visualnotice">
-          Sumber Accurate · MongoDB V4 (read-only Accurate Online). Terima PO
+          Sumber Accurate (read-only Accurate Online). Terima PO
           mengaktifkan workflow Eternal. Penjadwalan dan progres di modul terkait.
           Sync SJ live tetap OFF.
         </div>

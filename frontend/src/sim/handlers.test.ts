@@ -102,4 +102,29 @@ describe("handleSimRequest", () => {
       null,
     );
   });
+
+  it("SJ detail loadings expose Master display names for cancel actors", async () => {
+    const res = handleSimRequest("/api/delivery/SJ-1", { method: "GET" }, session);
+    expect(res?.status).toBe(200);
+    const body = (await res!.json()) as {
+      loadings: Array<{
+        status: string;
+        cancelled_by?: string | null;
+        cancelled_by_display_name?: string;
+        actor_display_name?: string;
+      }>;
+      events: Array<{ courier_email: string; actor_display_name?: string }>;
+    };
+    const cancelled = body.loadings.filter((l) => l.status === "dibatalkan");
+    expect(cancelled.length).toBeGreaterThanOrEqual(2);
+    expect(cancelled[0].cancelled_by).toBe("kp@eternal.local");
+    expect(cancelled[0].cancelled_by_display_name).toBe("Kepala Produksi");
+    expect(cancelled.some((l) => l.cancelled_by_display_name === "Nama belum tersedia")).toBe(
+      true,
+    );
+    const active = body.loadings.find((l) => l.status === "aktif");
+    expect(active?.actor_display_name).toBeTruthy();
+    expect(active?.cancelled_by == null || active?.cancelled_by === "").toBe(true);
+    expect(body.events[0]?.actor_display_name).toBeTruthy();
+  });
 });

@@ -14,6 +14,7 @@ import {
   qtyText,
   revisionStatusLabel,
 } from "../lib/deliverySj";
+import { actorDisplayLabel } from "../lib/userDisplayName";
 import { SjApiLineItems } from "./SjApiLineItems";
 
 function qtyOrDash(value: number | null | undefined): string {
@@ -163,7 +164,11 @@ export function DeliverySjDetailModal({
             </div>
             <div className="ep-po-info-cell">
               <div className="lbl">Driver</div>
-              <strong>{display(lastEvent?.courier_email || row.driver_email)}</strong>
+              <strong>
+                {actorDisplayLabel({
+                  actor_display_name: lastEvent?.actor_display_name,
+                })}
+              </strong>
             </div>
             <div className="ep-po-info-cell">
               <div className="lbl">Penerima</div>
@@ -267,8 +272,19 @@ export function DeliverySjDetailModal({
                         <td>{event.sequence}</td>
                         <td>{event.sj_version}</td>
                         <td>{loadingEventStatusLabel(event.status)}</td>
-                        <td>{display(event.actor_email)}</td>
-                        <td>{display(event.cancelled_by)}</td>
+                        <td>
+                          {actorDisplayLabel({
+                            actor_display_name: event.actor_display_name,
+                          })}
+                        </td>
+                        <td>
+                          {event.cancelled_by
+                            ? actorDisplayLabel({
+                                actor_display_name:
+                                  event.cancelled_by_display_name,
+                              })
+                            : "—"}
+                        </td>
                         <td>{display(event.cancel_reason)}</td>
                       </tr>
                     ))}
@@ -300,7 +316,10 @@ export function DeliverySjDetailModal({
                             Status: {loadingEventStatusLabel(event.status)}
                           </div>
                           <div className="ep-sj-mobile-row-meta ep-sj-mobile-row-wrap">
-                            Petugas: {display(event.actor_email)}
+                            Petugas:{" "}
+                            {actorDisplayLabel({
+                              actor_display_name: event.actor_display_name,
+                            })}
                           </div>
                         </div>
                       </div>
@@ -323,7 +342,12 @@ export function DeliverySjDetailModal({
                             <div className="ep-sj-item-extra">
                               <div className="ep-sj-item-extra-row">
                                 <span className="lbl">Dibatalkan oleh</span>
-                                <strong>{display(event.cancelled_by)}</strong>
+                                <strong>
+                                  {actorDisplayLabel({
+                                    actor_display_name:
+                                      event.cancelled_by_display_name,
+                                  })}
+                                </strong>
                               </div>
                               <div className="ep-sj-item-extra-row">
                                 <span className="lbl">Alasan</span>
@@ -362,7 +386,11 @@ export function DeliverySjDetailModal({
                       <tr key={event.attempt}>
                         <td>{event.attempt}</td>
                         <td>{deliveryStatusLabel(event.status)}</td>
-                        <td>{display(event.courier_email)}</td>
+                        <td>
+                          {actorDisplayLabel({
+                            actor_display_name: event.actor_display_name,
+                          })}
+                        </td>
                         <td>{display(event.recipient_name)}</td>
                         <td>{event.photo_evidence_ids.length}</td>
                         <td>{display(event.failure_reason)}</td>
@@ -387,7 +415,10 @@ export function DeliverySjDetailModal({
                             {deliveryStatusLabel(event.status)}
                           </div>
                           <div className="ep-sj-mobile-row-meta ep-sj-mobile-row-wrap">
-                            Driver: {display(event.courier_email)}
+                            Driver:{" "}
+                            {actorDisplayLabel({
+                              actor_display_name: event.actor_display_name,
+                            })}
                           </div>
                           <div className="ep-sj-mobile-row-meta ep-sj-mobile-row-wrap">
                             Penerima: {display(event.recipient_name)}
