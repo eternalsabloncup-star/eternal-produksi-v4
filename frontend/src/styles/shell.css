@@ -948,6 +948,459 @@
   flex: none;
 }
 
+/* Compact SJ item list: mobile/tablet only; desktop keeps table. */
+.ep-sj-items-mobile {
+  display: none;
+}
+
+.ep-sj-items-section-mobile {
+  display: none;
+}
+
+.ep-sj-items-total {
+  display: none;
+}
+
+.ep-sj-items-desktop-hint {
+  display: block;
+}
+
+/* Horizontal scroll host for SJ detail tables (keeps table layout height). */
+.ep-sj-tbl-scroll {
+  width: 100%;
+  max-width: 100%;
+  overflow-x: auto;
+  /* Body is a column flex; overflow:auto flex items can shrink to 0 otherwise. */
+  flex: 0 0 auto;
+  min-height: min-content;
+}
+
+/* Mobile-only compact lists for revisi / validasi (desktop keeps tables). */
+.ep-sj-mobile-list {
+  display: none;
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.ep-sj-mobile-row {
+  padding: 8px 0;
+  border-bottom: 1px solid var(--ep-line);
+}
+
+.ep-sj-mobile-row:last-child {
+  border-bottom: none;
+}
+
+.ep-sj-mobile-row-main {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.ep-sj-mobile-row-copy {
+  min-width: 0;
+  flex: 1 1 auto;
+}
+
+.ep-sj-mobile-row-title {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--ep-ink);
+  line-height: 1.35;
+  overflow-wrap: anywhere;
+}
+
+.ep-sj-mobile-row-meta {
+  margin-top: 2px;
+  font-size: 10px;
+  font-weight: 600;
+  color: var(--ep-muted);
+  line-height: 1.35;
+}
+
+.ep-sj-mobile-row-wrap {
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+
+.ep-sj-val-status {
+  font-weight: 700;
+}
+
+.ep-sj-val-status.is-ok {
+  color: #1a4d3e;
+}
+
+.ep-sj-val-status.is-bad {
+  color: #8b1e1e;
+}
+
+.ep-sj-mobile-row.is-bad {
+  border-left: 0;
+}
+
+.ep-sj-item-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.ep-sj-item {
+  padding: 10px 0;
+  border-bottom: 1px solid var(--ep-line);
+}
+
+.ep-sj-item:last-child {
+  border-bottom: none;
+}
+
+.ep-sj-item-row {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.ep-sj-item-main {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  min-width: 0;
+  flex: 1 1 auto;
+}
+
+.ep-sj-item-idx {
+  flex: 0 0 auto;
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--ep-muted);
+  line-height: 1.35;
+  font-variant-numeric: tabular-nums;
+}
+
+.ep-sj-item-copy {
+  min-width: 0;
+}
+
+.ep-sj-item-name {
+  font-size: 14px;
+  font-weight: 700;
+  color: var(--ep-ink);
+  line-height: 1.35;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+
+.ep-sj-item-meta {
+  margin-top: 2px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--ep-muted);
+  line-height: 1.35;
+}
+
+.ep-sj-item-qty {
+  flex: 0 0 auto;
+  text-align: right;
+  font-size: 14px;
+  font-weight: 800;
+  color: #123d30;
+  line-height: 1.35;
+  white-space: nowrap;
+}
+
+.ep-sj-item-qty-num {
+  font-variant-numeric: tabular-nums;
+}
+
+.ep-sj-item-detail-toggle {
+  margin-top: 6px;
+  margin-left: 22px;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: #1a4d3e;
+  font: inherit;
+  font-size: 12px;
+  font-weight: 700;
+  text-decoration: underline;
+  cursor: pointer;
+}
+
+.ep-sj-item-extra {
+  margin: 6px 0 0 22px;
+  display: grid;
+  gap: 4px;
+}
+
+.ep-sj-item-extra-row {
+  display: grid;
+  gap: 2px;
+}
+
+.ep-sj-item-extra-row .lbl {
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--ep-muted);
+}
+
+.ep-sj-item-extra-row strong {
+  font-size: 13px;
+  font-weight: 650;
+  color: var(--ep-ink);
+  overflow-wrap: anywhere;
+}
+
+.ep-sj-items-toggle {
+  margin-top: 8px;
+  width: 100%;
+}
+
+.ep-sj-items-total {
+  margin-top: 10px;
+  padding-top: 10px;
+  border-top: 1px solid var(--ep-line);
+}
+
+.ep-sj-items-total-label {
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--ep-muted);
+}
+
+.ep-sj-items-total-value {
+  margin-top: 2px;
+  font-size: 15px;
+  font-weight: 800;
+  color: #123d30;
+  font-variant-numeric: tabular-nums;
+}
+
+@media (max-width: 768px) {
+  .ep-modalshade-center:has(.ep-delivery-detail-modal) {
+    padding: 8px;
+    align-items: stretch;
+  }
+
+  .ep-delivery-detail-modal {
+    width: min(96vw, calc(100vw - 12px));
+    max-width: 96vw;
+    max-height: min(96dvh, 100vh);
+    margin: auto 0;
+  }
+
+  .ep-delivery-detail-modal .ep-modal-head {
+    gap: 8px;
+    align-items: flex-start;
+  }
+
+  .ep-delivery-detail-modal .ep-modal-head > div:first-child {
+    min-width: 0;
+    flex: 1 1 auto;
+  }
+
+  .ep-delivery-detail-modal .ep-modal-head h2 {
+    font-size: clamp(14px, 4.1vw, 17px);
+    line-height: 1.25;
+    overflow-wrap: anywhere;
+    word-break: break-word;
+    padding-right: 4px;
+  }
+
+  .ep-delivery-detail-modal .ep-x {
+    flex: 0 0 auto;
+  }
+
+  .ep-delivery-detail-modal .ep-modal-body {
+    max-height: none;
+    flex: 1 1 auto;
+    min-height: 0;
+    overflow-x: hidden;
+    overflow-y: auto;
+    -webkit-overflow-scrolling: touch;
+  }
+
+  .ep-delivery-detail-modal .ep-sj-desk-only {
+    display: none !important;
+  }
+
+  .ep-delivery-detail-modal .ep-sj-mobile-list {
+    display: block;
+  }
+
+  /* Wide Riwayat/Validasi tables scroll inside a wrapper — table height stays intact. */
+  .ep-delivery-detail-modal .ep-sj-tbl-scroll {
+    width: 100%;
+    max-width: 100%;
+    overflow-x: auto;
+    overflow-y: visible;
+    -webkit-overflow-scrolling: touch;
+  }
+
+  /* Sticky th inside modal body fights the sticky footer on small screens. */
+  .ep-delivery-detail-modal .ep-tbl th,
+  .ep-delivery-detail-modal .ep-tbl-detail th {
+    position: static;
+  }
+
+  /*
+   * Footer stays pinned while body scrolls via flex (head/body/foot),
+   * not position:sticky — sticky was overlapping the last scrolled rows.
+   */
+  .ep-delivery-detail-modal .ep-modal-foot {
+    position: relative;
+    bottom: auto;
+    flex: 0 0 auto;
+    z-index: 2;
+  }
+
+  .ep-delivery-detail-modal .ep-modal-foot-actions {
+    width: 100%;
+    margin-left: 0;
+    display: flex;
+    flex-wrap: nowrap;
+    gap: 8px;
+  }
+
+  .ep-delivery-detail-modal .ep-modal-foot-actions .ep-btn {
+    flex: 1 1 0;
+    min-height: 40px;
+  }
+
+  /* 320px: two rows — Perbedaan+Tutup, then Konfirmasi full width. */
+  @media (max-width: 359px) {
+    .ep-delivery-detail-modal .ep-modal-foot-actions {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 8px;
+    }
+
+    .ep-delivery-detail-modal .ep-modal-foot-actions .ep-btn.primary {
+      grid-column: 1 / -1;
+    }
+  }
+
+  .ep-sj-items-section-desktop {
+    display: none;
+  }
+
+  .ep-sj-items-section-mobile {
+    display: inline;
+  }
+
+  .ep-sj-items-desktop,
+  .ep-sj-items-desktop-hint {
+    display: none !important;
+  }
+
+  .ep-sj-items-mobile {
+    display: block;
+  }
+
+  .ep-sj-items-total {
+    display: block;
+  }
+
+  /* Mobile: no left accent rail — reclaim full popup width for item list. */
+  .ep-delivery-detail-modal .ep-po-detail {
+    padding-left: 0;
+    padding-right: 0;
+    border-left: 0;
+  }
+
+  /* Mobile compact typography — scoped to SJ detail modal item list only. */
+  .ep-delivery-detail-modal .ep-sj-items-section-label {
+    font-size: 12px;
+    font-weight: 600;
+  }
+
+  .ep-delivery-detail-modal .ep-sj-item {
+    padding: 8px 0; /* ~20% tighter than 10px */
+  }
+
+  .ep-delivery-detail-modal .ep-sj-item-idx {
+    font-size: 11px;
+    font-weight: 600;
+  }
+
+  .ep-delivery-detail-modal .ep-sj-item-name {
+    font-size: 12px;
+    font-weight: 600;
+  }
+
+  .ep-delivery-detail-modal .ep-sj-item-meta {
+    font-size: 10px;
+    font-weight: 600;
+  }
+
+  .ep-delivery-detail-modal .ep-sj-item-qty {
+    font-size: 12px;
+    font-weight: 600;
+  }
+
+  .ep-delivery-detail-modal .ep-sj-item-detail-toggle {
+    font-size: 10.5px;
+    font-weight: 600;
+    margin-top: 4px;
+    /* Keep touch target comfortable despite smaller text. */
+    padding: 6px 8px 6px 0;
+    min-height: 32px;
+  }
+
+  .ep-delivery-detail-modal .ep-sj-item-extra {
+    margin-top: 4px;
+  }
+
+  .ep-delivery-detail-modal .ep-sj-items-total {
+    margin-top: 8px;
+    padding-top: 8px;
+  }
+
+  .ep-delivery-detail-modal .ep-sj-items-total-value {
+    font-size: 13px;
+    font-weight: 600;
+  }
+
+  .ep-sj-ops.ep-po-info-grid {
+    grid-template-columns: 1fr;
+    margin-bottom: 10px;
+    border: 0;
+    background: transparent;
+  }
+
+  .ep-sj-ops .ep-po-info-cell {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 12px;
+    padding: 8px 0;
+    border: 0 !important;
+    border-bottom: 1px solid var(--ep-line) !important;
+    background: transparent;
+  }
+
+  .ep-sj-ops .ep-po-info-cell:last-child {
+    border-bottom: 0 !important;
+  }
+
+  .ep-sj-ops .ep-po-info-cell .lbl {
+    flex: 0 1 auto;
+    margin: 0;
+    font-size: 12px;
+  }
+
+  .ep-sj-ops .ep-po-info-cell strong {
+    flex: 1 1 auto;
+    text-align: right;
+    font-size: 13px;
+    overflow-wrap: anywhere;
+  }
+}
+
 .ep-delivery-detail-scroll {
   min-height: 0;
   flex: 1;

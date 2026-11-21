@@ -557,13 +557,6 @@ export function ScheduleApiPanel() {
       {!loading && !pwaOps ? <KpiSummary items={kpis} /> : null}
       {error && !selected ? <p className="ep-error">{error}</p> : null}
       {notice && !selected ? <p className="ep-notice">{notice}</p> : null}
-      {!pwaOps ? (
-        <p className="ep-po-confirm-hint" data-testid="schedule-screen-size-note">
-          Ukuran Screen diambil dari Master Produk per kode barang. Belum diatur bila
-          Master kosong. Bukan daftar DEMO Kecil/Besar.
-        </p>
-      ) : null}
-
       <DataTable
         key={`schedule-board-${tableEpoch}`}
         tableId="po-accurate:schedule-v1"
@@ -592,7 +585,6 @@ export function ScheduleApiPanel() {
         }
         filterSlot={(tools) => (
           <div className="ep-filterbar is-compact">
-            <strong>Jadwal Produksi · MongoDB V4</strong>
             <div className="ep-search">
               <span style={{ fontSize: 14, color: "#97a8bc" }} aria-hidden>
                 ⌕
