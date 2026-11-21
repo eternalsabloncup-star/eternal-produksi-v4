@@ -31,8 +31,54 @@
 
 .ep-m-header-brand {
   display: flex;
-  align-items: baseline;
+  align-items: center;
   gap: 10px;
+  min-width: 0;
+}
+
+.ep-m-logo-wrap {
+  position: relative;
+  flex: none;
+  display: grid;
+  place-items: center;
+  height: 28px;
+}
+
+.ep-m-logo {
+  display: block;
+  object-fit: contain;
+  object-position: left center;
+  pointer-events: none;
+  user-select: none;
+}
+
+.ep-m-logo-mark {
+  width: 28px;
+  height: 28px;
+}
+
+.ep-m-logo-horizontal {
+  display: none;
+  height: 24px;
+  width: auto;
+  max-width: 140px;
+}
+
+@media (min-width: 720px) {
+  .ep-m-logo-mark {
+    display: none;
+  }
+  .ep-m-logo-horizontal {
+    display: block;
+  }
+}
+
+.ep-m-header-product {
+  font-family: Syne, "DM Sans", sans-serif;
+  font-size: 1.05rem;
+  letter-spacing: -0.02em;
+  color: var(--ep-m-accent);
+  white-space: nowrap;
 }
 
 .ep-m-header-brand strong {

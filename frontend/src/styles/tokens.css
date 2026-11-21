@@ -86,8 +86,9 @@
   --ep-shadow: 0 4px 20px rgba(15, 42, 34, 0.05);
   --ep-font: "DM Sans", "Segoe UI", sans-serif;
   --ep-font-display: "DM Sans", "Segoe UI", sans-serif;
-  /* Rail icon-only (Accurate-style); lebar penuh lama tidak dipakai. */
+  /* Rail icon-only; expanded hanya sedikit melebar untuk wordmark (bukan full nav). */
   --ep-sidebar-w: 64px;
+  --ep-sidebar-expanded-w: 168px;
   --ep-sidebar-compact-w: 64px;
   --ep-topbar-h: 61px;
   --ep-radius: 7px;

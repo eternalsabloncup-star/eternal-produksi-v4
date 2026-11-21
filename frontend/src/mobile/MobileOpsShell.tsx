@@ -62,7 +62,26 @@ function MobileOpsChrome() {
     <div className="ep-m-app" data-testid="mobile-ops-shell">
       <header className="ep-m-header">
         <div className="ep-m-header-brand">
-          <strong>Eternal Ops</strong>
+          {/* Mobile: simbol. Tablet+: horizontal — CSS .ep-m-logo-*. */}
+          <span className="ep-m-logo-wrap" aria-label="ETERNAL">
+            <img
+              className="ep-m-logo ep-m-logo-mark"
+              src="/brand/eternal-logo-mark.png"
+              srcSet="/brand/eternal-logo-mark.png 1x, /brand/eternal-logo-mark@2x.png 2x"
+              alt=""
+              draggable={false}
+              decoding="async"
+            />
+            <img
+              className="ep-m-logo ep-m-logo-horizontal"
+              src="/brand/eternal-logo-horizontal.png"
+              srcSet="/brand/eternal-logo-horizontal.png 1x, /brand/eternal-logo-horizontal@2x.png 2x"
+              alt=""
+              draggable={false}
+              decoding="async"
+            />
+          </span>
+          <strong className="ep-m-header-product">Eternal Ops</strong>
           <span className="ep-m-header-tab">{tab.label}</span>
         </div>
         <div className="ep-m-header-meta">

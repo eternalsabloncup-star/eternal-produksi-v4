@@ -34,22 +34,79 @@
   z-index: 20;
   overflow-x: hidden;
   overflow-y: hidden;
+  transition: width 0.15s ease;
 }
 
 .ep-sidebar-rail {
   width: var(--ep-sidebar-w);
 }
 
+.ep-sidebar-rail.is-expanded {
+  /* Wordmark saja — bukan full-width nav lama. */
+  width: var(--ep-sidebar-expanded-w);
+}
+
 .ep-brand {
+  position: relative;
   height: var(--ep-topbar-h);
   display: flex;
   align-items: center;
   justify-content: center;
-  gap: 0;
-  padding: 0;
+  gap: 4px;
+  padding: 0 6px 14px;
   border-bottom: 1px solid #2a4a3d;
   white-space: nowrap;
   overflow: hidden;
+  background: #f4f7f5;
+}
+
+.ep-brand-logo {
+  display: block;
+  object-fit: contain;
+  object-position: center;
+  flex: none;
+  pointer-events: none;
+  user-select: none;
+}
+
+.ep-brand-logo-mark {
+  width: 34px;
+  height: 34px;
+}
+
+.ep-brand-logo-horizontal {
+  width: auto;
+  height: 26px;
+  max-width: calc(100% - 8px);
+}
+
+.ep-sidebar-collapse {
+  position: absolute;
+  right: 4px;
+  bottom: 2px;
+  z-index: 2;
+  width: 22px;
+  height: 18px;
+  padding: 0;
+  border: 0;
+  border-radius: 5px;
+  background: #dce8e2;
+  color: #1a4d3e;
+  font-size: 11px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.ep-sidebar-collapse:hover {
+  background: #c9dbd2;
+}
+
+.ep-sidebar.is-collapsed .ep-sidebar-collapse {
+  right: 50%;
+  transform: translateX(50%);
+  width: 20px;
+  height: 16px;
+  font-size: 10px;
 }
 
 .ep-brandmark {
@@ -331,11 +388,39 @@
   z-index: 10;
 }
 
+.ep-topbar-left {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-width: 0;
+}
+
+.ep-topbar-logo {
+  display: none;
+  height: 28px;
+  width: auto;
+  max-width: 160px;
+  object-fit: contain;
+  flex: none;
+}
+
+/* Wordmark di topbar saat rail collapsed (simbol di sidebar). */
+.ep-app:has(.ep-sidebar.is-collapsed) .ep-topbar-logo {
+  display: block;
+}
+
+.ep-topbar-title {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
 .ep-crumb {
   color: #9caabd;
 }
 
-.ep-topbar strong {
+.ep-topbar strong,
+.ep-topbar-title {
   font-size: 12px;
 }
 
@@ -2726,6 +2811,9 @@
   .ep-sidebar,
   .ep-sidebar-rail {
     width: var(--ep-sidebar-w);
+  }
+  .ep-sidebar-rail.is-expanded {
+    width: var(--ep-sidebar-expanded-w);
   }
   .ep-container {
     padding: 16px;

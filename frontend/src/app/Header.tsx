@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { useAuth } from "../auth";
+import { EternalLogo } from "../brand/EternalLogo";
 import type { ShellDataMode } from "../demo/resolveInboxMode";
 import { shellModeBadgeLabel } from "../demo/resolveInboxMode";
 import type { AppNavItem } from "./nav";
@@ -31,7 +32,14 @@ export function Header({ current, dataMode }: Props) {
 
   return (
     <header className="ep-topbar">
-      <strong>{current.label}</strong>
+      <div className="ep-topbar-left">
+        <EternalLogo
+          variant="horizontal"
+          className="ep-topbar-logo"
+          decorative
+        />
+        <strong className="ep-topbar-title">{current.label}</strong>
+      </div>
       <div className="ep-topright">
         {badge ? (
           <span
