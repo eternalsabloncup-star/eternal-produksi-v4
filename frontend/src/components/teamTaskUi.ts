@@ -185,9 +185,10 @@ export function allowTaskAction(
 }
 
 /**
- * Filter presentasional selaras backend ``filter_tasks_for_actor``:
- * cabang di server; Loading-SJ dengan assignee hanya untuk email yang ditugaskan.
- * ``operationsFull`` / Super Admin melihat semua tugas yang sudah di-fetch.
+ * Filter presentasional selaras backend ``loading_sj_visible_to_actor``:
+ * cabang di server; Loading-SJ dengan assignee hanya untuk email yang ditugaskan
+ * kecuali SA / operations.full / operations.tasks.view_all (read).
+ * ``viewAllTasks`` ≠ mutation authority.
  */
 export function filterTasksForActor(
   tasks: OperationalTask[],
@@ -196,9 +197,13 @@ export function filterTasksForActor(
     actorEmail: string | null | undefined;
     operationalRole: string | null | undefined;
     operationsFull?: boolean;
+    /** Effective ``operations.tasks.view_all`` (Holding auto atau grant). */
+    viewAllTasks?: boolean;
   },
 ): OperationalTask[] {
-  if (opts.isSuperAdmin || opts.operationsFull) return tasks;
+  if (opts.isSuperAdmin || opts.operationsFull || opts.viewAllTasks) {
+    return tasks;
+  }
   const email = (opts.actorEmail || "").trim().toLowerCase();
   // Loading SJ: hanya assignee yang melihat sebagai pekerjaan aktif.
   return tasks.filter((t) => {

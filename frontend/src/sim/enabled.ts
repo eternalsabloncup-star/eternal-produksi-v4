@@ -18,9 +18,9 @@ export function isApiSimulationEnabled(
   if (raw === "1" || raw === "true" || raw === "yes" || raw === "on") {
     return true;
   }
-  // Default DEV preview: simulation ON so Cursor uses API panels + fixtures
-  // without requiring a committed .env.development.
-  return raw === "";
+  // Default OFF — preview Owner / Cursor memakai backend lokal/test nyata
+  // (VITE_INBOX_PO_SOURCE=api). Simulasi hanya jika dipaksa eksplisit.
+  return false;
 }
 
 export const API_SIMULATION_BANNER =

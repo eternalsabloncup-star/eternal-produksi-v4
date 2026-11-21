@@ -11,6 +11,7 @@ import {
   type ScheduleBoardKpi,
 } from "../api/scheduling";
 import { newIdempotencyKey } from "../api/operational";
+import { useMobileOpsActive } from "../mobile/MobileOpsContext";
 import { DataTable } from "./DataTable/DataTable";
 import { DEFAULT_TABLE_PAGE_SIZE } from "./DataTable/Pagination";
 import type { ColumnDef, ColumnHeaderFilterState } from "./DataTable/types";
@@ -74,6 +75,7 @@ type Filters = { q?: string };
 
 /** Jadwal Produksi — DataTable presentasional + alokasi MongoDB V4. */
 export function ScheduleApiPanel() {
+  const pwaOps = useMobileOpsActive();
   const [lines, setLines] = useState<LineSchedule[]>([]);
   const [totalRows, setTotalRows] = useState(0);
   const [boardKpi, setBoardKpi] = useState<ScheduleBoardKpi | null>(null);
@@ -359,6 +361,8 @@ export function ScheduleApiPanel() {
       {
         id: "outletName",
         label: "Nama Outlet",
+        // PWA: freeze dua kolom kiri (PO + Outlet). Desktop tetap satu sticky PO.
+        sticky: pwaOps ? "customer" : undefined,
         hideable: true,
         filterType: "text",
         defaultWidth: 160,
@@ -545,18 +549,20 @@ export function ScheduleApiPanel() {
         ),
       },
     ],
-    [],
+    [pwaOps],
   );
 
   return (
     <div data-testid="schedule-api-panel">
-      {!loading ? <KpiSummary items={kpis} /> : null}
+      {!loading && !pwaOps ? <KpiSummary items={kpis} /> : null}
       {error && !selected ? <p className="ep-error">{error}</p> : null}
       {notice && !selected ? <p className="ep-notice">{notice}</p> : null}
-      <p className="ep-po-confirm-hint" data-testid="schedule-screen-size-note">
-        Ukuran Screen diambil dari Master Produk per kode barang. Belum diatur bila
-        Master kosong. Bukan daftar DEMO Kecil/Besar.
-      </p>
+      {!pwaOps ? (
+        <p className="ep-po-confirm-hint" data-testid="schedule-screen-size-note">
+          Ukuran Screen diambil dari Master Produk per kode barang. Belum diatur bila
+          Master kosong. Bukan daftar DEMO Kecil/Besar.
+        </p>
+      ) : null}
 
       <DataTable
         key={`schedule-board-${tableEpoch}`}
@@ -567,6 +573,7 @@ export function ScheduleApiPanel() {
         serverSide
         filterFacets={filterFacets}
         onServerHeaderChange={onServerHeaderChange}
+        dynamicStickyOffsets={pwaOps}
         rowKey={(r) => `${r.accurate_po_id}:${r.accurate_line_id}`}
         enableColumnManager
         inlineColumnTools

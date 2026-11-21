@@ -1,6 +1,7 @@
 import {
   Fragment,
   useCallback,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
@@ -78,6 +79,11 @@ type Props<T> = {
   onServerHeaderChange?: (
     next: Record<string, ColumnHeaderFilterState>,
   ) => void;
+  /**
+   * Sinkronkan ``--ep-sticky-po`` / ``--ep-sticky-customer`` dari lebar kolom
+   * yang benar-benar ter-render (resize + zoom). Dipakai PWA Jadwal Produksi.
+   */
+  dynamicStickyOffsets?: boolean;
 };
 
 function compareValues(
@@ -121,6 +127,7 @@ export function DataTable<T>({
   serverSide = false,
   filterFacets,
   onServerHeaderChange,
+  dynamicStickyOffsets = false,
 }: Props<T>) {
   const columnIds = useMemo(() => columns.map((c) => c.id), [columns]);
   const {
@@ -135,6 +142,7 @@ export function DataTable<T>({
     setHidden,
     resetPrefs,
   } = useTableColumnPrefs(tableId, columnIds, defaultHiddenColumns);
+  const tableRef = useRef<HTMLTableElement | null>(null);
 
   const [headerFilters, setHeaderFilters] = useState<
     Record<string, ColumnHeaderFilterState>
@@ -178,6 +186,42 @@ export function DataTable<T>({
     scrollRef.current = el;
     setScrollEl((prev) => (prev === el ? prev : el));
   }, []);
+
+  const syncStickyOffsets = useCallback(() => {
+    if (!dynamicStickyOffsets) return;
+    const table = tableRef.current;
+    if (!table) return;
+    const s1 = table.querySelector("th.sticky1") as HTMLElement | null;
+    const s2 = table.querySelector("th.sticky2") as HTMLElement | null;
+    // offsetWidth = layout width (pre-transform) — cocok dengan left sticky CSS.
+    if (s1) {
+      table.style.setProperty("--ep-sticky-po", `${Math.round(s1.offsetWidth)}px`);
+    }
+    if (s2) {
+      table.style.setProperty(
+        "--ep-sticky-customer",
+        `${Math.round(s2.offsetWidth)}px`,
+      );
+    }
+  }, [dynamicStickyOffsets]);
+
+  useLayoutEffect(() => {
+    if (!dynamicStickyOffsets) return;
+    syncStickyOffsets();
+  }, [dynamicStickyOffsets, syncStickyOffsets, visible, widths, order, hidden]);
+
+  useLayoutEffect(() => {
+    if (!dynamicStickyOffsets) return;
+    const table = tableRef.current;
+    if (!table || typeof ResizeObserver === "undefined") return;
+    const ro = new ResizeObserver(() => syncStickyOffsets());
+    ro.observe(table);
+    const s1 = table.querySelector("th.sticky1");
+    const s2 = table.querySelector("th.sticky2");
+    if (s1) ro.observe(s1);
+    if (s2) ro.observe(s2);
+    return () => ro.disconnect();
+  }, [dynamicStickyOffsets, syncStickyOffsets, visible]);
 
   const handleRowActivate = useCallback(
     (row: T, e: ReactMouseEvent) => {
@@ -425,6 +469,7 @@ export function DataTable<T>({
         {(() => {
           const tableNode = (
             <table
+              ref={tableRef}
               className={`ep-tbl ep-tbl-sheet${canExpand ? " is-expandable" : ""}`}
             >
               <thead>

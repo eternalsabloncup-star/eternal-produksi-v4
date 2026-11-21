@@ -128,10 +128,23 @@ def test_loading_sj_assignee_visibility_parity() -> None:
         "role": "user",
         "effective_module_permissions": ["operations.full"],
     }
+    holding = {
+        "email_normalized": "holding@eternal.local",
+        "role": "holding",
+        "effective_module_permissions": ["operations.tasks.view_all"],
+    }
+    view_all_grant = {
+        "email_normalized": "viewer@eternal.local",
+        "role": "user",
+        "effective_module_permissions": ["operations.tasks.view_all"],
+    }
     assert loading_sj_visible_to_actor(drv_a, task) is True
     assert loading_sj_visible_to_actor(drv_b, task) is False
     assert loading_sj_visible_to_actor(sa, task) is True
     assert loading_sj_visible_to_actor(ops, task) is True
+    # Holding / view_all: read lintas assignee (mutation tetap terpisah).
+    assert loading_sj_visible_to_actor(holding, task) is True
+    assert loading_sj_visible_to_actor(view_all_grant, task) is True
     assert loading_sj_visible_to_actor(
         drv_b, {"task_type": "cetak", "context": {}}
     )
@@ -360,9 +373,22 @@ def test_open_counts_api_and_six_roles(
     assert body["truncated"] is False
     assert body["source"] == "mongodb"
     counts = body["counts"]
+    # Non-elevated: hanya role akun (anti spoof / info leak antar role).
+    assert counts["designer"] == 1
     for role in roles:
-        assert counts[role] == 1, role
-    assert sum(counts.values()) == 6
+        if role == "designer":
+            continue
+        assert counts[role] == 0, role
+    assert sum(counts.values()) == 1
+
+    # Super Admin tetap melihat semua role (bypass assignment).
+    _login(app_client, "owner@eternal.local")
+    sa = app_client.get("/api/tasks/open-counts")
+    assert sa.status_code == 200, sa.text
+    sa_counts = sa.json()["counts"]
+    for role in roles:
+        assert sa_counts[role] == 1, role
+    assert sum(sa_counts.values()) == 6
 
 
 def test_open_counts_requires_session(app_client: TestClient) -> None:

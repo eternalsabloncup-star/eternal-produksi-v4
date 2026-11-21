@@ -35,7 +35,9 @@ import {
 } from "../api/poDetail";
 import { useAuth } from "../auth";
 import { formatDateDisplay, formatDateTimeDisplay } from "../lib/formatDate";
-import { isSuperAdmin } from "../roles";
+import { formatPwaBranchLabel } from "../mobile/branchDisplay";
+import { useMobileOpsActive } from "../mobile/MobileOpsContext";
+import { hasViewAllTasks, isSuperAdmin } from "../roles";
 import { ConfirmationSuccessOverlay } from "./ConfirmationSuccessOverlay";
 import { DataTable } from "./DataTable/DataTable";
 import { DEFAULT_TABLE_PAGE_SIZE } from "./DataTable/Pagination";
@@ -66,8 +68,18 @@ import {
 } from "./teamTaskUi";
 
 type Props = {
-  role: OperationalRole;
+  /** Null + allowAllRoles = view_all tanpa filter role (bukan impersonation). */
+  role: OperationalRole | null;
   roleLabel: string;
+  /**
+   * Filter status awal. Desktop default ``all``; PWA Tugas Saya memakai ``belum``.
+   * State lokal tetap dipertahankan selama panel hidup (navigasi tab PWA).
+   */
+  initialStatusFilter?: StatusFilter;
+  /** Sembunyikan aksi mutation (Holding view-only). Backend tetap menolak. */
+  readOnly?: boolean;
+  /** Fetch tanpa query role — hanya untuk akun view_all yang sah. */
+  allowAllRoles?: boolean;
 };
 
 const SAMPLE_UPLOAD_TASK = "konfirmasi-sample";
@@ -85,13 +97,21 @@ function signatureBlob(canvas: HTMLCanvasElement): Promise<Blob | null> {
 }
 
 /** Tugas peran dari task engine MongoDB V4 — tanpa fixture DEMO. */
-export function TeamTaskApiPanel({ role, roleLabel }: Props) {
+export function TeamTaskApiPanel({
+  role,
+  roleLabel,
+  initialStatusFilter = "all",
+  readOnly = false,
+  allowAllRoles = false,
+}: Props) {
   const { user, isSuperAdmin: authSuper } = useAuth();
   const elevated = authSuper || isSuperAdmin(user?.role);
+  const pwaOps = useMobileOpsActive();
 
   const [allTasks, setAllTasks] = useState<OperationalTask[]>([]);
   const [truncated, setTruncated] = useState(false);
-  const [statusFilter, setStatusFilter] = useState<StatusFilter>("all");
+  const [statusFilter, setStatusFilter] =
+    useState<StatusFilter>(initialStatusFilter);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [selected, setSelected] = useState<OperationalTask | null>(null);
@@ -151,14 +171,16 @@ export function TeamTaskApiPanel({ role, roleLabel }: Props) {
   }, []);
 
   const canAct = useCallback(
-    (taskType: string, action: TaskAction) =>
-      allowTaskAction({
+    (taskType: string, action: TaskAction) => {
+      if (readOnly) return false;
+      return allowTaskAction({
         isSuperAdmin: elevated,
         grantsByTaskType,
         taskType,
         action,
-      }),
-    [elevated, grantsByTaskType],
+      });
+    },
+    [elevated, grantsByTaskType, readOnly],
   );
 
   const load = useCallback(async () => {
@@ -166,7 +188,7 @@ export function TeamTaskApiPanel({ role, roleLabel }: Props) {
     setError(null);
     try {
       const res = await fetchTasks({
-        role,
+        role: allowAllRoles ? undefined : role ?? undefined,
         limit: TASK_LIST_FETCH_LIMIT,
       });
       setAllTasks(res.items);
@@ -178,7 +200,7 @@ export function TeamTaskApiPanel({ role, roleLabel }: Props) {
     } finally {
       setLoading(false);
     }
-  }, [role]);
+  }, [role, allowAllRoles]);
 
   useEffect(() => {
     void load();
@@ -187,6 +209,11 @@ export function TeamTaskApiPanel({ role, roleLabel }: Props) {
   useEffect(() => {
     let cancelled = false;
     void (async () => {
+      if (readOnly || !role) {
+        setGrantsByTaskType(new Map());
+        setGrantsError(null);
+        return;
+      }
       try {
         const res = await fetchRoleActions(role);
         if (cancelled) return;
@@ -209,7 +236,9 @@ export function TeamTaskApiPanel({ role, roleLabel }: Props) {
     return () => {
       cancelled = true;
     };
-  }, [role]);
+  }, [role, readOnly]);
+
+  const viewAllTasks = hasViewAllTasks(user);
 
   const scopedTasks = useMemo(
     () =>
@@ -217,8 +246,11 @@ export function TeamTaskApiPanel({ role, roleLabel }: Props) {
         isSuperAdmin: elevated,
         actorEmail: user?.email,
         operationalRole: role,
+        // Selaras backend loading_sj_visible_to_actor — jangan drop Loading SJ
+        // yang sudah diizinkan oleh operations.tasks.view_all.
+        viewAllTasks,
       }),
-    [allTasks, elevated, user?.email, role],
+    [allTasks, elevated, user?.email, role, viewAllTasks],
   );
 
   const statusCounts = useMemo(
@@ -529,7 +561,10 @@ export function TeamTaskApiPanel({ role, roleLabel }: Props) {
 
   async function reloadAfterAction(task: OperationalTask) {
     const [listed, hist] = await Promise.all([
-      fetchTasks({ role, limit: TASK_LIST_FETCH_LIMIT }),
+      fetchTasks({
+        role: allowAllRoles ? undefined : role ?? undefined,
+        limit: TASK_LIST_FETCH_LIMIT,
+      }),
       fetchTaskConfirmations(task.task_key).catch(() => ({
         items: [] as TaskConfirmation[],
       })),
@@ -950,7 +985,7 @@ export function TeamTaskApiPanel({ role, roleLabel }: Props) {
       ) : null}
 
       <DataTable
-        tableId={`po-accurate:tasks-${role}`}
+        tableId={`po-accurate:tasks-${role ?? "all"}`}
         columns={columns}
         rows={loading ? [] : pageTasks}
         filterSourceRows={filteredTasks}
@@ -1136,18 +1171,38 @@ export function TeamTaskApiPanel({ role, roleLabel }: Props) {
                         ? "…"
                         : urgencyLabel(poDetail?.urgent ?? null)}
                     </span>
-                    <span className="ep-muted" data-testid="task-head-branch">
+                    <span
+                      className="ep-muted"
+                      data-testid="task-head-branch"
+                      data-branch-missing-mapping={
+                        pwaOps &&
+                        !poDetailLoading &&
+                        formatPwaBranchLabel({
+                          branchId: poDetail?.branchId,
+                          branchName: poDetail?.branchName,
+                          branchNameVerified: poDetail?.branchNameVerified,
+                        }).missingMapping
+                          ? "true"
+                          : undefined
+                      }
+                    >
                       {poDetailLoading
                         ? "…"
-                        : poDetail?.branchId
-                          ? `Cabang ${poDetail.branchId}${
-                              poDetail.branchName
-                                ? ` · ${poDetail.branchName}`
-                                : poDetail.branchNameVerified
-                                  ? ""
-                                  : " · belum diverifikasi"
-                            }`
-                          : "Cabang belum tersedia"}
+                        : pwaOps
+                          ? formatPwaBranchLabel({
+                              branchId: poDetail?.branchId,
+                              branchName: poDetail?.branchName,
+                              branchNameVerified: poDetail?.branchNameVerified,
+                            }).label
+                          : poDetail?.branchId
+                            ? `Cabang ${poDetail.branchId}${
+                                poDetail.branchName
+                                  ? ` · ${poDetail.branchName}`
+                                  : poDetail.branchNameVerified
+                                    ? ""
+                                    : " · belum diverifikasi"
+                              }`
+                            : "Cabang belum tersedia"}
                     </span>
                     <span
                       className={statusBadgeClass(selected.status)}

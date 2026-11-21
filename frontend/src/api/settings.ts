@@ -70,11 +70,19 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   return (await res.json()) as T;
 }
 
+export type PolicyGrant = {
+  permission: string;
+  source: string;
+  revocable: boolean;
+  note?: string;
+};
+
 export async function fetchSettingsCatalog() {
   return request<{
     module_permissions: string[];
     sensitive_module_permissions: string[];
     operational_roles: string[];
+    policy_grants?: Record<string, PolicyGrant[]>;
     workflow_policies: {
       items: Array<{ id: string; label: string; status: string; note: string }>;
     };

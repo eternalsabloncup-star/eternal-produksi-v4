@@ -34,12 +34,21 @@ describe("resolveOpsRoleFromUser", () => {
     ).toBeNull();
   });
 
-  it("honors override when provided", () => {
-    const role = resolveOpsRoleFromUser(
-      { role: "super_admin", operational_role: "driver" },
-      "designer",
-    );
-    expect(role?.id).toBe("designer");
+  it("does not impersonate ops role for Super Admin without operational_role", () => {
+    expect(
+      resolveOpsRoleFromUser({
+        role: "super_admin",
+        operational_role: null,
+      }),
+    ).toBeNull();
+  });
+
+  it("uses account operational_role even for Super Admin (no override)", () => {
+    const role = resolveOpsRoleFromUser({
+      role: "super_admin",
+      operational_role: "driver",
+    });
+    expect(role?.id).toBe("driver");
     expect(teamTaskRoleById("designer").label).toBe("Designer");
   });
 });

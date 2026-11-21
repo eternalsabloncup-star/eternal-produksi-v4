@@ -11,13 +11,13 @@ describe("isApiSimulationEnabled", () => {
     ).toBe(false);
   });
 
-  it("defaults ON in DEV; honors explicit on/off", () => {
+  it("defaults OFF in DEV; honors explicit on/off", () => {
     expect(
       isApiSimulationEnabled({
         DEV: true,
         VITE_API_SIMULATION: "",
       } as ImportMetaEnv),
-    ).toBe(true);
+    ).toBe(false);
     expect(
       isApiSimulationEnabled({
         DEV: true,

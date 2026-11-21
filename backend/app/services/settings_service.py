@@ -46,18 +46,27 @@ def _actor(user: dict[str, Any]) -> str:
 
 
 def _resolve_module_perms_for_role(db: Database, role_key: str) -> list[str]:
+    from app.auth.permissions import PERM_VIEW_ALL_TASKS
+    from app.auth.roles import is_holding_role
+
     if is_super_admin(role_key):
         return sorted(ALL_PERMISSIONS)
     if role_key in {ROLE_ADMIN, ROLE_USER}:
         # Prefer catalog if present; else hard-coded baseline.
         cat = roles.get_role(db, role_key)
         if cat is not None:
-            return list(cat["module_permissions"])
-        return sorted(permissions_for_role(role_key))
-    cat = roles.get_role(db, role_key)
-    if cat is None or not cat.get("is_active"):
-        raise ValueError(f"Role tidak tersedia: {role_key}")
-    return list(cat["module_permissions"])
+            perms = list(cat["module_permissions"])
+        else:
+            perms = sorted(permissions_for_role(role_key))
+    else:
+        cat = roles.get_role(db, role_key)
+        if cat is None or not cat.get("is_active"):
+            raise ValueError(f"Role tidak tersedia: {role_key}")
+        perms = list(cat["module_permissions"])
+    # Holding AUTO: denormalisasi view_all ke user — kebijakan tetap di has_permission.
+    if is_holding_role(role_key) and PERM_VIEW_ALL_TASKS not in perms:
+        perms = sorted({*perms, PERM_VIEW_ALL_TASKS})
+    return perms
 
 
 # ----- Users -----
@@ -705,12 +714,30 @@ def read_audit(db: Database, actor: dict[str, Any], **filters: Any) -> dict[str,
 
 
 def permission_catalog(db: Database | None = None) -> dict[str, Any]:
+    from app.auth.permissions import PERM_VIEW_ALL_TASKS
+    from app.auth.roles import ROLE_HOLDING
+
     payload: dict[str, Any] = {
         "module_permissions": sorted(ALL_PERMISSIONS),
         "sensitive_module_permissions": sorted(SENSITIVE_MODULE_PERMISSIONS),
         "operational_roles": list(OPERATIONAL_ROLES),
         "task_actions": list(TASK_ACTIONS),
         "system_roles": [ROLE_SUPER_ADMIN, ROLE_ADMIN, ROLE_USER],
+        # Kebijakan otorisasi terpusat — bukan seed massal production.
+        "policy_grants": {
+            ROLE_HOLDING: [
+                {
+                    "permission": PERM_VIEW_ALL_TASKS,
+                    "source": "holding_auto",
+                    "revocable": False,
+                    "note": (
+                        "Holding resmi (role_key Master `holding`) mendapat "
+                        "operations.tasks.view_all otomatis. Bukan alias "
+                        "operations.full; tidak memberi hak mutation."
+                    ),
+                }
+            ]
+        },
     }
     if db is not None:
         payload["system_roles_bootstrap"] = roles.system_roles_bootstrap_status(db)
