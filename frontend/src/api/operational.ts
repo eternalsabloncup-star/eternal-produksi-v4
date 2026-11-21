@@ -53,10 +53,21 @@ export type OperationalTask = {
   /** D1: nama customer/pelanggan terkait PO atau SJ. */
   outlet_name?: string;
   /**
-   * Nama Barang dari enrichment read-time (PO item line via accurate_line_id).
-   * Mirror ref.item_name — tidak mengganti field teknis line/allocation.
+   * Nama Barang dari enrichment read-time (PO item line via accurate_line_id,
+   * atau print_lines untuk tugas PO-scoped). Mirror ref.item_name.
    */
   item_name?: string;
+  /**
+   * Baris produk relevan (Cetak) untuk popup vertikal / multi-item.
+   * Read-time only — tidak mengganti TaskRef storage.
+   */
+  item_lines?: Array<{
+    accurate_line_id?: string;
+    item_name: string;
+    item_code?: string;
+    qty?: number | null;
+    unit?: string;
+  }>;
   /**
    * Warna Cat dari allocation.print_color (input KP) — bukan Accurate item.color.
    */

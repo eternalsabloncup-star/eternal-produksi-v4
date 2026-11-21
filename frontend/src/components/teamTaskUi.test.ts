@@ -18,6 +18,7 @@ import {
   shortfallLabel,
   taskDisplayLabel,
   taskItemDisplayName,
+  taskItemLines,
   taskItemSecondaryMeta,
 } from "./teamTaskUi";
 
@@ -154,6 +155,38 @@ describe("teamTaskUi labels & scheduling", () => {
         }),
       ),
     ).toBe("Nama barang belum tersedia");
+  });
+
+  it("Designer PO-scoped multi-item names stay compact multiline", () => {
+    const design = task({
+      task_key: "design-1",
+      task_type: "design",
+      status: "belum_dikerjakan",
+      assigned_role: "designer",
+      scope: "po",
+      item_name: "Produk A\nProduk B",
+      item_lines: [
+        {
+          accurate_line_id: "L1",
+          item_name: "Produk A",
+          qty: 1000,
+          unit: "PCS",
+        },
+        {
+          accurate_line_id: "L2",
+          item_name: "Produk B",
+          qty: 2000,
+          unit: "PCS",
+        },
+      ],
+      ref: { accurate_po_id: "10001", po_no: "PO/1" },
+    });
+    expect(taskItemDisplayName(design)).toBe("Produk A\nProduk B");
+    expect(taskItemLines(design).map((l) => l.itemName)).toEqual([
+      "Produk A",
+      "Produk B",
+    ]);
+    expect(taskItemDisplayName(design)).not.toBe("Produk A");
   });
 
   it("shows Screen qty confirm form without qty_target", () => {
