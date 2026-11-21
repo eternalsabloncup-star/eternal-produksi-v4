@@ -30,6 +30,21 @@ describe("display columns API contract", () => {
     expect(task.ship_dates).toEqual(["29/11/2026"]);
   });
 
+  it("OperationalTask membawa item_name (Nama Barang) selain item_code/line", () => {
+    const task = {
+      item_name: "12 oz Oval Inject Bening Super",
+      ref: {
+        item_name: "12 oz Oval Inject Bening Super",
+        item_code: "100359",
+        accurate_line_id: "106318",
+      },
+    } satisfies Pick<OperationalTask, "item_name" | "ref">;
+    expect(task.item_name).toBe("12 oz Oval Inject Bening Super");
+    expect(task.ref.item_name).toBe(task.item_name);
+    expect(task.ref.item_code).not.toBe(task.item_name);
+    expect(task.ref.accurate_line_id).not.toBe(task.item_name);
+  });
+
   it("kolom Nama Customer memakai outlet_name otoritatif (bukan invent)", () => {
     const roles = [
       "production-head",

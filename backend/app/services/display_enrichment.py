@@ -143,10 +143,60 @@ def enrich_schedule_line(
     return line_state
 
 
+def _po_line_identity_index(
+    po_doc: dict[str, Any] | None,
+) -> dict[str, dict[str, str]]:
+    """Map accurate_line_id → {item_name, item_code} dari header.items PO.
+
+    Identitas line wajib cocok; tidak menebak dari urutan/nama bebas.
+    """
+    out: dict[str, dict[str, str]] = {}
+    if not isinstance(po_doc, dict):
+        return out
+    header = po_doc.get("header") if isinstance(po_doc.get("header"), dict) else {}
+    items = header.get("items") if isinstance(header.get("items"), list) else []
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        line_id = str(item.get("accurate_line_id") or "").strip()
+        if not line_id or line_id in out:
+            continue
+        out[line_id] = {
+            "item_name": str(item.get("item_name") or "").strip(),
+            "item_code": str(item.get("item_code") or "").strip(),
+        }
+    return out
+
+
+def _sj_line_identity_index(
+    note: dict[str, Any] | None,
+) -> dict[str, dict[str, str]]:
+    """Map accurate_line_id → identitas barang dari item SJ aktif (bila ada)."""
+    out: dict[str, dict[str, str]] = {}
+    if not isinstance(note, dict):
+        return out
+    for item in note.get("items") or []:
+        if not isinstance(item, dict):
+            continue
+        line_id = str(item.get("accurate_line_id") or "").strip()
+        if not line_id or line_id in out:
+            continue
+        out[line_id] = {
+            "item_name": str(item.get("item_name") or "").strip(),
+            "item_code": str(item.get("item_code") or "").strip(),
+        }
+    return out
+
+
 def enrich_operational_tasks(
     db: Database, task_rows: list[dict[str, Any]]
 ) -> list[dict[str, Any]]:
-    """Batch-enrich task list dengan outlet_name + ship_dates (setelah auth filter)."""
+    """Batch-enrich task list: outlet_name, ship_dates, item_name (setelah auth).
+
+    Nama Barang diambil dari PO item line yang terhubung (accurate_line_id),
+    bukan dari urutan baris atau pencocokan teks bebas. Read-only — tidak
+    menulis MongoDB / schema TaskRef.
+    """
     if not task_rows:
         return task_rows
 
@@ -167,6 +217,10 @@ def enrich_operational_tasks(
         if doc is not None:
             po_by_id[po_id] = doc
 
+    line_identity_by_po: dict[str, dict[str, dict[str, str]]] = {
+        po_id: _po_line_identity_index(doc) for po_id, doc in po_by_id.items()
+    }
+
     notes_by_po: dict[str, list[dict[str, Any]]] = {}
     line_dates_by_po: dict[str, dict[str, list[str]]] = {}
     for po_id in po_ids:
@@ -175,13 +229,18 @@ def enrich_operational_tasks(
         line_dates_by_po[po_id] = ship_dates_by_line_id(notes)
 
     sj_note_by_id: dict[str, dict[str, Any]] = {}
+    sj_line_identity: dict[str, dict[str, dict[str, str]]] = {}
     for sj_id in sj_ids:
         note = deliveries.get_delivery_note(db, sj_id)
         if is_active_delivery_note(note):
             sj_note_by_id[sj_id] = note  # type: ignore[assignment]
+            sj_line_identity[sj_id] = _sj_line_identity_index(note)
 
     for task in task_rows:
         ref = task.get("ref") if isinstance(task.get("ref"), dict) else {}
+        # Pastikan ref mutable dict pada task (enrichment in-place).
+        if not isinstance(task.get("ref"), dict):
+            task["ref"] = ref
         po_id = str(ref.get("accurate_po_id") or "").strip()
         line_id = str(ref.get("accurate_line_id") or "").strip()
         sj_id = str(ref.get("accurate_delivery_note_id") or "").strip()
@@ -203,7 +262,47 @@ def enrich_operational_tasks(
         elif po_id:
             ship_dates = ship_dates_for_po(notes_by_po.get(po_id) or [])
 
+        item_name = ""
+        item_code = str(ref.get("item_code") or "").strip()
+        if po_id and line_id:
+            identity = line_identity_by_po.get(po_id, {}).get(line_id) or {}
+            item_name = identity.get("item_name") or ""
+            if not item_code:
+                item_code = identity.get("item_code") or ""
+        elif sj_id and line_id:
+            identity = sj_line_identity.get(sj_id, {}).get(line_id) or {}
+            item_name = identity.get("item_name") or ""
+            if not item_code:
+                item_code = identity.get("item_code") or ""
+        # Fallback jujur dari context yang sudah tersimpan (bukan invent).
+        if not item_name:
+            ctx = task.get("context") if isinstance(task.get("context"), dict) else {}
+            item_name = str(ctx.get("item_name") or "").strip()
+
+        if item_name:
+            ref["item_name"] = item_name
+        if item_code and not str(ref.get("item_code") or "").strip():
+            ref["item_code"] = item_code
+        # Top-level mirror (selaras outlet_name) untuk kontrak tampilan FE.
+        task["item_name"] = item_name
         task["outlet_name"] = outlet
         task["ship_dates"] = ship_dates
+
+        # Enrich mismatched_items (koordinasi Loading–SJ) bila line diketahui.
+        ctx = task.get("context") if isinstance(task.get("context"), dict) else None
+        if ctx and isinstance(ctx.get("mismatched_items"), list):
+            po_lines = line_identity_by_po.get(po_id, {}) if po_id else {}
+            sj_lines = sj_line_identity.get(sj_id, {}) if sj_id else {}
+            for row in ctx["mismatched_items"]:
+                if not isinstance(row, dict):
+                    continue
+                mid = str(row.get("accurate_line_id") or "").strip()
+                if not mid:
+                    continue
+                ident = po_lines.get(mid) or sj_lines.get(mid) or {}
+                if ident.get("item_name") and not str(row.get("item_name") or "").strip():
+                    row["item_name"] = ident["item_name"]
+                if ident.get("item_code") and not str(row.get("item_code") or "").strip():
+                    row["item_code"] = ident["item_code"]
 
     return task_rows

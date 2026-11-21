@@ -650,9 +650,9 @@ export function TeamTaskSchedulingForm({
                 data-testid="sched-alloc-form"
               >
                 <label className="ep-sched-field">
-                  <span>Item Line</span>
+                  <span>Nama Barang</span>
                   <select
-                    aria-label="Item Line"
+                    aria-label="Nama Barang"
                     value={lineId}
                     disabled={busy || lines.length === 0}
                     onChange={(e) => setLineId(e.target.value)}
@@ -662,7 +662,12 @@ export function TeamTaskSchedulingForm({
                         key={l.accurate_line_id}
                         value={l.accurate_line_id}
                       >
-                        {l.item_name || l.item_code} ({l.accurate_line_id})
+                        {l.item_name || l.item_code || "Nama barang belum tersedia"}
+                        {l.item_code || l.accurate_line_id
+                          ? ` · ${[l.item_code ? `Kode ${l.item_code}` : null, `Line ${l.accurate_line_id}`]
+                              .filter(Boolean)
+                              .join(" · ")}`
+                          : ""}
                       </option>
                     ))}
                   </select>

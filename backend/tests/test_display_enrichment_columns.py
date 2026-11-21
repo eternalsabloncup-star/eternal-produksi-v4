@@ -186,6 +186,69 @@ def test_task_enrichment_po_line_and_sj(db: Database) -> None:
     assert tasks[2]["ship_dates"] == []
 
 
+def test_task_enrichment_item_name_from_po_line(db: Database) -> None:
+    """Nama Barang dari PO line via accurate_line_id — bukan item_code sebagai nama."""
+    po = _seed_po(db)
+    line = next(
+        i
+        for i in (po["header"]["items"])
+        if str(i.get("accurate_line_id")) == LINE_PRINT
+    )
+    expected_name = str(line.get("item_name") or "").strip()
+    expected_code = str(line.get("item_code") or "").strip()
+    assert expected_name  # sample SoT harus punya nama
+    tasks = [
+        {
+            "task_key": "t-screen",
+            "task_type": "screen",
+            "ref": {
+                "accurate_po_id": PO_ID,
+                "accurate_line_id": LINE_PRINT,
+                "item_code": expected_code,
+                "allocation_id": f"alloc:{LINE_PRINT}:1",
+            },
+            "context": {"qty_alokasi": 100},
+        },
+        {
+            "task_key": "t-other-line",
+            "task_type": "persiapan-cup",
+            "ref": {
+                "accurate_po_id": PO_ID,
+                "accurate_line_id": LINE_NC,
+            },
+        },
+        {
+            "task_key": "t-missing-line",
+            "task_type": "cetak",
+            "ref": {
+                "accurate_po_id": PO_ID,
+                "accurate_line_id": "LINE-DOES-NOT-EXIST",
+            },
+        },
+    ]
+    enrich.enrich_operational_tasks(db, tasks)
+    assert tasks[0]["item_name"] == expected_name
+    assert tasks[0]["ref"]["item_name"] == expected_name
+    assert tasks[0]["ref"]["item_code"] == expected_code
+    # Line berbeda → nama berbeda (bila ada)
+    other = next(
+        (
+            i
+            for i in po["header"]["items"]
+            if str(i.get("accurate_line_id")) == LINE_NC
+        ),
+        None,
+    )
+    if other and str(other.get("item_name") or "").strip():
+        assert tasks[1]["item_name"] == str(other.get("item_name")).strip()
+        assert tasks[1]["item_name"] != tasks[0]["item_name"] or expected_name == str(
+            other.get("item_name")
+        ).strip()
+    # Line tidak ada → jangan mengarang nama
+    assert tasks[2]["item_name"] == ""
+    assert "item_name" not in tasks[2]["ref"] or not tasks[2]["ref"].get("item_name")
+
+
 def test_calendar_sort_and_no_utc_shift() -> None:
     dates = enrich.unique_sorted_ship_dates(
         ["27/11/2026", "25/11/2026", "25/11/2026", "01/12/2026"]

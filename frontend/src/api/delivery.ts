@@ -88,6 +88,7 @@ export type LoadingValidation = {
     sj_line_id: string;
     accurate_line_id: string;
     item_code: string;
+    item_name?: string;
     qty: number;
     unit: string;
     process_kind: string | null;

@@ -48,6 +48,7 @@ import { TeamTaskSchedulingForm } from "./TeamTaskSchedulingForm";
 import {
   allowTaskAction,
   aggregateStatusCounts,
+  canShowQtyConfirmForm,
   filterTasksByStatus,
   filterTasksForActor,
   formatCountBadge,
@@ -59,10 +60,13 @@ import {
   latestDraftSample,
   sampleStatusClass,
   sampleStatusLabel,
+  screenAllocQty,
   shortfallLabel,
   statusBadgeClass,
   statusLabel,
   taskDisplayLabel,
+  taskItemDisplayName,
+  taskItemSecondaryMeta,
   TASK_LIST_FETCH_LIMIT,
   type StatusFilter,
 } from "./teamTaskUi";
@@ -272,6 +276,8 @@ export function TeamTaskApiPanel({
         t.task_type,
         t.ref.po_no,
         t.ref.sj_no,
+        taskItemDisplayName(t),
+        t.ref.item_code,
         t.ref.accurate_line_id,
         t.ref.allocation_id,
         statusLabel(t.status),
@@ -472,13 +478,29 @@ export function TeamTaskApiPanel({
       }
       base.push(
       {
-        id: "line",
-        label: "Item Line",
+        id: "itemName",
+        label: "Nama Barang",
         hideable: true,
         filterType: "text",
-        defaultWidth: 100,
-        getFilterValue: (t) => t.ref.accurate_line_id || "",
-        render: (t) => t.ref.accurate_line_id || "—",
+        defaultWidth: 200,
+        getFilterValue: (t) => {
+          const name = taskItemDisplayName(t);
+          const meta = taskItemSecondaryMeta(t);
+          return meta ? `${name} ${meta}` : name;
+        },
+        getSortValue: (t) => taskItemDisplayName(t),
+        render: (t) => {
+          const name = taskItemDisplayName(t);
+          const meta = taskItemSecondaryMeta(t);
+          return (
+            <span className="ep-sched-td-text" data-testid="task-item-name-cell">
+              <span className="ep-sched-item-name">{name}</span>
+              {meta ? (
+                <span className="ep-sched-item-code">{meta}</span>
+              ) : null}
+            </span>
+          );
+        },
       },
       {
         id: "qtyTarget",
@@ -486,9 +508,34 @@ export function TeamTaskApiPanel({
         hideable: true,
         filterType: "number",
         defaultWidth: 100,
-        getFilterValue: (t) => String(t.qty_target ?? ""),
-        getSortValue: (t) => t.qty_target ?? null,
-        render: (t) => <span className="ep-num">{formatQty(t.qty_target)}</span>,
+        getFilterValue: (t) => {
+          if (t.qty_target !== undefined) return String(t.qty_target);
+          const alloc = screenAllocQty(t);
+          return alloc === null ? "" : String(alloc);
+        },
+        getSortValue: (t) =>
+          t.qty_target ?? screenAllocQty(t) ?? null,
+        render: (t) => {
+          if (t.qty_target !== undefined) {
+            return (
+              <span className="ep-num">{formatQty(t.qty_target)}</span>
+            );
+          }
+          const alloc = screenAllocQty(t);
+          if (alloc !== null) {
+            return (
+              <span
+                className="ep-num"
+                title="Qty Alokasi (info) — Screen tidak dibatasi jadwal"
+                data-testid="screen-qty-alokasi"
+              >
+                {formatQty(alloc)}
+                <span className="ep-sched-item-code">alokasi</span>
+              </span>
+            );
+          }
+          return <span className="ep-num">—</span>;
+        },
       },
       {
         id: "qtyConfirmed",
@@ -1383,8 +1430,13 @@ export function TeamTaskApiPanel({
                     <table className="ep-table ep-sched-items-table">
                       <thead>
                         <tr>
-                          <th>Nama Barang / Ref</th>
-                          <th className="ep-num">Qty Target</th>
+                          <th>Nama Barang</th>
+                          <th className="ep-num">
+                            {selected.task_type === "screen" &&
+                            selected.qty_target === undefined
+                              ? "Qty Alokasi"
+                              : "Qty Target"}
+                          </th>
                           <th className="ep-num">Qty Terkonfirmasi</th>
                           <th className="ep-num">
                             {shortfallLabel(
@@ -1401,28 +1453,31 @@ export function TeamTaskApiPanel({
                       <tbody>
                         <tr>
                           <td className="ep-sched-td-text">
-                            <span className="ep-sched-item-name">
-                              {selected.ref.item_code ||
-                                selected.ref.accurate_line_id ||
-                                "—"}
+                            <span
+                              className="ep-sched-item-name"
+                              data-testid="task-popup-item-name"
+                            >
+                              {taskItemDisplayName(selected)}
                             </span>
                             <span className="ep-sched-item-code">
-                              {[
-                                selected.ref.accurate_line_id,
-                                selected.ref.allocation_id,
-                              ]
-                                .filter(Boolean)
-                                .join(" · ") || "—"}
+                              {taskItemSecondaryMeta(selected) ||
+                                (selected.ref.allocation_id
+                                  ? `alloc:${selected.ref.allocation_id}`
+                                  : "—")}
                             </span>
                           </td>
                           <td className="ep-num">
-                            {formatQty(selected.qty_target)}
+                            {selected.qty_target !== undefined
+                              ? formatQty(selected.qty_target)
+                              : formatQty(screenAllocQty(selected) ?? undefined)}
                           </td>
                           <td className="ep-num">
                             {formatQty(selected.qty_confirmed)}
                           </td>
                           <td className="ep-num">
-                            {formatQty(remainingQty(selected) ?? 0)}
+                            {selected.qty_target !== undefined
+                              ? formatQty(remainingQty(selected) ?? 0)
+                              : "—"}
                           </td>
                           <td>
                             <span className={statusBadgeClass(selected.status)}>
@@ -1655,32 +1710,58 @@ export function TeamTaskApiPanel({
                       <table className="ep-table">
                         <thead>
                           <tr>
-                            <th>Item Line</th>
+                            <th>Nama Barang</th>
                             <th className="ep-num">Qty SJ</th>
                             <th className="ep-num">Qty Packing tersedia</th>
                             <th>Status</th>
                           </tr>
                         </thead>
                         <tbody>
-                          {loadingValidation.items.map((it) => (
-                            <tr
-                              key={String(it.accurate_line_id)}
-                              className={
-                                it.matched ? undefined : "ep-row-danger"
-                              }
-                            >
-                              <td>{String(it.accurate_line_id)}</td>
-                              <td className="ep-num">
-                                {formatQty(Number(it.qty))}
-                              </td>
-                              <td className="ep-num">
-                                {formatQty(Number(it.qty_available))}
-                              </td>
-                              <td>
-                                {it.matched ? "Cocok" : it.reason || "Tidak cocok"}
-                              </td>
-                            </tr>
-                          ))}
+                          {loadingValidation.items.map((it) => {
+                            const name =
+                              String(it.item_name || "").trim() ||
+                              "Nama barang belum tersedia";
+                            const meta = [
+                              it.item_code
+                                ? `Kode ${it.item_code}`
+                                : null,
+                              it.accurate_line_id
+                                ? `Line ${it.accurate_line_id}`
+                                : null,
+                            ]
+                              .filter(Boolean)
+                              .join(" · ");
+                            return (
+                              <tr
+                                key={String(it.accurate_line_id)}
+                                className={
+                                  it.matched ? undefined : "ep-row-danger"
+                                }
+                              >
+                                <td className="ep-sched-td-text">
+                                  <span className="ep-sched-item-name">
+                                    {name}
+                                  </span>
+                                  {meta ? (
+                                    <span className="ep-sched-item-code">
+                                      {meta}
+                                    </span>
+                                  ) : null}
+                                </td>
+                                <td className="ep-num">
+                                  {formatQty(Number(it.qty))}
+                                </td>
+                                <td className="ep-num">
+                                  {formatQty(Number(it.qty_available))}
+                                </td>
+                                <td>
+                                  {it.matched
+                                    ? "Cocok"
+                                    : it.reason || "Tidak cocok"}
+                                </td>
+                              </tr>
+                            );
+                          })}
                         </tbody>
                       </table>
                     </div>
@@ -1747,7 +1828,7 @@ export function TeamTaskApiPanel({
                     <table className="ep-table">
                       <thead>
                         <tr>
-                          <th>Item Line</th>
+                          <th>Nama Barang</th>
                           <th>Qty SJ</th>
                           <th>Qty Tersedia</th>
                         </tr>
@@ -1756,18 +1837,47 @@ export function TeamTaskApiPanel({
                         {(
                           selected.context.mismatched_items as {
                             accurate_line_id: string;
+                            item_code?: string;
+                            item_name?: string;
                             qty_sj: number;
                             qty_available: number;
                           }[]
-                        ).map((m) => (
-                          <tr key={m.accurate_line_id} className="ep-row-danger">
-                            <td>{m.accurate_line_id}</td>
-                            <td className="ep-num">{formatQty(m.qty_sj)}</td>
-                            <td className="ep-num">
-                              {formatQty(m.qty_available)}
-                            </td>
-                          </tr>
-                        ))}
+                        ).map((m) => {
+                          const name =
+                            String(m.item_name || "").trim() ||
+                            "Nama barang belum tersedia";
+                          const meta = [
+                            m.item_code ? `Kode ${m.item_code}` : null,
+                            m.accurate_line_id
+                              ? `Line ${m.accurate_line_id}`
+                              : null,
+                          ]
+                            .filter(Boolean)
+                            .join(" · ");
+                          return (
+                            <tr
+                              key={m.accurate_line_id}
+                              className="ep-row-danger"
+                            >
+                              <td className="ep-sched-td-text">
+                                <span className="ep-sched-item-name">
+                                  {name}
+                                </span>
+                                {meta ? (
+                                  <span className="ep-sched-item-code">
+                                    {meta}
+                                  </span>
+                                ) : null}
+                              </td>
+                              <td className="ep-num">
+                                {formatQty(m.qty_sj)}
+                              </td>
+                              <td className="ep-num">
+                                {formatQty(m.qty_available)}
+                              </td>
+                            </tr>
+                          );
+                        })}
                       </tbody>
                     </table>
                   ) : null}
@@ -1925,7 +2035,7 @@ export function TeamTaskApiPanel({
                 </div>
               ) : null}
 
-              {selected.qty_target !== undefined &&
+              {canShowQtyConfirmForm(selected) &&
               selected.task_type !== DRIVER_TASK &&
               selected.task_type !== DESIGN_TASK &&
               !isLoadingSjTask(selected.task_type) &&
@@ -1934,10 +2044,24 @@ export function TeamTaskApiPanel({
               !isSchedulingTask(selected.task_type) &&
               (canAct(selected.task_type, "confirm") ||
                 canAct(selected.task_type, "input")) ? (
-                <div className="ep-filterbar">
+                <div
+                  className="ep-filterbar"
+                  data-testid="qty-confirm-form"
+                >
+                  {selected.task_type === "screen" &&
+                  selected.qty_target === undefined ? (
+                    <p className="ep-notice" data-testid="screen-qty-hint">
+                      Screen: input Qty hasil pekerjaan (tidak dibatasi Qty
+                      jadwal). Qty harus &gt; 0.
+                      {screenAllocQty(selected) !== null
+                        ? ` Qty Alokasi: ${formatQty(screenAllocQty(selected) ?? undefined)}.`
+                        : ""}
+                    </p>
+                  ) : null}
                   <label htmlFor="qty-confirm">Qty</label>
                   <input
                     id="qty-confirm"
+                    data-testid="qty-confirm-input"
                     type="number"
                     min={1}
                     value={qtyInput}
@@ -1946,6 +2070,7 @@ export function TeamTaskApiPanel({
                   <button
                     type="button"
                     className="ep-btn primary"
+                    data-testid="qty-confirm-btn"
                     disabled={busy}
                     onClick={() => void onConfirm()}
                   >
