@@ -2,6 +2,7 @@ import { Navigate, Route, Routes } from "react-router-dom";
 import { AppShell } from "./app/AppShell";
 import { TEAM_TASK_ROLES } from "./app/nav";
 import { useAuth } from "./auth";
+import { MobileOpsShell } from "./mobile/MobileOpsShell";
 import { ControlPage } from "./pages/ControlPage";
 import { DashboardPage } from "./pages/DashboardPage";
 import { DesignApprovalPage } from "./pages/DesignApprovalPage";
@@ -65,6 +66,19 @@ export default function App() {
       />
       {/* Halaman customer — tanpa sesi internal V4. */}
       <Route path="/approval/:token" element={<DesignApprovalPage />} />
+      {/* PWA Operasional Mobile — shell sendiri, tanpa sidebar desktop. */}
+      <Route
+        path="/app/m"
+        element={<Navigate to="/app/m/tasks" replace />}
+      />
+      <Route
+        path="/app/m/*"
+        element={
+          <ProtectedRoute>
+            <MobileOpsShell />
+          </ProtectedRoute>
+        }
+      />
       <Route
         path="/app"
         element={
