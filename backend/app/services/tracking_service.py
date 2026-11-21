@@ -962,7 +962,64 @@ def public_tracking_view(
         "customer_slug": customer_slug,
         "po_slug": po_slug,
     }
+    # Eligibility popup — tanpa raw approval token (Owner option B gate).
+    from app.services import design_service as design_svc
+
+    payload["design_approval"] = design_svc.build_design_approval_eligibility(
+        db, accurate_po_id=str(po["accurate_id"])
+    )
     return payload
+
+
+def resolve_public_design_approval_path(
+    db: Database,
+    *,
+    customer_slug: str,
+    po_slug: str,
+    raw_token: str,
+) -> dict[str, Any]:
+    """Resolve URL /approval/:token untuk pemegang tracking token (Option B).
+
+    Read-only. Fail-closed. Tidak auto-approve. Tidak ubah gate.
+    """
+    link = links.resolve_active_link(db, raw_token)
+    if link is None:
+        raise TrackingNotFound()
+
+    if link.get("customer_slug") != customer_slug or link.get("po_slug") != po_slug:
+        raise TrackingNotFound()
+
+    po = get_by_accurate_id(db, link["accurate_po_id"])
+    if po is None:
+        raise TrackingNotFound("Pesanan terkait tidak ditemukan.")
+
+    current_po_slug = slugify_po_reference(str(po.get("po_no") or ""))
+    if current_po_slug != po_slug:
+        raise TrackingNotFound()
+
+    from app.services import design_service as design_svc
+    from app.services.design_service import DesignLinkRecoveryError
+
+    accurate_po_id = str(po["accurate_id"])
+    if str(link["accurate_po_id"]) != accurate_po_id:
+        raise TrackingNotFound()
+
+    try:
+        approval_token, approval_link = design_svc.recover_approval_token_for_po(
+            db, accurate_po_id=accurate_po_id
+        )
+    except DesignLinkRecoveryError as exc:
+        raise TrackingNotFound(exc.message) from exc
+
+    # Binding ketat: recovered link harus milik PO yang sama.
+    if str(approval_link.get("accurate_po_id")) != accurate_po_id:
+        raise TrackingNotFound()
+
+    return {
+        "path": f"/approval/{approval_token}",
+        "design_version": int(approval_link["design_version"]),
+        "expires_at": _ts(approval_link.get("expires_at")),
+    }
 
 
 def internal_tracking_view(

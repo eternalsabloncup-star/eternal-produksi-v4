@@ -180,6 +180,17 @@ class Settings(BaseSettings):
             "TRACKING_LINK_SEAL_KEY",
         ),
     )
+    # AEAD key (urlsafe-base64 32 bytes) untuk recoverable design approval token.
+    # Kosong = recovery OFF (link hash-only; Live Tracking deep-link fail-closed).
+    # TERPISAH dari tracking_link_seal_key — jangan reuse.
+    # Jangan log / commit nilai ini.
+    design_approval_link_recovery_key: str = Field(
+        default="",
+        validation_alias=AliasChoices(
+            "V4_DESIGN_APPROVAL_LINK_RECOVERY_KEY",
+            "DESIGN_APPROVAL_LINK_RECOVERY_KEY",
+        ),
+    )
 
     @field_validator("mongodb_uri")
     @classmethod

@@ -141,6 +141,18 @@ def latest_submission(db: Database, accurate_po_id: str) -> dict[str, Any] | Non
     )
 
 
+def latest_confirmed_submission(
+    db: Database, accurate_po_id: str
+) -> dict[str, Any] | None:
+    """Versi desain terbaru yang sudah dikonfirmasi Designer (bukan draft)."""
+    _ensure_once(db)
+    return submissions_collection(db).find_one(
+        {"accurate_po_id": accurate_po_id, "confirmed_at": {"$ne": None}},
+        {"_id": 0},
+        sort=[("version", DESCENDING)],
+    )
+
+
 def list_submissions(db: Database, accurate_po_id: str) -> list[dict[str, Any]]:
     _ensure_once(db)
     return list(
@@ -186,13 +198,19 @@ def create_approval_link(
     design_version: int,
     created_by: str,
     ttl_hours: int = APPROVAL_LINK_TTL_HOURS,
+    raw_token: str | None = None,
+    token_ciphertext: str | None = None,
 ) -> tuple[str, dict[str, Any]]:
-    """Token acak; hanya hash yang disimpan. Scope terbatas pada satu PO."""
+    """Token acak (atau supplied); hash wajib. Ciphertext opsional untuk recovery.
+
+    Raw token tidak pernah disimpan plaintext. Legacy (tanpa ciphertext) tetap
+    valid untuk /approval/:token tetapi tidak recoverable dari Live Tracking.
+    """
     _ensure_once(db)
-    raw_token = secrets.token_urlsafe(32)
+    token = raw_token or secrets.token_urlsafe(32)
     now = datetime.now(timezone.utc)
-    doc = {
-        "token_hash": hash_token(raw_token),
+    doc: dict[str, Any] = {
+        "token_hash": hash_token(token),
         "accurate_po_id": accurate_po_id,
         "design_version": design_version,
         "created_by": created_by,
@@ -201,9 +219,11 @@ def create_approval_link(
         "used_at": None,
         "revoked_at": None,
     }
+    if token_ciphertext:
+        doc["token_ciphertext"] = token_ciphertext
     links_collection(db).insert_one(dict(doc))
     doc.pop("_id", None)
-    return raw_token, doc
+    return token, doc
 
 
 def find_valid_link(db: Database, raw_token: str) -> dict[str, Any] | None:
@@ -219,6 +239,29 @@ def find_valid_link(db: Database, raw_token: str) -> dict[str, Any] | None:
     ):
         return None
     return doc
+
+
+def find_active_recoverable_link_for_version(
+    db: Database,
+    *,
+    accurate_po_id: str,
+    design_version: int,
+    now: datetime | None = None,
+) -> dict[str, Any] | None:
+    """Link aktif + ada ciphertext untuk versi desain. Legacy hash-only → None."""
+    _ensure_once(db)
+    clock = now or datetime.now(timezone.utc)
+    return links_collection(db).find_one(
+        {
+            "accurate_po_id": accurate_po_id,
+            "design_version": int(design_version),
+            "revoked_at": None,
+            "expires_at": {"$gt": clock},
+            "token_ciphertext": {"$type": "string", "$ne": ""},
+        },
+        {"_id": 0},
+        sort=[("created_at", DESCENDING)],
+    )
 
 
 def record_approval(

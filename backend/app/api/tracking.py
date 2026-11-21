@@ -130,6 +130,50 @@ def get_public_tracking(
     return payload
 
 
+@router.get(
+    "/api/public/tracking/{customer_slug}/{po_slug}/{token}/design-approval"
+)
+def resolve_public_design_approval(
+    customer_slug: str,
+    po_slug: str,
+    token: str,
+    request: Request,
+    response: Response,
+) -> dict[str, Any]:
+    """Resolve path /approval/:token — read-only, fail-closed, no-store.
+
+    Tidak membuka approval, tidak menulis dokumen, tidak ubah gate.
+    """
+    _no_store(response)
+    limiter = _limiter()
+    key = _client_key(request, token)
+    if limiter.is_blocked(key):
+        raise HTTPException(
+            status.HTTP_429_TOO_MANY_REQUESTS,
+            "Terlalu banyak percobaan. Coba lagi nanti.",
+        )
+    try:
+        result = tracking.resolve_public_design_approval_path(
+            get_db(),
+            customer_slug=customer_slug,
+            po_slug=po_slug,
+            raw_token=token,
+        )
+    except MissingRequiredTrackingIndexError as exc:
+        raise _http_from_index_error(exc) from exc
+    except TrackingNotFound:
+        limiter.register_failure(key)
+        raise HTTPException(
+            status.HTTP_404_NOT_FOUND,
+            "Link Approval Design tidak tersedia.",
+        )
+    except TrackingForbidden:
+        limiter.register_failure(key)
+        raise HTTPException(status.HTTP_403_FORBIDDEN, "Akses ditolak")
+    limiter.reset(key)
+    return result
+
+
 # —— Internal (session + ops) ——
 
 

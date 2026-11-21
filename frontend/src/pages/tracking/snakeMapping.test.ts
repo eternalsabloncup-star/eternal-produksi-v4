@@ -1,9 +1,10 @@
 import { describe, expect, it } from "vitest";
 import type { TrackingMilestone } from "../../api/tracking";
 import {
-  OWNER_DOC_SLOTS,
+  MILESTONE_ID_TO_SNAKE_LABEL,
   OWNER_SNAKE_STAGES,
   buildSnakeStages,
+  timelineMilestoneLabel,
 } from "./snakeMapping";
 
 function m(
@@ -61,20 +62,53 @@ describe("snake display mapping", () => {
     expect(stages[14].visual).toBe("done");
   });
 
-  it("keeps five owner document cards in Design→Payment→Invoice→SJ→Ship order", () => {
-    expect(OWNER_DOC_SLOTS.map((s) => s.key)).toEqual([
-      "design",
-      "payment",
-      "invoice",
-      "sj",
-      "ship",
-    ]);
-    expect(OWNER_DOC_SLOTS.map((s) => s.title)).toEqual([
+  it("aligns timeline labels with snake OWNER_SNAKE_STAGES", () => {
+    expect(timelineMilestoneLabel("order_received", "Pesanan Diterima")).toBe(
+      "Order Masuk",
+    );
+    expect(timelineMilestoneLabel("design_prep", "Persiapan Desain")).toBe(
       "Design",
-      "Pembayaran",
-      "Faktur Penjualan",
-      "Surat Jalan",
+    );
+    expect(timelineMilestoneLabel("design_approved", "Persetujuan Desain")).toBe(
+      "Approval Design",
+    );
+    expect(timelineMilestoneLabel("printing", "Proses Cetak")).toBe("Cetak");
+    expect(timelineMilestoneLabel("quality_check", "Pemeriksaan Kualitas")).toBe(
+      "Packing",
+    );
+    expect(timelineMilestoneLabel("in_transit", "Dalam Pengiriman")).toBe(
       "Pengiriman",
-    ]);
+    );
+    expect(timelineMilestoneLabel("delivered", "Barang Diterima")).toBe(
+      "Pengiriman",
+    );
+    // Unmapped backend milestones keep API label.
+    expect(
+      timelineMilestoneLabel("order_verified", "Verifikasi Pesanan"),
+    ).toBe("Verifikasi Pesanan");
+    expect(
+      timelineMilestoneLabel("production_complete", "Penyelesaian Produksi"),
+    ).toBe("Penyelesaian Produksi");
+    expect(timelineMilestoneLabel("order_complete", "Pesanan Selesai")).toBe(
+      "Pesanan Selesai",
+    );
+
+    const mappedIds = Object.keys(MILESTONE_ID_TO_SNAKE_LABEL).sort();
+    expect(mappedIds).toEqual(
+      [
+        "order_received",
+        "design_prep",
+        "design_approved",
+        "production_scheduled",
+        "print_prep",
+        "material_prep",
+        "printing",
+        "quality_check",
+        "shipping_prep",
+        "ready_to_ship",
+        "in_transit",
+        "delivered",
+      ].sort(),
+    );
   });
 });
