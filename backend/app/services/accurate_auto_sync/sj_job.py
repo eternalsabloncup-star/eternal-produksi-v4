@@ -23,7 +23,13 @@ from app.services.accurate_auto_sync.status import (
     mark_running,
     record_job_result,
 )
-from app.services.accurate_auto_sync.sj_sync_review import list_open_retryable_reviews
+from app.services.accurate_auto_sync.sj_sync_review import (
+    REASON_MULTI_SO,
+    REASON_PO_NOT_REGISTERED,
+    allocate_sj_cycle_budgets,
+    list_open_retryable_reviews,
+    mark_sj_review_attempt,
+)
 from app.services.delivery_sync import (
     DeliverySyncDisabledError,
     is_sj_sync_enabled,
@@ -86,23 +92,69 @@ def replay_open_sj_reviews(
     started: float,
     timeout_seconds: float,
     max_rows: int,
+    replay_budget: int,
 ) -> dict[str, Any]:
-    """Replay deferred/quarantine terbuka sebelum discovery list.
+    """Replay deferred/quarantine dengan budget terpisah (setelah discovery).
 
-    Infrastruktur (auth/timeout/connection) tetap fatal. MULTI_SO yang masih
-    multi tetap ``review_required`` tanpa ingest. po_not_registered diulang
-    setelah PO terdaftar.
+    - po_not_registered: cek PO lokal dulu; tanpa Accurate bila PO belum ada.
+    - MULTI_SO: eligibility/cooldown di list_open_retryable_reviews.
+    - Infrastruktur (auth/timeout/connection) tetap fatal.
     """
+    from app.repositories.po_repository import get_by_accurate_id
+
     replayed = 0
-    for review in list_open_retryable_reviews(db, limit=max_rows):
+    deferred_cooldown = 0
+    accurate_fetches = 0
+    if replay_budget <= 0:
+        return {
+            "stopped": None,
+            "replayed": 0,
+            "deferred_cooldown": 0,
+            "accurate_fetches": 0,
+            "replay_budget": 0,
+        }
+
+    # Ambil kandidat hingga replay_budget (eligible saja).
+    for review in list_open_retryable_reviews(db, limit=replay_budget):
         if time.monotonic() - started > timeout_seconds:
-            return {"stopped": "timeout", "replayed": replayed}
+            return {
+                "stopped": "timeout",
+                "replayed": replayed,
+                "deferred_cooldown": deferred_cooldown,
+                "accurate_fetches": accurate_fetches,
+                "replay_budget": replay_budget,
+            }
+        if replayed >= replay_budget:
+            break
         if counters["listed"] >= max_rows:
-            return {"stopped": "max_rows", "replayed": replayed}
+            return {
+                "stopped": "max_rows",
+                "replayed": replayed,
+                "deferred_cooldown": deferred_cooldown,
+                "accurate_fetches": accurate_fetches,
+                "replay_budget": replay_budget,
+            }
+
         sj_id = str(review.get("accurate_sj_id") or "")
         if not sj_id:
             continue
+        reason = str(review.get("reason") or "")
         require_owns_job_lock(db, job="sj", owner_token=owner_token)
+
+        # po_not_registered: jangan fetch Accurate bila PO belum terdaftar.
+        if reason == REASON_PO_NOT_REGISTERED:
+            po_id = str(review.get("accurate_po_id") or "")
+            if not po_id or get_by_accurate_id(db, po_id) is None:
+                mark_sj_review_attempt(
+                    db,
+                    accurate_sj_id=sj_id,
+                    reason=REASON_PO_NOT_REGISTERED,
+                    defer_without_accurate=True,
+                )
+                deferred_cooldown += 1
+                replayed += 1
+                continue
+
         try:
             result = sync_one_sj(
                 db,
@@ -114,7 +166,6 @@ def replay_open_sj_reviews(
         except AutoSyncLockError:
             raise
         except Exception as exc:  # noqa: BLE001
-            # Auth/network/runtime → fatal agar tidak diklasifikasi review.
             from app.integrations.accurate.auth import AccurateAuthError
 
             if isinstance(
@@ -130,7 +181,15 @@ def replay_open_sj_reviews(
                     "code": getattr(exc, "code", "sync_failed"),
                 }
             )
-            return {"stopped": "page_failed", "replayed": replayed}
+            return {
+                "stopped": "page_failed",
+                "replayed": replayed,
+                "deferred_cooldown": deferred_cooldown,
+                "accurate_fetches": accurate_fetches,
+                "replay_budget": replay_budget,
+            }
+
+        accurate_fetches += 1
         counters["listed"] += 1
         counters["fetched"] += 1
         replayed += 1
@@ -146,8 +205,33 @@ def replay_open_sj_reviews(
                     "code": "unknown_outcome",
                 }
             )
-            return {"stopped": "page_failed", "replayed": replayed}
-    return {"stopped": None, "replayed": replayed}
+            return {
+                "stopped": "page_failed",
+                "replayed": replayed,
+                "deferred_cooldown": deferred_cooldown,
+                "accurate_fetches": accurate_fetches,
+                "replay_budget": replay_budget,
+            }
+
+        # Jadwalkan cooldown setelah percobaan (MULTI_SO / skipped tetap open).
+        out_reason = str(result.get("reason") or reason)
+        if key in {"review_required", "skipped"}:
+            mark_sj_review_attempt(
+                db,
+                accurate_sj_id=sj_id,
+                reason=out_reason
+                if out_reason
+                in {REASON_MULTI_SO, REASON_PO_NOT_REGISTERED}
+                else reason,
+            )
+
+    return {
+        "stopped": None,
+        "replayed": replayed,
+        "deferred_cooldown": deferred_cooldown,
+        "accurate_fetches": accurate_fetches,
+        "replay_budget": replay_budget,
+    }
 
 
 def run_sj_auto_sync(
@@ -162,8 +246,9 @@ def run_sj_auto_sync(
 ) -> dict[str, Any]:
     """Satu siklus auto-sync SJ. Memerlukan V4_SJ_SYNC_ENABLED=1.
 
-    Production write hanya jika V4_SJ_SYNC_PRODUCTION_ENABLED=1 + guard production.
-    Default tetap jalur test / fail-closed.
+    Urutan fair budget:
+    1) Discovery dengan jatah minimum terjamin.
+    2) Replay deferred dengan sisa budget (+ unused discovery bila backfill selesai).
     """
     if not is_sj_sync_enabled():
         return {
@@ -200,6 +285,7 @@ def run_sj_auto_sync(
         max_pages = max(1, min(int(max_pages), 50))
         max_rows = max(1, min(int(max_rows), 500))
         timeout_seconds = max(0.001, float(timeout_seconds))
+        budgets = allocate_sj_cycle_budgets(max_rows)
 
         def _fetch_list(params: dict[str, Any]) -> list[dict[str, Any]]:
             return reader.fetch_delivery_order_list(params=params)
@@ -213,52 +299,7 @@ def run_sj_auto_sync(
                 mongo_guard=active_guard,
             )
 
-        replay = replay_open_sj_reviews(
-            db,
-            client=reader,
-            owner_token=token,
-            mongo_guard=active_guard,
-            counters=counters,
-            failures=failures,
-            started=started,
-            timeout_seconds=timeout_seconds,
-            max_rows=max_rows,
-        )
-        accurate_requests = int(replay.get("replayed") or 0)
-        if replay.get("stopped") == "page_failed":
-            status = record_job_result(
-                db,
-                "sj",
-                enabled=True,
-                ok=False,
-                counters=counters,
-                error="page_failed",
-                error_code="page_failed",
-                duration_seconds=time.monotonic() - started,
-                partial=True,
-                complete=False,
-                detail={
-                    "auto_sync": True,
-                    "mongo_guard": active_guard,
-                    "review_replay": replay,
-                    "failures": failures[:20],
-                },
-            )
-            return {
-                "ok": False,
-                "job": "sj",
-                "enabled": True,
-                "partial": True,
-                "complete": False,
-                "accurate_requests": accurate_requests,
-                "writes": counters["created"] + counters["updated"],
-                "counters": counters,
-                "stopped_reason": "page_failed",
-                "failures": failures[:30],
-                "mongo_guard": active_guard,
-                "status": status,
-            }
-
+        # 1) Discovery dulu — jatah minimum tidak bisa dihabiskan replay.
         disc = run_discovery_cycle(
             db,
             job="sj",
@@ -269,7 +310,7 @@ def run_sj_auto_sync(
             failures=failures,
             page_size=page_size,
             max_pages=max_pages,
-            max_rows=max_rows,
+            max_rows=budgets["discovery"],
             timeout_seconds=timeout_seconds,
             started=started,
             contract_status=SJ_CONTRACT_STATUS,
@@ -277,9 +318,73 @@ def run_sj_auto_sync(
         accurate_requests += int(disc["accurate_requests"])
         checkpoint = disc["checkpoint"]
         stopped_reason = disc.get("stopped_reason")
-        ok = bool(disc["ok"])
-        partial = bool(disc["partial"])
-        complete = bool(disc["complete"])
+
+        # 2) Replay bounded; unused discovery dialihkan hanya jika backfill selesai
+        #    atau discovery berhenti karena complete (bukan page_failed fatal).
+        listed_after_discovery = int(counters["listed"])
+        unused_discovery = max(0, budgets["discovery"] - listed_after_discovery)
+        transfer = 0
+        if (
+            stopped_reason not in {"page_failed", "list_failed", "sort_unstable"}
+            and counters["failed"] == 0
+            and (
+                bool(checkpoint.get("backfill_complete"))
+                or stopped_reason in {None, "max_pages", "max_rows", "timeout"}
+                and bool(disc.get("complete"))
+            )
+        ):
+            # Complete → boleh transfer penuh. max_pages/max_rows dengan backfill
+            # belum selesai → jangan transfer (jaga discovery cycle berikutnya).
+            if bool(disc.get("complete")) or bool(checkpoint.get("backfill_complete")):
+                transfer = unused_discovery
+        replay_budget = budgets["replay"] + transfer
+        # Soft cap: jangan lewat total max_rows.
+        replay_budget = min(replay_budget, max(0, max_rows - listed_after_discovery))
+
+        replay: dict[str, Any] = {
+            "stopped": None,
+            "replayed": 0,
+            "deferred_cooldown": 0,
+            "accurate_fetches": 0,
+            "replay_budget": replay_budget,
+            "budgets": budgets,
+            "unused_discovery": unused_discovery,
+            "transfer_to_replay": transfer,
+        }
+        if (
+            stopped_reason != "page_failed"
+            and counters["failed"] == 0
+            and time.monotonic() - started <= timeout_seconds
+        ):
+            replay = replay_open_sj_reviews(
+                db,
+                client=reader,
+                owner_token=token,
+                mongo_guard=active_guard,
+                counters=counters,
+                failures=failures,
+                started=started,
+                timeout_seconds=timeout_seconds,
+                max_rows=max_rows,
+                replay_budget=replay_budget,
+            )
+            replay["budgets"] = budgets
+            replay["unused_discovery"] = unused_discovery
+            replay["transfer_to_replay"] = transfer
+            accurate_requests += int(replay.get("accurate_fetches") or 0)
+            if replay.get("stopped") == "page_failed":
+                stopped_reason = "page_failed"
+
+        ok = (
+            stopped_reason not in {"list_failed", "page_failed", "sort_unstable"}
+            and counters["failed"] == 0
+        )
+        partial = (not bool(disc.get("complete"))) or bool(replay.get("replayed"))
+        complete = bool(disc.get("complete")) and counters["failed"] == 0
+        if stopped_reason == "page_failed":
+            ok = False
+            complete = False
+            partial = True
 
         status = record_job_result(
             db,
@@ -300,11 +405,11 @@ def run_sj_auto_sync(
                 ),
                 "contract_status": SJ_CONTRACT_STATUS,
                 "sort_warnings": disc.get("sort_warnings") or [],
+                "fair_budget": budgets,
                 "review_replay": replay,
                 "note": (
-                    "Auto SJ default fail-closed ke guard test. Production "
-                    "hanya jika V4_SJ_SYNC_PRODUCTION_ENABLED=1 + CEO. "
-                    "MULTI_SO → quarantine review; po_not_registered → deferred replay."
+                    "Fair budget: discovery min reserved; replay capped. "
+                    "MULTI_SO cooldown; po_not_registered local-PO gate + backoff."
                 ),
                 "failures": failures[:20],
                 "checkpoint": {
@@ -335,6 +440,8 @@ def run_sj_auto_sync(
             "failures": failures[:30],
             "checkpoint": checkpoint,
             "mongo_guard": active_guard,
+            "fair_budget": budgets,
+            "review_replay": replay,
             "status": status,
         }
     except DeliverySyncDisabledError as exc:
@@ -383,4 +490,5 @@ def sj_auto_sync_settings_note() -> dict[str, Any]:
             else "production_flag_on_requires_ceo_ops"
         ),
         "contract_status": SJ_CONTRACT_STATUS,
+        "fair_budget_default": allocate_sj_cycle_budgets(DEFAULT_MAX_ROWS),
     }
