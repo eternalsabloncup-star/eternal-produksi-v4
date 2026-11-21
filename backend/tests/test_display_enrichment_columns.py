@@ -195,6 +195,12 @@ def test_enrich_actor_display_names_batch(db: Database) -> None:
         display_name="Screener Satu",
         operational_role="screener",
     )
+    upsert_test_user(
+        db,
+        email="kp@eternal.local",
+        display_name="Kepala Produksi",
+        operational_role="production-head",
+    )
     rows = [
         {"actor_email": "screener@eternal.local", "qty": 10},
         {"actor_email": "unknown@eternal.local", "qty": 1},
@@ -204,6 +210,29 @@ def test_enrich_actor_display_names_batch(db: Database) -> None:
     assert rows[1]["actor_display_name"] == "Nama belum tersedia"
     # Storage email identity preserved.
     assert rows[0]["actor_email"] == "screener@eternal.local"
+
+    cancelled = [
+        {
+            "actor_email": "screener@eternal.local",
+            "cancelled_by": "kp@eternal.local",
+        },
+        {
+            "actor_email": "screener@eternal.local",
+            "cancelled_by": "ghost@eternal.local",
+        },
+        {"actor_email": "screener@eternal.local"},
+    ]
+    enrich.enrich_actor_display_names(db, cancelled)
+    enrich.enrich_actor_display_names(
+        db,
+        cancelled,
+        email_field="cancelled_by",
+        display_field="cancelled_by_display_name",
+    )
+    assert cancelled[0]["cancelled_by_display_name"] == "Kepala Produksi"
+    assert cancelled[0]["cancelled_by"] == "kp@eternal.local"
+    assert cancelled[1]["cancelled_by_display_name"] == "Nama belum tersedia"
+    assert "cancelled_by_display_name" not in cancelled[2]
 
 
 def test_task_enrichment_item_name_from_po_line(db: Database) -> None:

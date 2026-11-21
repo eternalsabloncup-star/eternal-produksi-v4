@@ -334,9 +334,16 @@ def enrich_operational_tasks(
 
 
 def enrich_actor_display_names(
-    db: Database, rows: list[dict[str, Any]], *, email_field: str = "actor_email"
+    db: Database,
+    rows: list[dict[str, Any]],
+    *,
+    email_field: str = "actor_email",
+    display_field: str = "actor_display_name",
 ) -> list[dict[str, Any]]:
-    """Tambah actor_display_name dari Master (batch) — tidak mengubah storage email."""
+    """Tambah label tampilan dari Master (batch) — tidak mengubah storage email.
+
+    ``email_field`` → nilai identitas tersimpan; ``display_field`` → label UI.
+    """
     if not rows:
         return rows
     emails: list[str] = []
@@ -351,6 +358,9 @@ def enrich_actor_display_names(
         if not isinstance(row, dict):
             continue
         email_n = normalize_email(str(row.get(email_field) or ""))
-        raw_name = names.get(email_n, "") if email_n else ""
-        row["actor_display_name"] = operational_display_name(raw_name)
+        # Field kosong (mis. cancelled_by pada loading aktif) → jangan isi placeholder.
+        if not email_n:
+            continue
+        raw_name = names.get(email_n, "")
+        row[display_field] = operational_display_name(raw_name)
     return rows
