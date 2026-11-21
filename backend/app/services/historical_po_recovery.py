@@ -14,6 +14,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+import sys
 from dataclasses import dataclass
 from datetime import date
 from pathlib import Path
@@ -45,7 +46,11 @@ Outcome = Literal[
     "unchanged",
     "conflict",
     "failed",
+    "reconciliation_required",
 ]
+
+MAINTENANCE_ACTOR = "historical_po_recovery_apply"
+DEFAULT_MAINTENANCE_TTL_SECONDS = 1800
 
 
 class HistoricalRecoveryError(RuntimeError):
@@ -509,6 +514,30 @@ def validate_payload_against_entry(
     return {"ok": True, "outcome": "eligible", "reason": "ok", "existing": False}
 
 
+def _assert_maintenance_alive(
+    db: Database,
+    *,
+    owner_token: str,
+    job_tokens: dict[str, str] | None,
+) -> None:
+    from app.services.po_repair_maintenance import (
+        PoRepairMaintenanceError,
+        refresh_po_repair_maintenance,
+        require_maintenance_owner,
+    )
+
+    require_maintenance_owner(db, owner_token=owner_token)
+    if not refresh_po_repair_maintenance(
+        db,
+        owner_token=owner_token,
+        job_tokens=job_tokens,
+        ttl_seconds=DEFAULT_MAINTENANCE_TTL_SECONDS,
+    ):
+        raise PoRepairMaintenanceError(
+            "maintenance_lease_refresh_failed: STOP — lease hilang"
+        )
+
+
 def recover_one_po(
     db: Database,
     *,
@@ -517,8 +546,15 @@ def recover_one_po(
     payload: Mapping[str, Any],
     mode: Literal["dry_run", "apply"],
     mongo_guard: MongoGuardMode = "test",
+    run_id: str | None = None,
+    lease_fp: str | None = None,
+    maintenance_owner_token: str | None = None,
+    maintenance_job_tokens: dict[str, str] | None = None,
+    attempt_number: int = 1,
 ) -> dict[str, Any]:
     """Proses satu PO. ``payload`` wajib dari Accurate read resmi (caller)."""
+    from app.services import historical_po_recovery_audit as audit
+
     try:
         entry = assert_id_in_allowlist(manifest, accurate_id)
     except HistoricalRecoveryError as exc:
@@ -541,7 +577,7 @@ def recover_one_po(
         "side_effects_before": before_snap,
     }
     if not check.get("ok"):
-        return {
+        out = {
             **base,
             "ok": False,
             "outcome": check.get("outcome") or "failed",
@@ -552,6 +588,28 @@ def recover_one_po(
                 if k not in {"ok", "outcome", "reason", "existing"}
             },
         }
+        if mode == "apply" and run_id:
+            audit.mark_item_processing(
+                db,
+                batch_id=manifest.batch_id,
+                run_id=run_id,
+                accurate_po_id=entry.accurate_po_id,
+                expected_branch_id=entry.branch_id,
+                expected_trans_date=entry.trans_date.isoformat(),
+                lease_fp=lease_fp,
+                attempt_number=attempt_number,
+                po_present_before=bool(before_snap.get("po_exists")),
+            )
+            audit.complete_item(
+                db,
+                run_id=run_id,
+                accurate_po_id=entry.accurate_po_id,
+                outcome=str(out["outcome"]),
+                writes=0,
+                error_code=str(out.get("reason") or "ineligible"),
+                po_present_after=bool(before_snap.get("po_exists")),
+            )
+        return out
 
     if mode == "dry_run":
         return {
@@ -563,9 +621,67 @@ def recover_one_po(
             "would_write": check.get("outcome") == "eligible",
         }
 
-    # APPLY
+    # APPLY — wajib maintenance lease + durable audit
+    if not maintenance_owner_token or not run_id:
+        return {
+            **base,
+            "ok": False,
+            "outcome": "failed",
+            "reason": "maintenance_required",
+            "writes": 0,
+        }
+
+    try:
+        _assert_maintenance_alive(
+            db,
+            owner_token=maintenance_owner_token,
+            job_tokens=maintenance_job_tokens,
+        )
+    except Exception as exc:  # noqa: BLE001
+        return {
+            **base,
+            "ok": False,
+            "outcome": "failed",
+            "reason": "lease_lost",
+            "error_type": type(exc).__name__,
+            "writes": 0,
+            "stop_batch": True,
+        }
+
+    # Resume: PO sudah ada dari run sebelumnya / crash after write
     if check.get("outcome") == "already_present":
+        audit.mark_item_processing(
+            db,
+            batch_id=manifest.batch_id,
+            run_id=run_id,
+            accurate_po_id=entry.accurate_po_id,
+            expected_branch_id=entry.branch_id,
+            expected_trans_date=entry.trans_date.isoformat(),
+            lease_fp=lease_fp,
+            attempt_number=attempt_number,
+            po_present_before=True,
+        )
         after_snap = _side_effect_snapshot(db, entry.accurate_po_id)
+        try:
+            audit.complete_item(
+                db,
+                run_id=run_id,
+                accurate_po_id=entry.accurate_po_id,
+                outcome="already_present",
+                writes=0,
+                po_present_after=True,
+            )
+        except Exception as exc:  # noqa: BLE001
+            return {
+                **base,
+                "ok": False,
+                "outcome": "reconciliation_required",
+                "reason": "audit_write_failed",
+                "error_type": type(exc).__name__,
+                "writes": 0,
+                "stop_batch": True,
+                "side_effects_after": after_snap,
+            }
         return {
             **base,
             "ok": True,
@@ -573,11 +689,32 @@ def recover_one_po(
             "reason": "mongo_has_po",
             "writes": 0,
             "side_effects_after": after_snap,
-            "side_effects_unchanged": after_snap == before_snap,
+            "side_effects_unchanged": True,
         }
+
+    audit.mark_item_processing(
+        db,
+        batch_id=manifest.batch_id,
+        run_id=run_id,
+        accurate_po_id=entry.accurate_po_id,
+        expected_branch_id=entry.branch_id,
+        expected_trans_date=entry.trans_date.isoformat(),
+        lease_fp=lease_fp,
+        attempt_number=attempt_number,
+        po_present_before=False,
+    )
 
     permit = issue_floor_permit(manifest, entry.accurate_po_id)
     if not permit.permits(entry.accurate_po_id, payload):
+        audit.complete_item(
+            db,
+            run_id=run_id,
+            accurate_po_id=entry.accurate_po_id,
+            outcome="failed",
+            writes=0,
+            error_code="floor_permit_rejected",
+            po_present_after=False,
+        )
         return {
             **base,
             "ok": False,
@@ -587,6 +724,11 @@ def recover_one_po(
         }
 
     try:
+        _assert_maintenance_alive(
+            db,
+            owner_token=maintenance_owner_token,
+            job_tokens=maintenance_job_tokens,
+        )
         result = sync_sales_order_payload(
             db,
             dict(payload),
@@ -594,6 +736,37 @@ def recover_one_po(
             historical_floor_permit=permit,
         )
     except Exception as exc:  # noqa: BLE001 — fail-closed, jangan klaim sukses
+        present = get_by_accurate_id(db, entry.accurate_po_id) is not None
+        if present:
+            # Write mungkin sukses tapi exception di lapisan atas — reconciliation.
+            try:
+                audit.mark_reconciliation_required(
+                    db,
+                    run_id=run_id,
+                    accurate_po_id=entry.accurate_po_id,
+                    error_code="upsert_exception_po_present",
+                    po_present_after=True,
+                )
+            except Exception:  # noqa: BLE001
+                pass
+            return {
+                **base,
+                "ok": False,
+                "outcome": "reconciliation_required",
+                "reason": "upsert_exception_po_present",
+                "error_type": type(exc).__name__,
+                "writes": 0,
+                "stop_batch": True,
+            }
+        audit.complete_item(
+            db,
+            run_id=run_id,
+            accurate_po_id=entry.accurate_po_id,
+            outcome="failed",
+            writes=0,
+            error_code="upsert_failed",
+            po_present_after=False,
+        )
         return {
             **base,
             "ok": False,
@@ -601,6 +774,7 @@ def recover_one_po(
             "reason": "upsert_failed",
             "error_type": type(exc).__name__,
             "writes": 0,
+            "stop_batch": True,
         }
 
     writes = int(result.get("writes") or 0)
@@ -609,6 +783,15 @@ def recover_one_po(
     after_snap = _side_effect_snapshot(db, entry.accurate_po_id)
 
     if writes <= 0 or after is None:
+        audit.complete_item(
+            db,
+            run_id=run_id,
+            accurate_po_id=entry.accurate_po_id,
+            outcome="failed",
+            writes=0,
+            error_code=str(result.get("reason") or outcome or "write_not_persisted"),
+            po_present_after=after is not None,
+        )
         return {
             **base,
             "ok": False,
@@ -616,10 +799,19 @@ def recover_one_po(
             "reason": result.get("reason") or outcome or "write_not_persisted",
             "writes": 0,
             "side_effects_after": after_snap,
+            "stop_batch": True,
         }
 
-    # Side-effect invariants (bukan po_exists/po_count — itu memang berubah saat create)
     if after_snap["acceptance_status"] != before_snap["acceptance_status"]:
+        audit.complete_item(
+            db,
+            run_id=run_id,
+            accurate_po_id=entry.accurate_po_id,
+            outcome="failed",
+            writes=writes,
+            error_code="acceptance_mutated",
+            po_present_after=True,
+        )
         return {
             **base,
             "ok": False,
@@ -627,6 +819,7 @@ def recover_one_po(
             "reason": "acceptance_mutated",
             "writes": writes,
             "side_effects_after": after_snap,
+            "stop_batch": True,
         }
     for key in (
         "operational_tasks",
@@ -636,6 +829,15 @@ def recover_one_po(
         "receipts",
     ):
         if after_snap[key] != before_snap[key]:
+            audit.complete_item(
+                db,
+                run_id=run_id,
+                accurate_po_id=entry.accurate_po_id,
+                outcome="failed",
+                writes=writes,
+                error_code=f"side_effect_{key}",
+                po_present_after=True,
+            )
             return {
                 **base,
                 "ok": False,
@@ -643,24 +845,44 @@ def recover_one_po(
                 "reason": f"side_effect_{key}",
                 "writes": writes,
                 "side_effects_after": after_snap,
+                "stop_batch": True,
             }
-    side_effects_unchanged = all(
-        after_snap[k] == before_snap[k]
-        for k in (
-            "acceptance_status",
-            "operational_tasks",
-            "loading_events",
-            "delivery_events",
-            "stock_movements",
-            "receipts",
-        )
-    )
 
     mapped = "created" if result.get("was_insert") else "unchanged"
-    if outcome == "updated" and not result.get("was_insert"):
-        mapped = "unchanged"
     if result.get("was_insert"):
         mapped = "created"
+
+    try:
+        audit.complete_item(
+            db,
+            run_id=run_id,
+            accurate_po_id=entry.accurate_po_id,
+            outcome=mapped,
+            writes=writes,
+            po_present_after=True,
+        )
+    except Exception as exc:  # noqa: BLE001
+        # PO sudah tertulis — wajib reconciliation, jangan klaim sukses bersih.
+        try:
+            audit.mark_reconciliation_required(
+                db,
+                run_id=run_id,
+                accurate_po_id=entry.accurate_po_id,
+                error_code="audit_complete_failed",
+                po_present_after=True,
+            )
+        except Exception:  # noqa: BLE001
+            pass
+        return {
+            **base,
+            "ok": False,
+            "outcome": "reconciliation_required",
+            "reason": "audit_complete_failed",
+            "error_type": type(exc).__name__,
+            "writes": writes,
+            "stop_batch": True,
+            "side_effects_after": after_snap,
+        }
 
     return {
         **base,
@@ -671,7 +893,7 @@ def recover_one_po(
         "branch_apply": result.get("branch_apply"),
         "count_after": result.get("count_after"),
         "side_effects_after": after_snap,
-        "side_effects_unchanged": side_effects_unchanged,
+        "side_effects_unchanged": True,
     }
 
 
@@ -686,7 +908,19 @@ def run_historical_po_recovery(
     live_sha: str | None = None,
     stop_on_unsafe_error: bool = True,
 ) -> dict[str, Any]:
-    """Batch recovery untuk seluruh allowlist. Tidak menerima arbitrary ID list."""
+    """Batch recovery untuk seluruh allowlist. Tidak menerima arbitrary ID list.
+
+    APPLY: exclusive ``po_repair_maintenance`` (job lock ``po``+``sj`` + epoch fence)
+    + durable Mongo audit. DRY_RUN: zero Mongo write (termasuk audit).
+    """
+    from app.services import historical_po_recovery_audit as audit
+    from app.services.accurate_auto_sync.locks import AutoSyncLockError
+    from app.services.po_repair_maintenance import (
+        PoRepairMaintenanceError,
+        acquire_po_repair_maintenance,
+        release_po_repair_maintenance,
+    )
+
     manifest = load_sealed_manifest(manifest_path)
     # Global floor harus tetap 2026-11-01 di runtime.
     if configured_date_floor() != date(2026, 11, 1):
@@ -704,61 +938,258 @@ def run_historical_po_recovery(
     results: list[dict[str, Any]] = []
     stopped = False
     stop_reason: str | None = None
+    run_id: str | None = None
+    lease_fp: str | None = None
+    maintenance: dict[str, Any] | None = None
+    fence_epoch: int | None = None
+    # APPLY: True hanya setelah finish_run durable terverifikasi.
+    # DRY_RUN: True (tidak ada audit write yang wajib diverifikasi).
+    audit_finalize_verified: bool = mode == "dry_run"
+    audit_finalize_error: str | None = None
+    reconciliation_hold: bool = False
 
-    for entry in manifest.entries:
+    def _record_apply_item_failure(
+        *,
+        accurate_po_id: str,
+        expected_branch_id: str,
+        expected_trans_date: str,
+        error_code: str,
+    ) -> None:
+        """Durable audit gagal tanpa payload mentah. Gagal tulis → raise."""
+        assert run_id is not None
+        audit.mark_item_processing(
+            db,
+            batch_id=manifest.batch_id,
+            run_id=run_id,
+            accurate_po_id=accurate_po_id,
+            expected_branch_id=expected_branch_id,
+            expected_trans_date=expected_trans_date,
+            lease_fp=lease_fp,
+            attempt_number=1,
+            po_present_before=False,
+        )
+        audit.complete_item(
+            db,
+            run_id=run_id,
+            accurate_po_id=accurate_po_id,
+            outcome="failed",
+            writes=0,
+            error_code=error_code,
+            po_present_after=False,
+        )
+
+    def _release_own_maintenance() -> None:
+        """Lepas hanya lease milik eksekusi ini — jangan sentuh lock asing."""
+        nonlocal maintenance
+        handle = maintenance
+        maintenance = None
+        if handle is None:
+            return
+        release_po_repair_maintenance(
+            db,
+            owner_token=str(handle["owner_token"]),
+            job_tokens=dict(handle.get("job_tokens") or {}),
+        )
+
+    if mode == "apply":
         try:
-            payload = client.fetch_sales_order_detail(entry.accurate_po_id)
-        except Exception as exc:  # noqa: BLE001
-            item = {
-                "accurate_po_id": entry.accurate_po_id,
-                "ok": False,
-                "outcome": "failed",
-                "reason": "accurate_fetch_failed",
-                "error_type": type(exc).__name__,
-                "writes": 0,
-            }
-            results.append(item)
-            if stop_on_unsafe_error:
-                stopped = True
-                stop_reason = "accurate_fetch_failed"
-                break
-            continue
+            maintenance = acquire_po_repair_maintenance(
+                db,
+                ttl_seconds=DEFAULT_MAINTENANCE_TTL_SECONDS,
+                actor=MAINTENANCE_ACTOR,
+            )
+        except (PoRepairMaintenanceError, AutoSyncLockError) as exc:
+            raise HistoricalRecoveryError(
+                f"exclusive_writer_fence_unavailable: {exc}",
+                code="maintenance_acquire_failed",
+            ) from exc
 
-        if not isinstance(payload, Mapping):
-            results.append(
-                {
+    try:
+        if mode == "apply":
+            assert maintenance is not None
+            lease_fp = audit.lease_fingerprint(str(maintenance["owner_token"]))
+            fence_epoch = int(maintenance.get("fence_epoch") or 0)
+            # start_run / index preflight di dalam try agar finally selalu release.
+            run_doc = audit.start_run(
+                db,
+                batch_id=manifest.batch_id,
+                manifest_sha256=manifest.manifest_sha256,
+                live_sha=live_sha,
+                mode=mode,
+                po_count=manifest.po_count,
+                lease_fp=lease_fp,
+                fence_epoch=fence_epoch,
+            )
+            run_id = str(run_doc["run_id"])
+
+        for entry in manifest.entries:
+            try:
+                payload = client.fetch_sales_order_detail(entry.accurate_po_id)
+            except Exception as exc:  # noqa: BLE001
+                item = {
+                    "accurate_po_id": entry.accurate_po_id,
+                    "ok": False,
+                    "outcome": "failed",
+                    "reason": "accurate_fetch_failed",
+                    "error_type": type(exc).__name__,
+                    "writes": 0,
+                    "stop_batch": True,
+                }
+                if mode == "apply" and run_id:
+                    try:
+                        _record_apply_item_failure(
+                            accurate_po_id=entry.accurate_po_id,
+                            expected_branch_id=entry.branch_id,
+                            expected_trans_date=entry.trans_date.isoformat(),
+                            error_code="accurate_fetch_failed",
+                        )
+                    except Exception as audit_exc:  # noqa: BLE001
+                        item["reason"] = "audit_write_failed"
+                        item["error_type"] = type(audit_exc).__name__
+                        item["underlying_reason"] = "accurate_fetch_failed"
+                        results.append(item)
+                        stopped = True
+                        stop_reason = "audit_write_failed"
+                        break
+                results.append(item)
+                if stop_on_unsafe_error:
+                    stopped = True
+                    stop_reason = "accurate_fetch_failed"
+                    break
+                continue
+
+            if not isinstance(payload, Mapping):
+                item = {
                     "accurate_po_id": entry.accurate_po_id,
                     "ok": False,
                     "outcome": "failed",
                     "reason": "malformed_payload",
+                    "payload_type": type(payload).__name__,
                     "writes": 0,
+                    "stop_batch": True,
                 }
-            )
-            if stop_on_unsafe_error:
+                if mode == "apply" and run_id:
+                    try:
+                        _record_apply_item_failure(
+                            accurate_po_id=entry.accurate_po_id,
+                            expected_branch_id=entry.branch_id,
+                            expected_trans_date=entry.trans_date.isoformat(),
+                            error_code="malformed_payload",
+                        )
+                    except Exception as audit_exc:  # noqa: BLE001
+                        item["reason"] = "audit_write_failed"
+                        item["error_type"] = type(audit_exc).__name__
+                        item["underlying_reason"] = "malformed_payload"
+                        results.append(item)
+                        stopped = True
+                        stop_reason = "audit_write_failed"
+                        break
+                results.append(item)
                 stopped = True
                 stop_reason = "malformed_payload"
                 break
-            continue
 
-        item = recover_one_po(
-            db,
-            manifest=manifest,
-            accurate_id=entry.accurate_po_id,
-            payload=payload,
-            mode=mode,
-            mongo_guard=mongo_guard,
-        )
-        results.append(item)
-        if stop_on_unsafe_error and item.get("outcome") == "failed" and not item.get("ok"):
-            # Infrastruktur / persist failure → stop batch.
-            if item.get("reason") in {
-                "upsert_failed",
-                "write_not_persisted",
-                "acceptance_mutated",
-            } or str(item.get("reason") or "").startswith("side_effect_"):
+            item = recover_one_po(
+                db,
+                manifest=manifest,
+                accurate_id=entry.accurate_po_id,
+                payload=payload,
+                mode=mode,
+                mongo_guard=mongo_guard,
+                run_id=run_id,
+                lease_fp=lease_fp,
+                maintenance_owner_token=(
+                    None if maintenance is None else str(maintenance["owner_token"])
+                ),
+                maintenance_job_tokens=(
+                    None if maintenance is None else dict(maintenance["job_tokens"])
+                ),
+                attempt_number=1,
+            )
+            results.append(item)
+            if item.get("stop_batch") or item.get("outcome") in {
+                "reconciliation_required",
+            }:
                 stopped = True
-                stop_reason = str(item.get("reason"))
+                stop_reason = str(item.get("reason") or item.get("outcome"))
                 break
+            if stop_on_unsafe_error and item.get("outcome") == "failed" and not item.get(
+                "ok"
+            ):
+                # Infrastruktur / persist failure → stop batch.
+                if item.get("reason") in {
+                    "upsert_failed",
+                    "write_not_persisted",
+                    "acceptance_mutated",
+                    "lease_lost",
+                    "maintenance_required",
+                    "audit_complete_failed",
+                    "audit_write_failed",
+                } or str(item.get("reason") or "").startswith("side_effect_"):
+                    stopped = True
+                    stop_reason = str(item.get("reason"))
+                    break
+    finally:
+        in_flight = sys.exc_info()[1]
+        if mode == "apply" and run_id:
+            summary_preview: dict[str, Any] = {
+                "eligible": 0,
+                "ineligible": 0,
+                "already_present": 0,
+                "created": 0,
+                "unchanged": 0,
+                "conflict": 0,
+                "failed": 0,
+                "reconciliation_required": 0,
+                "writes": 0,
+            }
+            for r in results:
+                oc = str(r.get("outcome") or "failed")
+                if oc in summary_preview:
+                    summary_preview[oc] += 1
+                else:
+                    summary_preview["failed"] += 1
+                summary_preview["writes"] += int(r.get("writes") or 0)
+            status = "stopped" if stopped else "completed"
+            if summary_preview.get("reconciliation_required", 0) > 0:
+                status = "reconciliation_required"
+            if in_flight is not None and not stopped:
+                status = "failed"
+                stop_reason = stop_reason or type(in_flight).__name__
+            try:
+                audit.finish_run(
+                    db,
+                    run_id=run_id,
+                    status=status,
+                    summary=summary_preview,
+                    stopped=stopped or in_flight is not None,
+                    stop_reason=stop_reason,
+                )
+                audit_finalize_verified = True
+            except Exception as finish_exc:  # noqa: BLE001 — jangan blokir release
+                audit_finalize_verified = False
+                audit_finalize_error = type(finish_exc).__name__
+                wrote_any = (
+                    int(summary_preview.get("writes") or 0) > 0
+                    or int(summary_preview.get("created") or 0) > 0
+                )
+                if wrote_any:
+                    # Partial/full writes tanpa audit completion → reconciliation, no auto-retry.
+                    reconciliation_hold = True
+                    stopped = True
+                    stop_reason = (
+                        stop_reason or "audit_finish_failed_reconciliation_required"
+                    )
+                else:
+                    stopped = True
+                    stop_reason = stop_reason or "audit_finish_failed"
+                # Jangan raise di sini bila in_flight ada — pertahankan exception asli.
+        try:
+            _release_own_maintenance()
+        except Exception:
+            # Jangan tutupi exception asli dari try body.
+            if in_flight is None:
+                raise
 
     summary = {
         "eligible": 0,
@@ -768,6 +1199,7 @@ def run_historical_po_recovery(
         "unchanged": 0,
         "conflict": 0,
         "failed": 0,
+        "reconciliation_required": 0,
         "writes": 0,
     }
     for r in results:
@@ -778,8 +1210,22 @@ def run_historical_po_recovery(
             summary["failed"] += 1
         summary["writes"] += int(r.get("writes") or 0)
 
+    if reconciliation_hold:
+        summary["reconciliation_required"] = max(
+            int(summary.get("reconciliation_required") or 0), 1
+        )
+
+    clean_ok = (
+        not stopped
+        and summary["failed"] == 0
+        and summary.get("reconciliation_required", 0) == 0
+        and audit_finalize_verified
+        and not reconciliation_hold
+        and audit_finalize_error is None
+    )
+
     return {
-        "ok": not stopped and summary["failed"] == 0,
+        "ok": clean_ok,
         "mode": mode,
         "batch_id": manifest.batch_id,
         "manifest_sha256": manifest.manifest_sha256,
@@ -787,6 +1233,13 @@ def run_historical_po_recovery(
         "processed": len(results),
         "stopped": stopped,
         "stop_reason": stop_reason,
+        "run_id": run_id,
+        "lease_fingerprint": lease_fp,
+        "fence_epoch": fence_epoch,
+        "audit_finalize_verified": audit_finalize_verified,
+        "audit_finalize_error": audit_finalize_error,
+        "reconciliation_required": reconciliation_hold
+        or int(summary.get("reconciliation_required") or 0) > 0,
         "global_date_floor": configured_date_floor().isoformat(),
         "summary": summary,
         "results": results,

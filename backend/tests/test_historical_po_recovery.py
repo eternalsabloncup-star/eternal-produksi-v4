@@ -4,9 +4,10 @@ from __future__ import annotations
 
 import copy
 import json
+from contextlib import contextmanager
 from datetime import date
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterator
 
 import pytest
 from pymongo.database import Database
@@ -25,6 +26,7 @@ from app.services.accurate_auto_sync.date_floor import (
     clear_date_floor_cache,
     configured_date_floor,
 )
+from app.services import historical_po_recovery_audit as audit
 from app.services.historical_po_recovery import (
     BATCH_ID,
     HistoricalRecoveryError,
@@ -38,6 +40,10 @@ from app.services.historical_po_recovery import (
     run_historical_po_recovery,
 )
 from app.services.po_acceptance import ACCEPTANCE_ACCEPTED, ACCEPTANCE_PENDING
+from app.services.po_repair_maintenance import (
+    acquire_po_repair_maintenance,
+    release_po_repair_maintenance,
+)
 from app.services.po_sync import sync_sales_order_payload
 
 
@@ -61,7 +67,59 @@ def recovery_db(db: Database, monkeypatch: pytest.MonkeyPatch) -> Database:
     ensure_org_master_indexes(db)
     upsert_branch(db, code="50", name="Yogyakarta", is_active=True)
     upsert_branch(db, code="150", name="Semarang", is_active=True)
+    audit.ensure_historical_recovery_audit_indexes(db)
     return db
+
+
+@contextmanager
+def _apply_fence(db: Database) -> Iterator[dict[str, Any]]:
+    """Exclusive maintenance + audit run untuk recover_one_po APPLY unit tests."""
+    handle = acquire_po_repair_maintenance(
+        db, ttl_seconds=120, actor="test_historical_po_recovery"
+    )
+    run = audit.start_run(
+        db,
+        batch_id=BATCH_ID,
+        manifest_sha256=_manifest().manifest_sha256,
+        live_sha=None,
+        mode="apply",
+        po_count=1,
+        lease_fp=audit.lease_fingerprint(str(handle["owner_token"])),
+        fence_epoch=int(handle.get("fence_epoch") or 0),
+    )
+    ctx = {
+        "run_id": str(run["run_id"]),
+        "lease_fp": audit.lease_fingerprint(str(handle["owner_token"])),
+        "maintenance_owner_token": str(handle["owner_token"]),
+        "maintenance_job_tokens": dict(handle["job_tokens"]),
+    }
+    try:
+        yield ctx
+    finally:
+        release_po_repair_maintenance(
+            db,
+            owner_token=str(handle["owner_token"]),
+            job_tokens=dict(handle.get("job_tokens") or {}),
+        )
+
+
+def _recover_apply(
+    db: Database,
+    *,
+    manifest: Any,
+    accurate_id: str,
+    payload: dict[str, Any],
+) -> dict[str, Any]:
+    with _apply_fence(db) as fence:
+        return recover_one_po(
+            db,
+            manifest=manifest,
+            accurate_id=accurate_id,
+            payload=payload,
+            mode="apply",
+            mongo_guard="test",
+            **fence,
+        )
 
 
 def _detail(
@@ -181,13 +239,11 @@ def test_recovery_allowlisted_historical_accepted_on_apply(
         trans_date=entry.trans_date.strftime("%d/%m/%Y"),
         branch_id=entry.branch_id,
     )
-    out = recover_one_po(
+    out = _recover_apply(
         recovery_db,
         manifest=m,
         accurate_id=entry.accurate_po_id,
         payload=payload,
-        mode="apply",
-        mongo_guard="test",
     )
     assert out["ok"] is True
     assert out["outcome"] == "created"
@@ -213,6 +269,29 @@ def test_recovery_outside_allowlist_rejected_even_with_fake_permit_path(
     assert out["reason"] == "not_in_allowlist"
 
 
+def test_apply_without_maintenance_stops_before_write(recovery_db: Database) -> None:
+    m = _manifest()
+    entry = m.entry("70957")
+    assert entry is not None
+    payload = _detail(
+        entry.accurate_po_id,
+        trans_date=entry.trans_date.strftime("%d/%m/%Y"),
+        branch_id=entry.branch_id,
+    )
+    out = recover_one_po(
+        recovery_db,
+        manifest=m,
+        accurate_id=entry.accurate_po_id,
+        payload=payload,
+        mode="apply",
+        mongo_guard="test",
+    )
+    assert out["ok"] is False
+    assert out["reason"] == "maintenance_required"
+    assert out["writes"] == 0
+    assert count_by_accurate_id(recovery_db, entry.accurate_po_id) == 0
+
+
 def test_global_floor_unchanged_after_recovery(recovery_db: Database) -> None:
     m = _manifest()
     entry = next(e for e in m.entries if e.accurate_po_id == "94062")
@@ -221,13 +300,11 @@ def test_global_floor_unchanged_after_recovery(recovery_db: Database) -> None:
         trans_date=entry.trans_date.strftime("%d/%m/%Y"),
         branch_id=entry.branch_id,
     )
-    recover_one_po(
+    _recover_apply(
         recovery_db,
         manifest=m,
         accurate_id=entry.accurate_po_id,
         payload=payload,
-        mode="apply",
-        mongo_guard="test",
     )
     assert configured_date_floor() == date(2026, 11, 1)
     # Non-allowlisted historical still blocked:
@@ -343,21 +420,17 @@ def test_idempotent_second_ingest_no_duplicate(recovery_db: Database) -> None:
         trans_date=entry.trans_date.strftime("%d/%m/%Y"),
         branch_id=entry.branch_id,
     )
-    first = recover_one_po(
+    first = _recover_apply(
         recovery_db,
         manifest=m,
         accurate_id=entry.accurate_po_id,
         payload=payload,
-        mode="apply",
-        mongo_guard="test",
     )
-    second = recover_one_po(
+    second = _recover_apply(
         recovery_db,
         manifest=m,
         accurate_id=entry.accurate_po_id,
         payload=payload,
-        mode="apply",
-        mongo_guard="test",
     )
     assert first["outcome"] == "created"
     assert second["outcome"] == "already_present"
@@ -384,13 +457,11 @@ def test_existing_branch_conflict_no_silent_overwrite(recovery_db: Database) -> 
         trans_date=entry.trans_date.strftime("%d/%m/%Y"),
         branch_id=entry.branch_id,  # 50
     )
-    out = recover_one_po(
+    out = _recover_apply(
         recovery_db,
         manifest=m,
         accurate_id=entry.accurate_po_id,
         payload=payload,
-        mode="apply",
-        mongo_guard="test",
     )
     assert out["ok"] is False
     assert out["outcome"] == "conflict"
@@ -407,13 +478,11 @@ def test_side_effects_unchanged_on_apply(recovery_db: Database) -> None:
         trans_date=entry.trans_date.strftime("%d/%m/%Y"),
         branch_id=entry.branch_id,
     )
-    out = recover_one_po(
+    out = _recover_apply(
         recovery_db,
         manifest=m,
         accurate_id=entry.accurate_po_id,
         payload=payload,
-        mode="apply",
-        mongo_guard="test",
     )
     assert out["ok"] is True
     assert out["side_effects_unchanged"] is True
@@ -444,12 +513,11 @@ def test_already_accepted_conflict(recovery_db: Database) -> None:
         trans_date=entry.trans_date.strftime("%d/%m/%Y"),
         branch_id=entry.branch_id,
     )
-    out = recover_one_po(
+    out = _recover_apply(
         recovery_db,
         manifest=m,
         accurate_id=entry.accurate_po_id,
         payload=payload,
-        mode="apply",
     )
     assert out["outcome"] == "conflict"
     assert out["reason"] == "already_accepted"
@@ -540,13 +608,11 @@ def test_apply_test_db_creates_without_side_effects(recovery_db: Database) -> No
         )
     }
     # Full batch apply would need all 80 — use recover_one + approval path unit above.
-    out = recover_one_po(
+    out = _recover_apply(
         recovery_db,
         manifest=m,
         accurate_id=entry.accurate_po_id,
         payload=details[entry.accurate_po_id],
-        mode="apply",
-        mongo_guard="test",
     )
     assert out["outcome"] == "created"
     assert count_by_accurate_id(recovery_db, entry.accurate_po_id) == 1
