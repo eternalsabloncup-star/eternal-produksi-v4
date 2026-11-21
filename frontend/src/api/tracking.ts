@@ -94,8 +94,24 @@ export type TrackingPayload = {
     customer_slug: string;
     po_slug: string;
   };
+  /** Eligibility popup Approval Design — tanpa raw approval token. */
+  design_approval?: DesignApprovalEligibility;
   links?: TrackingLinkRow[];
   internal?: Record<string, unknown>;
+};
+
+export type DesignApprovalEligibility = {
+  eligible: boolean;
+  pending_approval: boolean;
+  design_version: number | null;
+  expires_at: string | null;
+  link_status: "none" | "active" | "approved" | "unavailable" | string;
+};
+
+export type DesignApprovalResolveResult = {
+  path: string;
+  design_version: number;
+  expires_at: string | null;
 };
 
 export type TrackingLinkRow = {
@@ -223,6 +239,31 @@ export async function fetchPublicTracking(
     throw new Error(await parseError(response));
   }
   return (await response.json()) as TrackingPayload;
+}
+
+/** Resolve path /approval/:token — read-only; jangan hardcode URL. */
+export async function resolvePublicDesignApproval(
+  customerSlug: string,
+  poSlug: string,
+  token: string,
+): Promise<DesignApprovalResolveResult> {
+  const response = await fetch(
+    `/api/public/tracking/${encodeURIComponent(customerSlug)}/${encodeURIComponent(poSlug)}/${encodeURIComponent(token)}/design-approval`,
+    {
+      method: "GET",
+      credentials: "omit",
+      headers: { Accept: "application/json" },
+      cache: "no-store",
+    },
+  );
+  if (!response.ok) {
+    throw new Error(await parseError(response));
+  }
+  const body = (await response.json()) as DesignApprovalResolveResult;
+  if (!body.path || typeof body.path !== "string" || !body.path.startsWith("/approval/")) {
+    throw new Error("Link Approval Design tidak tersedia.");
+  }
+  return body;
 }
 
 export async function fetchInternalTracking(

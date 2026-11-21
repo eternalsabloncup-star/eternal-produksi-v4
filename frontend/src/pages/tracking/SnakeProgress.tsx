@@ -171,7 +171,7 @@ export function SnakeProgress({ stages }: Props) {
                 y={y + 22}
                 textAnchor="middle"
                 fill={v === "na" ? "#8a9690" : "#1a2a22"}
-                fontSize={8.5}
+                fontSize={9}
                 fontWeight={600}
                 fontFamily="DM Sans, system-ui, sans-serif"
               >

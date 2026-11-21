@@ -1357,7 +1357,118 @@ export function handleSimRequest(
     });
   }
   if (path.startsWith("/api/public/tracking/") && method === "GET") {
-    return json({ ...SIM_TRACKING, view: "customer", links: undefined });
+    // DEV fixture only: reject obvious invalid/revoked dummy tokens.
+    const parts = path.split("/").filter(Boolean);
+    // /api/public/tracking/:c/:po/:token[/design-approval]
+    const isResolve = parts[parts.length - 1] === "design-approval";
+    const tokenPart = (
+      isResolve ? parts[parts.length - 2] || "" : parts[parts.length - 1] || ""
+    ).toUpperCase();
+    if (
+      tokenPart.includes("INVALID") ||
+      tokenPart.includes("REVOKED") ||
+      (tokenPart.includes("EXPIRED") && !tokenPart.includes("DAPEXPIRED"))
+    ) {
+      return json({ detail: "Link pelacakan tidak valid." }, 404);
+    }
+
+    if (isResolve) {
+      // Simulasi resolve — hanya DEV. Token dummy, bukan production bypass.
+      if (
+        tokenPart.includes("DAPEXPIRED") ||
+        tokenPart.includes("DAPREVOKED") ||
+        tokenPart.includes("DAPNOLINK") ||
+        tokenPart.includes("DAPAPPR")
+      ) {
+        return json({ detail: "Link Approval Design tidak tersedia." }, 404);
+      }
+      return json({
+        path: "/approval/SIMAPPROVALTOKENDUMMYXX",
+        design_version: tokenPart.includes("DAPNEWVER") ? 2 : 1,
+        expires_at: "2026-11-22T15:00:00Z",
+      });
+    }
+
+    let design_approval = SIM_TRACKING.design_approval;
+    if (tokenPart.includes("DAPNOLINK")) {
+      design_approval = {
+        eligible: false,
+        pending_approval: false,
+        design_version: null,
+        expires_at: null,
+        link_status: "none",
+      };
+    } else if (tokenPart.includes("DAPAPPR")) {
+      design_approval = {
+        eligible: false,
+        pending_approval: false,
+        design_version: 1,
+        expires_at: null,
+        link_status: "approved",
+      };
+    } else if (tokenPart.includes("DAPEXPIRED") || tokenPart.includes("DAPREVOKED")) {
+      design_approval = {
+        eligible: false,
+        pending_approval: false,
+        design_version: 1,
+        expires_at: null,
+        link_status: "unavailable",
+      };
+    } else if (tokenPart.includes("DAPNEWVER")) {
+      design_approval = {
+        eligible: true,
+        pending_approval: true,
+        design_version: 2,
+        expires_at: "2026-11-22T15:00:00Z",
+        link_status: "active",
+      };
+    }
+
+    return json({
+      ...SIM_TRACKING,
+      view: "customer",
+      links: undefined,
+      design_approval,
+      order: { ...SIM_TRACKING.order, accurate_po_id: null },
+    });
+  }
+
+  // Public design approval page — DEV sim only (dummy token, not production).
+  if (path.startsWith("/api/public/design-approval/") && method === "GET") {
+    const tokenPart = path.split("/").pop() || "";
+    if (!tokenPart || tokenPart.includes("INVALID")) {
+      return json({ detail: "Link approval tidak valid atau sudah kedaluwarsa." }, 404);
+    }
+    return json({
+      po_no: PO_NO,
+      customer: "PT Contoh Kemasan",
+      design_version: 1,
+      design_filename: "desain-cup.png",
+      design_evidence_id: "evid:design:sim:v1",
+      items: [
+        {
+          item_name: "Cup 12oz Cetak",
+          item_code: "CUP-12OZ",
+          qty: 3000,
+          unit: "PCS",
+          color: "Putih",
+        },
+      ],
+      already_approved: tokenPart.toUpperCase().includes("APPR"),
+      approved_at: null,
+    });
+  }
+  if (
+    path.startsWith("/api/public/design-approval/") &&
+    path.endsWith("/approve") &&
+    method === "POST"
+  ) {
+    return json({
+      approval: { design_version: 1, signer_name: "Sim Customer" },
+      duplicate: false,
+      gates: { design: { state: "open" } },
+      simulation: true,
+    });
   }
 
   // Workflow stubs

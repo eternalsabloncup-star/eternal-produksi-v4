@@ -783,6 +783,23 @@ export const SIM_TRACKING = {
       reason: "Belum diunggah",
     },
   ],
+  help: {
+    title: "Bantuan / Customer Service",
+    hours: "Senin–Sabtu 08:00–17:00 WIB",
+    phone: null,
+    email: "cs@eternalpackaging.id",
+    whatsapp: null,
+    note: "Sertakan nomor PO saat menghubungi kami.",
+  },
+  polling: { interval_ms: 30000, strategy: "light-poll" },
+  /** Default preview: link approval aktif pending — popup eligibility. */
+  design_approval: {
+    eligible: true,
+    pending_approval: true,
+    design_version: 1 as number | null,
+    expires_at: "2026-11-22T15:00:00Z" as string | null,
+    link_status: "active" as string,
+  },
   links: [
     {
       id: "link-sim-1",

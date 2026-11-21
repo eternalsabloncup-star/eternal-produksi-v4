@@ -107,6 +107,29 @@ export const OWNER_SNAKE_STAGES: readonly SnakeStageDef[] = [
   },
 ] as const;
 
+/**
+ * Milestone API id → label Snake (satu sumber dengan OWNER_SNAKE_STAGES).
+ * Dibangun dari sourceIds; id tanpa pasangan snake tidak masuk map.
+ */
+export const MILESTONE_ID_TO_SNAKE_LABEL: Readonly<Record<string, string>> =
+  Object.freeze(
+    OWNER_SNAKE_STAGES.reduce<Record<string, string>>((acc, stage) => {
+      if (!stage.sourceIds) return acc;
+      for (const id of stage.sourceIds) {
+        acc[id] = stage.label;
+      }
+      return acc;
+    }, {}),
+  );
+
+/** Label Timeline = label Snake bila mapping ada; else label API customer-facing. */
+export function timelineMilestoneLabel(
+  milestoneId: string,
+  apiLabel: string,
+): string {
+  return MILESTONE_ID_TO_SNAKE_LABEL[milestoneId] || apiLabel;
+}
+
 export type SnakeStageView = {
   seq: number;
   label: string;

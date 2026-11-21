@@ -1,20 +1,31 @@
 import { useEffect, useMemo, useState } from "react";
-import { useParams } from "react-router-dom";
+import { useNavigate, useParams } from "react-router-dom";
 import {
   fetchPublicTracking,
   formatQty,
   formatTs,
+  resolvePublicDesignApproval,
   type TrackingDocumentCategory,
   type TrackingPayload,
 } from "../../api/tracking";
 import { NavIcon, type NavIconName } from "../../app/icons";
+import { DesignApprovalReminderModal } from "./DesignApprovalReminderModal";
+import {
+  dismissDesignApproval,
+  shouldShowDesignApprovalPopup,
+} from "./designApprovalPopup";
 import { SnakeProgress } from "./SnakeProgress";
 import {
   OWNER_DOC_SLOTS,
   buildSnakeStages,
-  formatItemLine,
+  timelineMilestoneLabel,
   type OwnerDocSlot,
 } from "./snakeMapping";
+import {
+  formatEstimasiLabel,
+  formatItemCountLabel,
+  milestoneStateLabel,
+} from "./liveTrackingView";
 import "../../styles/tracking.css";
 
 const DOC_ICONS: Record<string, NavIconName> = {
@@ -60,7 +71,7 @@ function resolveDocSlot(docs: TrackingDocumentCategory[], slot: OwnerDocSlot) {
   if (slot.apiCategories.length === 0) {
     return {
       status: "waiting" as const,
-      reason: "gap" in slot ? String(slot.gap) : "Belum tersedia",
+      reason: "Belum tersedia",
       items: [] as Array<Record<string, unknown>>,
       canView: false,
     };
@@ -93,6 +104,7 @@ function docStatusText(status: string): string {
 
 export function LiveTrackingPage() {
   const { customerSlug = "", poSlug = "", token = "" } = useParams();
+  const navigate = useNavigate();
   const [data, setData] = useState<TrackingPayload | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
@@ -100,6 +112,10 @@ export function LiveTrackingPage() {
   const [panel, setPanel] = useState<Panel>("main");
   const [docKey, setDocKey] = useState<string | null>(null);
   const [toast, setToast] = useState<string | null>(null);
+  const [dapOpen, setDapOpen] = useState(false);
+  const [dapResolving, setDapResolving] = useState(false);
+  const [dapError, setDapError] = useState<string | null>(null);
+  const [dapDismissTick, setDapDismissTick] = useState(0);
 
   useEffect(() => {
     ensureTrackingPwaMeta();
@@ -148,10 +164,46 @@ export function LiveTrackingPage() {
     [data],
   );
 
-  const mappingGaps = useMemo(
-    () => snake.filter((s) => s.gap).map((s) => `${s.label}: ${s.gap}`),
-    [snake],
-  );
+  const dapEligible = useMemo(() => {
+    void dapDismissTick;
+    return shouldShowDesignApprovalPopup(data?.design_approval, poSlug);
+  }, [data?.design_approval, poSlug, dapDismissTick]);
+
+  useEffect(() => {
+    if (!data) {
+      setDapOpen(false);
+      return;
+    }
+    if (dapEligible) {
+      setDapOpen(true);
+      setDapError(null);
+    } else {
+      setDapOpen(false);
+    }
+  }, [data, dapEligible]);
+
+  function dismissDap() {
+    const version = data?.design_approval?.design_version;
+    if (version != null) dismissDesignApproval(poSlug, version);
+    setDapOpen(false);
+    setDapError(null);
+    setDapDismissTick((n) => n + 1);
+  }
+
+  async function onApprovalDesign() {
+    setDapResolving(true);
+    setDapError(null);
+    try {
+      const resolved = await resolvePublicDesignApproval(customerSlug, poSlug, token);
+      navigate(resolved.path);
+    } catch (err) {
+      setDapError(
+        err instanceof Error ? err.message : "Link Approval Design tidak tersedia.",
+      );
+    } finally {
+      setDapResolving(false);
+    }
+  }
 
   function flash(msg: string) {
     setToast(msg);
@@ -226,11 +278,12 @@ export function LiveTrackingPage() {
   }
 
   const items = data.order.summary.items || [];
-  const itemLine = formatItemLine(items);
-  const qtyLabel = `${formatQty(data.progress.production.qty_po)} pcs`;
-  const estimasi =
-    data.order.eta_ship?.trim() ||
-    (data.order.status_label ? data.order.status_label : "Belum tersedia");
+  const itemCount = data.order.summary.item_count ?? items.length;
+  const itemCountLabel = formatItemCountLabel(itemCount);
+  const estimasi = formatEstimasiLabel(
+    data.order.eta_ship,
+    data.order.summary.eta_ship,
+  );
 
   const activeDoc = docKey
     ? OWNER_DOC_SLOTS.find((s) => s.key === docKey) ?? null
@@ -271,7 +324,6 @@ export function LiveTrackingPage() {
           </p>
         ) : null}
 
-        {/* B — PO card: pelanggan dominan → PO → ITEM/QTY/ESTIMASI */}
         <section className="elt-card" aria-label="Informasi PO">
           <div className="elt-po-head">
             <div className="elt-po-customer">
@@ -304,29 +356,47 @@ export function LiveTrackingPage() {
 
           <hr className="elt-divider" />
 
-          <div className="elt-po-grid">
-            <div className="elt-po-grid-item is-wide">
-              <div className="elt-kicker">ITEM</div>
-              <div className="elt-value">{itemLine}</div>
-            </div>
-            <div>
-              <div className="elt-kicker">QTY</div>
-              <div className="elt-value">{qtyLabel}</div>
-            </div>
-            <div>
-              <div className="elt-kicker">ESTIMASI</div>
-              <div className="elt-value">{estimasi}</div>
-            </div>
+          <button
+            type="button"
+            className="elt-meta-row is-action"
+            onClick={() => setPanel("detail")}
+            aria-label={`${itemCountLabel}, buka Detail Pesanan`}
+          >
+            <span className="elt-meta-icon" aria-hidden>
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8">
+                <path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z" />
+                <path d="M3.3 7 12 12l8.7-5" />
+                <path d="M12 22V12" />
+              </svg>
+            </span>
+            <span className="elt-meta-main">{itemCountLabel}</span>
+            <span className="elt-meta-chevron" aria-hidden>
+              ›
+            </span>
+          </button>
+
+          <hr className="elt-divider" />
+
+          <div className="elt-meta-row" aria-label="Estimasi selesai">
+            <span className="elt-meta-icon" aria-hidden>
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8">
+                <rect x="3" y="5" width="18" height="16" rx="2" />
+                <path d="M3 10h18" />
+                <path d="M8 3v4" />
+                <path d="M16 3v4" />
+              </svg>
+            </span>
+            <span className="elt-meta-label">Estimasi Selesai</span>
+            <strong className="elt-meta-value">{estimasi}</strong>
           </div>
         </section>
 
-        {/* C — Snake */}
         <section className="elt-card" aria-label="Progress pesanan">
           <div className="elt-card-head">
             <h2 className="elt-card-title">Progress Pesanan</h2>
             <button
               type="button"
-              className="elt-text-link"
+              className="elt-text-link is-accent"
               onClick={() => setPanel("timeline")}
             >
               Lihat Timeline
@@ -335,7 +405,6 @@ export function LiveTrackingPage() {
           <SnakeProgress stages={snake} />
         </section>
 
-        {/* D — Documents 3+2 */}
         <section className="elt-card" aria-label="Dokumen pesanan">
           <h2 className="elt-card-title">Dokumen Pesanan</h2>
           <div className="elt-doc-grid">
@@ -368,7 +437,6 @@ export function LiveTrackingPage() {
           </div>
         </section>
 
-        {/* Footer actions */}
         <div className="elt-actions" role="group" aria-label="Aksi">
           <button type="button" onClick={() => setPanel("detail")}>
             Detail Pesanan
@@ -387,7 +455,16 @@ export function LiveTrackingPage() {
         </p>
       </div>
 
-      {/* Panels */}
+      <DesignApprovalReminderModal
+        open={dapOpen && panel === "main"}
+        poNo={data.order.po_no}
+        resolving={dapResolving}
+        error={dapError}
+        onClose={dismissDap}
+        onLater={dismissDap}
+        onApprove={() => void onApprovalDesign()}
+      />
+
       {panel !== "main" ? (
         <div className="elt-panel" role="dialog" aria-modal="true">
           <div className="elt-panel-bar">
@@ -398,7 +475,7 @@ export function LiveTrackingPage() {
               {panel === "detail"
                 ? "Detail Pesanan"
                 : panel === "timeline"
-                  ? "Timeline Peristiwa"
+                  ? "Timeline"
                   : panel === "help"
                     ? "Bantuan"
                     : activeDoc?.title || "Dokumen"}
@@ -408,7 +485,6 @@ export function LiveTrackingPage() {
           <div className="elt-panel-body">
             {panel === "detail" ? (
               <>
-                <p className="elt-kicker">KPI & ringkasan Qty (dari API)</p>
                 <dl className="elt-dl">
                   <div>
                     <dt>Tanggal masuk</dt>
@@ -419,7 +495,7 @@ export function LiveTrackingPage() {
                     <dd>{formatQty(data.progress.production.qty_po)}</dd>
                   </div>
                   <div>
-                    <dt>Qty diproduksi (tervalidasi)</dt>
+                    <dt>Qty diproduksi</dt>
                     <dd>{formatQty(data.progress.production.qty_produced)}</dd>
                   </div>
                   <div>
@@ -435,15 +511,10 @@ export function LiveTrackingPage() {
                     <dd>{formatQty(data.progress.shipping.qty_remaining)}</dd>
                   </div>
                   <div>
-                    <dt>Milestone selesai</dt>
+                    <dt>Status progres</dt>
                     <dd>{data.progress.milestone.label}</dd>
                   </div>
                 </dl>
-                <p className="elt-note">
-                  Catatan Qty: progres Cetak memakai target task baris Cetak (bukan
-                  total Qty seluruh PO) — scope item Cetak, bukan kesalahan format
-                  tampilan.
-                </p>
                 <h3 className="elt-subhead">Item</h3>
                 <ul className="elt-item-list">
                   {items.map((it) => (
@@ -451,7 +522,6 @@ export function LiveTrackingPage() {
                       <strong>{it.item_name}</strong>
                       <span>
                         {formatQty(it.qty)} {it.unit}
-                        {it.process_kind ? ` · ${it.process_kind}` : ""}
                         {it.color ? ` · ${it.color}` : ""}
                       </span>
                     </li>
@@ -461,35 +531,20 @@ export function LiveTrackingPage() {
             ) : null}
 
             {panel === "timeline" ? (
-              <>
-                <p className="elt-note">
-                  Riwayat dari event milestone backend (bukan duplikasi snake).
-                </p>
-                <ol className="elt-event-list">
-                  {data.milestones.map((m) => (
-                    <li key={m.id} className={`is-${m.state}`}>
-                      <div className="elt-event-head">
-                        <strong>
-                          {m.seq}. {m.label}
-                        </strong>
-                        <span>{m.state}</span>
-                      </div>
-                      <p>{m.detail}</p>
-                      <time>{formatTs(m.timestamp)}</time>
-                    </li>
-                  ))}
-                </ol>
-                {mappingGaps.length ? (
-                  <>
-                    <h3 className="elt-subhead">Gap mapping snake → backend</h3>
-                    <ul className="elt-gap-list">
-                      {mappingGaps.map((g) => (
-                        <li key={g}>{g}</li>
-                      ))}
-                    </ul>
-                  </>
-                ) : null}
-              </>
+              <ol className="elt-event-list">
+                {data.milestones.map((m) => (
+                  <li key={m.id} className={`is-${m.state}`}>
+                    <div className="elt-event-head">
+                      <strong>
+                        {m.seq}. {timelineMilestoneLabel(m.id, m.label)}
+                      </strong>
+                      <span>{milestoneStateLabel(m.state)}</span>
+                    </div>
+                    <p>{m.detail}</p>
+                    <time>{formatTs(m.timestamp)}</time>
+                  </li>
+                ))}
+              </ol>
             ) : null}
 
             {panel === "help" ? (

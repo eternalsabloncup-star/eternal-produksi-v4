@@ -2,15 +2,23 @@
 
 from __future__ import annotations
 
+from datetime import datetime, timezone
 from typing import Any
 
 from pymongo.database import Database
 
+from app.config import get_settings
 from app.repositories import design_repository as design
 from app.repositories import evidence_repository as evidence
 from app.repositories import gate_repository as gates
 from app.repositories import task_repository as tasks
 from app.services.audit_log import append_audit_event
+from app.services.design_link_crypto import (
+    DesignLinkCryptoError,
+    decrypt_approval_token,
+    encrypt_approval_token,
+    parse_recovery_key,
+)
 from app.services.task_engine import require_action
 
 DESIGN_SCOPE = "design"
@@ -19,6 +27,23 @@ SIGNATURE_SCOPE = "design-signature"
 
 class DesignStateError(RuntimeError):
     """Aksi desain tidak sah pada state saat ini."""
+
+
+class DesignLinkRecoveryError(RuntimeError):
+    """Recovery Live Tracking gagal (fail-closed). Pesan aman untuk client."""
+
+    def __init__(self, message: str = "Link Approval Design tidak tersedia.") -> None:
+        super().__init__(message)
+        self.message = message
+
+
+def _strip_link_secrets(link: dict[str, Any]) -> dict[str, Any]:
+    """Jangan expose token_hash / ciphertext ke API response."""
+    return {
+        k: v
+        for k, v in link.items()
+        if k not in {"token_hash", "token_ciphertext"}
+    }
 
 
 def submit_design(
@@ -104,12 +129,35 @@ def create_customer_link(
         raise DesignStateError("Desain belum dikonfirmasi Designer.")
 
     actor = str(user.get("email_normalized") or "")
-    raw_token, link = design.create_approval_link(
+    design_version = int(latest["version"])
+
+    import secrets as _secrets
+
+    raw_token = _secrets.token_urlsafe(32)
+    ciphertext: str | None = None
+    try:
+        recovery_key = parse_recovery_key(
+            get_settings().design_approval_link_recovery_key
+        )
+        if recovery_key is not None:
+            ciphertext = encrypt_approval_token(
+                raw_token,
+                accurate_po_id=accurate_po_id,
+                design_version=design_version,
+                key=recovery_key,
+            )
+    except DesignLinkCryptoError:
+        ciphertext = None
+
+    _token, link = design.create_approval_link(
         db,
         accurate_po_id=accurate_po_id,
-        design_version=int(latest["version"]),
+        design_version=design_version,
         created_by=actor,
+        raw_token=raw_token,
+        token_ciphertext=ciphertext,
     )
+
     append_audit_event(
         db,
         action="design.approval_link.create",
@@ -119,10 +167,119 @@ def create_customer_link(
             "accurate_po_id": accurate_po_id,
             "design_version": latest["version"],
             "expires_at": link["expires_at"].isoformat(),
+            "recoverable": bool(ciphertext),
         },
     )
-    # Token mentah hanya dikembalikan sekali; database menyimpan hash-nya.
-    return {"token": raw_token, "link": {k: v for k, v in link.items() if k != "token_hash"}}
+    # Token mentah hanya dikembalikan sekali; database menyimpan hash (+ ciphertext).
+    return {"token": raw_token, "link": _strip_link_secrets(link)}
+
+
+def build_design_approval_eligibility(
+    db: Database,
+    *,
+    accurate_po_id: str,
+) -> dict[str, Any]:
+    """Metadata minimum untuk Live Tracking popup — tanpa raw token.
+
+    Source-of-truth: link approval yang benar-benar dibuat Designer + recoverable.
+    Design Gate open / task done saja TIDAK cukup untuk eligible.
+    """
+    none_payload = {
+        "eligible": False,
+        "pending_approval": False,
+        "design_version": None,
+        "expires_at": None,
+        "link_status": "none",
+    }
+    latest = design.latest_confirmed_submission(db, accurate_po_id)
+    if latest is None:
+        return none_payload
+
+    version = int(latest["version"])
+    approval = design.get_approval(
+        db, accurate_po_id=accurate_po_id, design_version=version
+    )
+    if approval is not None:
+        return {
+            "eligible": False,
+            "pending_approval": False,
+            "design_version": version,
+            "expires_at": None,
+            "link_status": "approved",
+        }
+
+    link = design.find_active_recoverable_link_for_version(
+        db, accurate_po_id=accurate_po_id, design_version=version
+    )
+    if link is None:
+        # Bisa jadi ada link legacy / expired / revoked — jangan tebak token.
+        return {
+            "eligible": False,
+            "pending_approval": False,
+            "design_version": version,
+            "expires_at": None,
+            "link_status": "unavailable",
+        }
+
+    expires_at = link.get("expires_at")
+    expires_iso = None
+    if isinstance(expires_at, datetime):
+        if expires_at.tzinfo is None:
+            expires_at = expires_at.replace(tzinfo=timezone.utc)
+        expires_iso = expires_at.isoformat()
+
+    return {
+        "eligible": True,
+        "pending_approval": True,
+        "design_version": version,
+        "expires_at": expires_iso,
+        "link_status": "active",
+    }
+
+
+def recover_approval_token_for_po(
+    db: Database,
+    *,
+    accurate_po_id: str,
+) -> tuple[str, dict[str, Any]]:
+    """Decrypt raw token untuk latest confirmed pending version. Fail-closed."""
+    eligibility = build_design_approval_eligibility(db, accurate_po_id=accurate_po_id)
+    if not eligibility.get("eligible"):
+        raise DesignLinkRecoveryError()
+
+    version = int(eligibility["design_version"])
+    link = design.find_active_recoverable_link_for_version(
+        db, accurate_po_id=accurate_po_id, design_version=version
+    )
+    if link is None:
+        raise DesignLinkRecoveryError()
+
+    ciphertext = link.get("token_ciphertext")
+    if not ciphertext or not isinstance(ciphertext, str):
+        raise DesignLinkRecoveryError()
+
+    try:
+        key = parse_recovery_key(get_settings().design_approval_link_recovery_key)
+    except DesignLinkCryptoError as exc:
+        raise DesignLinkRecoveryError() from exc
+    if key is None:
+        raise DesignLinkRecoveryError()
+
+    try:
+        raw = decrypt_approval_token(
+            ciphertext,
+            accurate_po_id=accurate_po_id,
+            design_version=version,
+            key=key,
+        )
+    except DesignLinkCryptoError as exc:
+        raise DesignLinkRecoveryError() from exc
+
+    # Verifikasi hash — ciphertext rusak/tampered yang kebetulan decrypt harus ditolak.
+    if design.hash_token(raw) != link.get("token_hash"):
+        raise DesignLinkRecoveryError()
+
+    return raw, link
 
 
 def public_approval_context(
