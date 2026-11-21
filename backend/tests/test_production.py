@@ -79,12 +79,16 @@ def _seed(db: Database, payload=None) -> dict:
 def _schedule(
     db: Database, po_doc: dict, line_id: str, splits: list[tuple[str, float]], key: str
 ) -> list[str]:
+    from tests.scheduling_operator_fixtures import ensure_operators_for_allocations
+
+    allocations = [{"operator_email": op, "qty": q} for op, q in splits]
+    ensure_operators_for_allocations(db, allocations)
     res = scheduling_service.create_allocations(
         db,
         HEAD,
         po_doc=po_doc,
         accurate_line_id=line_id,
-        allocations=[{"operator_email": op, "qty": q} for op, q in splits],
+        allocations=allocations,
         idempotency_key=key,
     )
     return [a["allocation_id"] for a in res["allocations"]]

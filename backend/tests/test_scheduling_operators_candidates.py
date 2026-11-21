@@ -31,16 +31,14 @@ def _seed_base(db: Database) -> None:
         password=PASSWORD,
         allow_if_admin_exists=True,
     )
-    db["users"].insert_one(
-        {
-            "email_normalized": normalize_email("kp@eternal.local"),
-            "display_name": "Kepala Produksi",
-            "password_hash": hash_password(PASSWORD),
-            "role": "user",
-            "operational_role": "production-head",
-            "is_active": True,
-            "effective_module_permissions": ["access.all_branches"],
-        }
+    from tests.scheduling_operator_fixtures import upsert_test_user
+
+    upsert_test_user(
+        db,
+        "kp@eternal.local",
+        operational_role="production-head",
+        display_name="Kepala Produksi",
+        password=PASSWORD,
     )
 
 
@@ -53,16 +51,16 @@ def _insert_user(
     is_active: bool = True,
     role: str = "user",
 ) -> None:
-    db["users"].insert_one(
-        {
-            "email_normalized": normalize_email(email),
-            "display_name": display_name,
-            "password_hash": hash_password(PASSWORD),
-            "role": role,
-            "operational_role": operational_role,
-            "is_active": is_active,
-            "effective_module_permissions": ["access.all_branches"],
-        }
+    from tests.scheduling_operator_fixtures import upsert_test_user
+
+    upsert_test_user(
+        db,
+        email,
+        operational_role=operational_role,
+        display_name=display_name,
+        is_active=is_active,
+        role=role,
+        password=PASSWORD,
     )
 
 
@@ -215,6 +213,17 @@ def test_create_allocation_requires_active_operator(
     )
     assert inactive.status_code == 422, inactive.text
 
+    ghost = app_client.post(
+        f"/api/scheduling/{PO_ID}/lines/{LINE_A}/allocations",
+        json={
+            "allocations": [{"operator_email": "ghost@eternal.local", "qty": 50}],
+            "idempotency_key": "alloc-reject-ghost",
+        },
+        headers={"X-CSRF-Token": csrf},
+    )
+    assert ghost.status_code == 422, ghost.text
+    assert "Operator" in ghost.text
+
     ok = app_client.post(
         f"/api/scheduling/{PO_ID}/lines/{LINE_A}/allocations",
         json={
@@ -268,3 +277,32 @@ def test_create_allocation_allows_operator_without_display_name(
     row = state.json()["allocations"][0]
     assert row["operator_email"] == "op.noname@eternal.local"
     assert row["operator_display_name"] == "op.noname@eternal.local"
+
+
+def test_historical_allocation_with_unknown_operator_still_reads(
+    app_client: TestClient, db: Database
+) -> None:
+    """Alokasi lama (email tidak di Master) tetap terbaca; create baru ditolak."""
+    from app.repositories import schedule_repository as schedules
+
+    _seed_base(db)
+    _open_gates(db)
+    schedules.insert_allocation(
+        db,
+        allocation_id=f"alloc:{LINE_A}:99",
+        accurate_po_id=PO_ID,
+        po_no="SO-TEST",
+        accurate_line_id=LINE_A,
+        item_code="ITEM",
+        operator_email="legacy.free@eternal.local",
+        qty=25,
+        schedule_date="2026-11-01",
+        created_by="kp@eternal.local",
+    )
+    _login(app_client, "kp@eternal.local")
+    state = app_client.get(f"/api/scheduling/{PO_ID}/lines/{LINE_A}")
+    assert state.status_code == 200, state.text
+    rows = state.json()["allocations"]
+    assert any(r["operator_email"] == "legacy.free@eternal.local" for r in rows)
+    legacy = next(r for r in rows if r["operator_email"] == "legacy.free@eternal.local")
+    assert legacy.get("operator_display_name") in (None, "")

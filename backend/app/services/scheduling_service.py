@@ -732,17 +732,18 @@ def _create_allocations_under_writer_lease(
                     "(terpisah dari ukuran screen Master Produk)."
                 )
 
+        # Alokasi baru: wajib Operator aktif di Master Pengguna (email identifier).
+        # Alokasi historis tetap terbaca meski operator sudah tidak memenuhi kontrak.
         master_op = users.find_active_operator_by_email(db, operator)
-        if master_op is not None:
-            operator = str(master_op["email"])
-        else:
-            # Pengguna Master yang ada tetapi gagal kontrak Operator → tolak.
-            # Email bebas yang tidak ada di Master tetap diizinkan (jalur legacy panel).
-            existing = users.find_user_by_email(db, operator)
-            if existing is not None:
-                raise ScheduleQuantityError(
-                    "Operator harus pengguna aktif ber-peran Operator di Master Pengguna."
-                )
+        if master_op is None:
+            raise ScheduleQuantityError(
+                "Operator harus pengguna aktif ber-peran Operator di Master Pengguna."
+            )
+        operator = str(master_op["email"])
+        if not operator:
+            raise ScheduleQuantityError(
+                "Operator Master tidak memiliki identifier email sah."
+            )
 
         pending.append(
             {

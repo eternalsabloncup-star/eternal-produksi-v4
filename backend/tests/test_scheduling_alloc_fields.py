@@ -33,27 +33,21 @@ def _seed(db: Database) -> None:
         password=PASSWORD,
         allow_if_admin_exists=True,
     )
-    db["users"].insert_one(
-        {
-            "email_normalized": normalize_email("kp@eternal.local"),
-            "display_name": "Kepala Produksi",
-            "password_hash": hash_password(PASSWORD),
-            "role": "user",
-            "operational_role": "production-head",
-            "is_active": True,
-            "effective_module_permissions": ["access.all_branches"]
-        }
+    from tests.scheduling_operator_fixtures import upsert_test_user
+
+    upsert_test_user(
+        db,
+        "kp@eternal.local",
+        operational_role="production-head",
+        display_name="Kepala Produksi",
+        password=PASSWORD,
     )
-    db["users"].insert_one(
-        {
-            "email_normalized": normalize_email("op.warna@eternal.local"),
-            "display_name": "Budi Operator",
-            "password_hash": hash_password(PASSWORD),
-            "role": "user",
-            "operational_role": "operator",
-            "is_active": True,
-            "effective_module_permissions": ["access.all_branches"]
-        }
+    upsert_test_user(
+        db,
+        "op.warna@eternal.local",
+        operational_role="operator",
+        display_name="Budi Operator",
+        password=PASSWORD,
     )
 
 

@@ -46,7 +46,10 @@ def _two_print_lines_payload() -> dict:
 def _seed_po(db: Database, payload=None) -> dict:
     upsert_sales_order(db, normalize_sales_order(payload or SAMPLE_SALES_ORDER_STRUCTURE))
     from tests.po_accept_helpers import mark_po_accepted
+    from tests.scheduling_operator_fixtures import ensure_default_scheduling_operators
+
     mark_po_accepted(db)
+    ensure_default_scheduling_operators(db)
     return get_by_accurate_id(db, PO_ID)
 
 

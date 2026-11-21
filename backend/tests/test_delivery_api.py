@@ -81,6 +81,8 @@ def _seed_users(db: Database) -> None:
     # HTTP session membaca effective_module_permissions dari dokumen user.
     # Tanpa access.all_branches / branch_ids, assert_branch_access menolak
     # (baseline FAIL setelah gate cabang) — selaraskan dengan fixture service-layer.
+    from tests.scheduling_operator_fixtures import upsert_test_user
+
     for email, role in (
         ("kp@eternal.local", "production-head"),
         ("helper@eternal.local", "helper"),
@@ -88,16 +90,12 @@ def _seed_users(db: Database) -> None:
         ("op1@eternal.local", "operator"),
         ("driver@eternal.local", "driver"),
     ):
-        db["users"].insert_one(
-            {
-                "email_normalized": normalize_email(email),
-                "display_name": email,
-                "password_hash": hash_password(PASSWORD),
-                "role": "user",
-                "operational_role": role,
-                "is_active": True,
-                "effective_module_permissions": ["access.all_branches"],
-            }
+        upsert_test_user(
+            db,
+            email,
+            operational_role=role,
+            display_name=email,
+            password=PASSWORD,
         )
 
 
@@ -110,12 +108,16 @@ def _seed_packed(db: Database, qty: float = 200) -> None:
             db, accurate_po_id=PO_ID, gate=gate, state=gates.GATE_OPEN, reason="uji api E"
         )
     po_doc = get_by_accurate_id(db, PO_ID)
+    from tests.scheduling_operator_fixtures import ensure_operators_for_allocations
+
+    allocations = [{"operator_email": "op1@eternal.local", "qty": 1000}]
+    ensure_operators_for_allocations(db, allocations)
     res = scheduling_service.create_allocations(
         db,
         HEAD,
         po_doc=po_doc,
         accurate_line_id=LINE_PRINT,
-        allocations=[{"operator_email": "op1@eternal.local", "qty": 1000}],
+        allocations=allocations,
         idempotency_key="api-e-sched",
     )
     alloc = res["allocations"][0]["allocation_id"]
