@@ -103,11 +103,15 @@ def sync_sales_order_payload(
     payload: dict[str, Any],
     *,
     mongo_guard: MongoGuardMode = "test",
+    historical_floor_permit: Any | None = None,
 ) -> dict[str, Any]:
     """Normalisasi + upsert. Aman dijalankan berulang tanpa duplikasi header.
 
     Guard sama dengan auto-sync: date floor transDate + cabang kanonis Master.
     Cabang existing/manual tidak ditimpa; konflik ditandai review.
+
+    ``historical_floor_permit`` — izin sempit dari
+    ``historical_po_recovery.issue_floor_permit`` saja. Bukan bypass global.
     """
     from app.services.po_ingest_guards import (
         date_floor_reject_or_none,
@@ -120,28 +124,35 @@ def sync_sales_order_payload(
     accurate_id = str(payload.get("id") or payload.get("accurate_id") or "").strip()
     floor_hit = date_floor_reject_or_none(payload, accurate_id=accurate_id or "unknown")
     if floor_hit is not None:
-        return {
-            "po": None,
-            "document": None,
-            "accurate_id": accurate_id or None,
-            "po_no": None,
-            "line_count": 0,
-            "was_insert": False,
-            "duplicate_prevented": True,
-            "count_after": count_by_accurate_id(db, accurate_id) if accurate_id else 0,
-            "line_diff": {
-                "added_line_ids": [],
-                "removed_line_ids": [],
-                "changed_line_ids": [],
-                "previous_line_count": 0,
-                "current_line_count": 0,
-            },
-            "operational_preserved": True,
-            "branch_apply": "rejected",
-            "outcome": floor_hit.get("outcome"),
-            "reason": floor_hit.get("reason"),
-            "writes": 0,
-        }
+        permit_ok = False
+        if historical_floor_permit is not None:
+            permits = getattr(historical_floor_permit, "permits", None)
+            if callable(permits):
+                permit_ok = bool(permits(accurate_id, payload))
+        if not permit_ok:
+            return {
+                "po": None,
+                "document": None,
+                "accurate_id": accurate_id or None,
+                "po_no": None,
+                "line_count": 0,
+                "was_insert": False,
+                "duplicate_prevented": True,
+                "count_after": count_by_accurate_id(db, accurate_id) if accurate_id else 0,
+                "line_diff": {
+                    "added_line_ids": [],
+                    "removed_line_ids": [],
+                    "changed_line_ids": [],
+                    "previous_line_count": 0,
+                    "current_line_count": 0,
+                },
+                "operational_preserved": True,
+                "branch_apply": "rejected",
+                "outcome": floor_hit.get("outcome"),
+                "reason": floor_hit.get("reason"),
+                "writes": 0,
+            }
+        # Exception allowlist historis: lanjut pipeline validasi cabang/identity.
 
     po: PoHeaderModel = normalize_sales_order(payload)
     try:

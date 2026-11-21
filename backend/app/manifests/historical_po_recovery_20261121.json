@@ -1,0 +1,497 @@
+{
+  "label": "historical_po_recovery_20261121",
+  "version": "2026-11-21-p3",
+  "batch_id": "historical_po_recovery_20261121",
+  "audit_date": "2026-11-21",
+  "audit_source": "sj-missing-po-audit.md",
+  "audit_sha_gate": "264cf597bb8a5e493ea6b678c0e503518fe41c80",
+  "global_date_floor": "2026-11-01",
+  "allowed_branches": [
+    "50",
+    "150"
+  ],
+  "po_count": 80,
+  "entries": [
+    {
+      "accurate_po_id": "70957",
+      "trans_date": "2026-02-16",
+      "branch_id": "50",
+      "sj_count": 1
+    },
+    {
+      "accurate_po_id": "71151",
+      "trans_date": "2026-02-16",
+      "branch_id": "50",
+      "sj_count": 1
+    },
+    {
+      "accurate_po_id": "79353",
+      "trans_date": "2026-04-11",
+      "branch_id": "50",
+      "sj_count": 2
+    },
+    {
+      "accurate_po_id": "87769",
+      "trans_date": "2026-06-23",
+      "branch_id": "50",
+      "sj_count": 1
+    },
+    {
+      "accurate_po_id": "89087",
+      "trans_date": "2026-07-25",
+      "branch_id": "50",
+      "sj_count": 8
+    },
+    {
+      "accurate_po_id": "91294",
+      "trans_date": "2026-09-10",
+      "branch_id": "50",
+      "sj_count": 2
+    },
+    {
+      "accurate_po_id": "91478",
+      "trans_date": "2026-09-15",
+      "branch_id": "150",
+      "sj_count": 1
+    },
+    {
+      "accurate_po_id": "91902",
+      "trans_date": "2026-09-21",
+      "branch_id": "50",
+      "sj_count": 50
+    },
+    {
+      "accurate_po_id": "92375",
+      "trans_date": "2026-10-01",
+      "branch_id": "50",
+      "sj_count": 2
+    },
+    {
+      "accurate_po_id": "92464",
+      "trans_date": "2026-10-01",
+      "branch_id": "150",
+      "sj_count": 1
+    },
+    {
+      "accurate_po_id": "92670",
+      "trans_date": "2026-10-06",
+      "branch_id": "50",
+      "sj_count": 1
+    },
+    {
+      "accurate_po_id": "92821",
+      "trans_date": "2026-10-10",
+      "branch_id": "50",
+      "sj_count": 1
+    },
+    {
+      "accurate_po_id": "92869",
+      "trans_date": "2026-10-09",
+      "branch_id": "50",
+      "sj_count": 1
+    },
+    {
+      "accurate_po_id": "92962",
+      "trans_date": "2026-10-12",
+      "branch_id": "50",
+      "sj_count": 2
+    },
+    {
+      "accurate_po_id": "93083",
+      "trans_date": "2026-10-15",
+      "branch_id": "50",
+      "sj_count": 1
+    },
+    {
+      "accurate_po_id": "93085",
+      "trans_date": "2026-10-15",
+      "branch_id": "50",
+      "sj_count": 1
+    },
+    {
+      "accurate_po_id": "93107",
+      "trans_date": "2026-10-13",
+      "branch_id": "50",
+      "sj_count": 2
+    },
+    {
+      "accurate_po_id": "93181",
+      "trans_date": "2026-10-15",
+      "branch_id": "50",
+      "sj_count": 1
+    },
+    {
+      "accurate_po_id": "93204",
+      "trans_date": "2026-10-16",
+      "branch_id": "50",
+      "sj_count": 2
+    },
+    {
+      "accurate_po_id": "93354",
+      "trans_date": "2026-10-19",
+      "branch_id": "50",
+      "sj_count": 1
+    },
+    {
+      "accurate_po_id": "93364",
+      "trans_date": "2026-10-19",
+      "branch_id": "50",
+      "sj_count": 1
+    },
+    {
+      "accurate_po_id": "93372",
+      "trans_date": "2026-10-20",
+      "branch_id": "50",
+      "sj_count": 2
+    },
+    {
+      "accurate_po_id": "93477",
+      "trans_date": "2026-10-21",
+      "branch_id": "50",
+      "sj_count": 1
+    },
+    {
+      "accurate_po_id": "93514",
+      "trans_date": "2026-10-23",
+      "branch_id": "50",
+      "sj_count": 1
+    },
+    {
+      "accurate_po_id": "93517",
+      "trans_date": "2026-10-23",
+      "branch_id": "50",
+      "sj_count": 4
+    },
+    {
+      "accurate_po_id": "93694",
+      "trans_date": "2026-10-29",
+      "branch_id": "150",
+      "sj_count": 1
+    },
+    {
+      "accurate_po_id": "93698",
+      "trans_date": "2026-10-29",
+      "branch_id": "50",
+      "sj_count": 1
+    },
+    {
+      "accurate_po_id": "93699",
+      "trans_date": "2026-10-29",
+      "branch_id": "50",
+      "sj_count": 1
+    },
+    {
+      "accurate_po_id": "93710",
+      "trans_date": "2026-10-24",
+      "branch_id": "50",
+      "sj_count": 1
+    },
+    {
+      "accurate_po_id": "93711",
+      "trans_date": "2026-10-24",
+      "branch_id": "50",
+      "sj_count": 1
+    },
+    {
+      "accurate_po_id": "93713",
+      "trans_date": "2026-10-26",
+      "branch_id": "150",
+      "sj_count": 1
+    },
+    {
+      "accurate_po_id": "93733",
+      "trans_date": "2026-10-27",
+      "branch_id": "50",
+      "sj_count": 1
+    },
+    {
+      "accurate_po_id": "93746",
+      "trans_date": "2026-10-28",
+      "branch_id": "50",
+      "sj_count": 1
+    },
+    {
+      "accurate_po_id": "93763",
+      "trans_date": "2026-10-26",
+      "branch_id": "50",
+      "sj_count": 1
+    },
+    {
+      "accurate_po_id": "93781",
+      "trans_date": "2026-10-27",
+      "branch_id": "50",
+      "sj_count": 1
+    },
+    {
+      "accurate_po_id": "93786",
+      "trans_date": "2026-10-28",
+      "branch_id": "50",
+      "sj_count": 1
+    },
+    {
+      "accurate_po_id": "93789",
+      "trans_date": "2026-10-28",
+      "branch_id": "50",
+      "sj_count": 1
+    },
+    {
+      "accurate_po_id": "93795",
+      "trans_date": "2026-10-29",
+      "branch_id": "150",
+      "sj_count": 1
+    },
+    {
+      "accurate_po_id": "93796",
+      "trans_date": "2026-10-29",
+      "branch_id": "50",
+      "sj_count": 1
+    },
+    {
+      "accurate_po_id": "93799",
+      "trans_date": "2026-10-29",
+      "branch_id": "150",
+      "sj_count": 1
+    },
+    {
+      "accurate_po_id": "93800",
+      "trans_date": "2026-10-29",
+      "branch_id": "50",
+      "sj_count": 1
+    },
+    {
+      "accurate_po_id": "93802",
+      "trans_date": "2026-10-29",
+      "branch_id": "50",
+      "sj_count": 1
+    },
+    {
+      "accurate_po_id": "93809",
+      "trans_date": "2026-10-29",
+      "branch_id": "50",
+      "sj_count": 1
+    },
+    {
+      "accurate_po_id": "93811",
+      "trans_date": "2026-10-30",
+      "branch_id": "50",
+      "sj_count": 1
+    },
+    {
+      "accurate_po_id": "93817",
+      "trans_date": "2026-10-30",
+      "branch_id": "50",
+      "sj_count": 1
+    },
+    {
+      "accurate_po_id": "93818",
+      "trans_date": "2026-10-30",
+      "branch_id": "50",
+      "sj_count": 1
+    },
+    {
+      "accurate_po_id": "93854",
+      "trans_date": "2026-10-29",
+      "branch_id": "50",
+      "sj_count": 1
+    },
+    {
+      "accurate_po_id": "93856",
+      "trans_date": "2026-10-30",
+      "branch_id": "50",
+      "sj_count": 1
+    },
+    {
+      "accurate_po_id": "93858",
+      "trans_date": "2026-10-30",
+      "branch_id": "50",
+      "sj_count": 1
+    },
+    {
+      "accurate_po_id": "93861",
+      "trans_date": "2026-10-30",
+      "branch_id": "50",
+      "sj_count": 1
+    },
+    {
+      "accurate_po_id": "93862",
+      "trans_date": "2026-10-30",
+      "branch_id": "50",
+      "sj_count": 1
+    },
+    {
+      "accurate_po_id": "93863",
+      "trans_date": "2026-10-30",
+      "branch_id": "50",
+      "sj_count": 1
+    },
+    {
+      "accurate_po_id": "93865",
+      "trans_date": "2026-10-30",
+      "branch_id": "50",
+      "sj_count": 1
+    },
+    {
+      "accurate_po_id": "93867",
+      "trans_date": "2026-10-30",
+      "branch_id": "150",
+      "sj_count": 1
+    },
+    {
+      "accurate_po_id": "93868",
+      "trans_date": "2026-10-30",
+      "branch_id": "150",
+      "sj_count": 1
+    },
+    {
+      "accurate_po_id": "93869",
+      "trans_date": "2026-10-30",
+      "branch_id": "50",
+      "sj_count": 1
+    },
+    {
+      "accurate_po_id": "93870",
+      "trans_date": "2026-10-30",
+      "branch_id": "50",
+      "sj_count": 1
+    },
+    {
+      "accurate_po_id": "93872",
+      "trans_date": "2026-10-30",
+      "branch_id": "50",
+      "sj_count": 1
+    },
+    {
+      "accurate_po_id": "93900",
+      "trans_date": "2026-10-29",
+      "branch_id": "50",
+      "sj_count": 1
+    },
+    {
+      "accurate_po_id": "93903",
+      "trans_date": "2026-10-29",
+      "branch_id": "50",
+      "sj_count": 1
+    },
+    {
+      "accurate_po_id": "93917",
+      "trans_date": "2026-10-30",
+      "branch_id": "50",
+      "sj_count": 1
+    },
+    {
+      "accurate_po_id": "93918",
+      "trans_date": "2026-10-30",
+      "branch_id": "50",
+      "sj_count": 1
+    },
+    {
+      "accurate_po_id": "93919",
+      "trans_date": "2026-10-30",
+      "branch_id": "50",
+      "sj_count": 2
+    },
+    {
+      "accurate_po_id": "93951",
+      "trans_date": "2026-10-31",
+      "branch_id": "50",
+      "sj_count": 1
+    },
+    {
+      "accurate_po_id": "93952",
+      "trans_date": "2026-10-31",
+      "branch_id": "50",
+      "sj_count": 1
+    },
+    {
+      "accurate_po_id": "93955",
+      "trans_date": "2026-10-31",
+      "branch_id": "50",
+      "sj_count": 1
+    },
+    {
+      "accurate_po_id": "93958",
+      "trans_date": "2026-10-31",
+      "branch_id": "50",
+      "sj_count": 1
+    },
+    {
+      "accurate_po_id": "93960",
+      "trans_date": "2026-10-31",
+      "branch_id": "50",
+      "sj_count": 1
+    },
+    {
+      "accurate_po_id": "93961",
+      "trans_date": "2026-10-31",
+      "branch_id": "50",
+      "sj_count": 1
+    },
+    {
+      "accurate_po_id": "93976",
+      "trans_date": "2026-10-31",
+      "branch_id": "50",
+      "sj_count": 1
+    },
+    {
+      "accurate_po_id": "94001",
+      "trans_date": "2026-10-31",
+      "branch_id": "150",
+      "sj_count": 1
+    },
+    {
+      "accurate_po_id": "94006",
+      "trans_date": "2026-10-31",
+      "branch_id": "50",
+      "sj_count": 1
+    },
+    {
+      "accurate_po_id": "94009",
+      "trans_date": "2026-10-31",
+      "branch_id": "50",
+      "sj_count": 1
+    },
+    {
+      "accurate_po_id": "94032",
+      "trans_date": "2026-10-31",
+      "branch_id": "50",
+      "sj_count": 1
+    },
+    {
+      "accurate_po_id": "94050",
+      "trans_date": "2026-10-31",
+      "branch_id": "50",
+      "sj_count": 1
+    },
+    {
+      "accurate_po_id": "94051",
+      "trans_date": "2026-10-31",
+      "branch_id": "50",
+      "sj_count": 1
+    },
+    {
+      "accurate_po_id": "94052",
+      "trans_date": "2026-10-31",
+      "branch_id": "50",
+      "sj_count": 2
+    },
+    {
+      "accurate_po_id": "94054",
+      "trans_date": "2026-10-31",
+      "branch_id": "50",
+      "sj_count": 1
+    },
+    {
+      "accurate_po_id": "94061",
+      "trans_date": "2026-10-31",
+      "branch_id": "50",
+      "sj_count": 3
+    },
+    {
+      "accurate_po_id": "94062",
+      "trans_date": "2026-10-31",
+      "branch_id": "50",
+      "sj_count": 1
+    }
+  ],
+  "manifest_sha256": "52342892ed3c7a49ebacc75f8444162d514e0fe44c852b1dbc5b4e15a7582401"
+}
