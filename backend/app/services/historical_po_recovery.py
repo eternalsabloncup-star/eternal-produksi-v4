@@ -942,6 +942,11 @@ def run_historical_po_recovery(
     lease_fp: str | None = None
     maintenance: dict[str, Any] | None = None
     fence_epoch: int | None = None
+    # APPLY: True hanya setelah finish_run durable terverifikasi.
+    # DRY_RUN: True (tidak ada audit write yang wajib diverifikasi).
+    audit_finalize_verified: bool = mode == "dry_run"
+    audit_finalize_error: str | None = None
+    reconciliation_hold: bool = False
 
     def _record_apply_item_failure(
         *,
@@ -1160,8 +1165,25 @@ def run_historical_po_recovery(
                     stopped=stopped or in_flight is not None,
                     stop_reason=stop_reason,
                 )
-            except Exception:  # noqa: BLE001 — jangan blokir release fence
-                pass
+                audit_finalize_verified = True
+            except Exception as finish_exc:  # noqa: BLE001 — jangan blokir release
+                audit_finalize_verified = False
+                audit_finalize_error = type(finish_exc).__name__
+                wrote_any = (
+                    int(summary_preview.get("writes") or 0) > 0
+                    or int(summary_preview.get("created") or 0) > 0
+                )
+                if wrote_any:
+                    # Partial/full writes tanpa audit completion → reconciliation, no auto-retry.
+                    reconciliation_hold = True
+                    stopped = True
+                    stop_reason = (
+                        stop_reason or "audit_finish_failed_reconciliation_required"
+                    )
+                else:
+                    stopped = True
+                    stop_reason = stop_reason or "audit_finish_failed"
+                # Jangan raise di sini bila in_flight ada — pertahankan exception asli.
         try:
             _release_own_maintenance()
         except Exception:
@@ -1188,10 +1210,22 @@ def run_historical_po_recovery(
             summary["failed"] += 1
         summary["writes"] += int(r.get("writes") or 0)
 
-    return {
-        "ok": not stopped
+    if reconciliation_hold:
+        summary["reconciliation_required"] = max(
+            int(summary.get("reconciliation_required") or 0), 1
+        )
+
+    clean_ok = (
+        not stopped
         and summary["failed"] == 0
-        and summary.get("reconciliation_required", 0) == 0,
+        and summary.get("reconciliation_required", 0) == 0
+        and audit_finalize_verified
+        and not reconciliation_hold
+        and audit_finalize_error is None
+    )
+
+    return {
+        "ok": clean_ok,
         "mode": mode,
         "batch_id": manifest.batch_id,
         "manifest_sha256": manifest.manifest_sha256,
@@ -1202,6 +1236,10 @@ def run_historical_po_recovery(
         "run_id": run_id,
         "lease_fingerprint": lease_fp,
         "fence_epoch": fence_epoch,
+        "audit_finalize_verified": audit_finalize_verified,
+        "audit_finalize_error": audit_finalize_error,
+        "reconciliation_required": reconciliation_hold
+        or int(summary.get("reconciliation_required") or 0) > 0,
         "global_date_floor": configured_date_floor().isoformat(),
         "summary": summary,
         "results": results,

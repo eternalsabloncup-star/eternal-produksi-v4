@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import copy
+from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
@@ -721,3 +722,219 @@ def test_review_fix_no_side_effect_mutations(safety_db: Database) -> None:
     assert safety_db["delivery_events"].count_documents({}) == before["delivery"]
     assert safety_db["stock_movements"].count_documents({}) == before["stock"]
     assert safety_db["receipts"].count_documents({}) == before["receipts"]
+
+
+# --- Final audit completion (finish_run) ---
+
+
+def _manifest_one_entry():
+    """Manifest sealed penuh, loop hanya 1 entry (po_count tetap 80 untuk approval)."""
+    m = _manifest()
+    return replace(m, entries=m.entries[:1])
+
+
+def test_finish_run_failure_after_all_success_not_ok(
+    safety_db: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Semua PO sukses tetapi finish_run gagal → bukan SUCCESS bersih."""
+    full = _manifest()
+    m = _manifest_one_entry()
+    entry = m.entries[0]
+    details = {
+        entry.accurate_po_id: _detail(
+            entry.accurate_po_id,
+            trans_date=entry.trans_date.strftime("%d/%m/%Y"),
+            branch_id=entry.branch_id,
+        )
+    }
+    client = FakeAccurateClient(details)
+
+    def boom_finish(*args, **kwargs):  # type: ignore[no-untyped-def]
+        raise RuntimeError("finish_run_down")
+
+    monkeypatch.setattr(audit, "finish_run", boom_finish)
+    monkeypatch.setattr(
+        "app.services.historical_po_recovery.load_sealed_manifest",
+        lambda path=None: m,
+    )
+    report = run_historical_po_recovery(
+        safety_db,
+        approval=_apply_approval(full),
+        client=client,
+        mongo_guard="test",
+        app_env="test",
+    )
+    assert report["ok"] is False
+    assert report["audit_finalize_verified"] is False
+    assert report["audit_finalize_error"] == "RuntimeError"
+    assert report["reconciliation_required"] is True
+    assert report["stop_reason"] == "audit_finish_failed_reconciliation_required"
+    assert report["summary"]["created"] == 1
+    assert count_by_accurate_id(safety_db, entry.accurate_po_id) == 1
+    assert not is_po_repair_maintenance_active(safety_db)
+    # Durable run tetap "running" — jangan klaim completed.
+    run = safety_db[audit.RUNS].find_one({"run_id": report["run_id"]})
+    assert run is not None
+    assert run.get("status") == "running"
+    assert run.get("completed_at") is None
+
+
+def test_partial_write_finish_run_failure_reconciliation(
+    safety_db: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Partial PO write + finish_run gagal → reconciliation_required / HOLD."""
+    full = _manifest()
+    m = replace(full, entries=full.entries[:2])
+    e0, e1 = m.entries[0], m.entries[1]
+    client = FakeAccurateClient(
+        {
+            e0.accurate_po_id: _detail(
+                e0.accurate_po_id,
+                trans_date=e0.trans_date.strftime("%d/%m/%Y"),
+                branch_id=e0.branch_id,
+            )
+        }
+    )
+
+    def boom_finish(*args, **kwargs):  # type: ignore[no-untyped-def]
+        raise RuntimeError("finish_run_partial")
+
+    monkeypatch.setattr(audit, "finish_run", boom_finish)
+    monkeypatch.setattr(
+        "app.services.historical_po_recovery.load_sealed_manifest",
+        lambda path=None: m,
+    )
+    report = run_historical_po_recovery(
+        safety_db,
+        approval=_apply_approval(full),
+        client=client,
+        mongo_guard="test",
+        app_env="test",
+        stop_on_unsafe_error=True,
+    )
+    assert report["ok"] is False
+    assert report["reconciliation_required"] is True
+    assert report["audit_finalize_verified"] is False
+    assert report["summary"]["created"] == 1
+    assert report["stopped"] is True
+    assert count_by_accurate_id(safety_db, e0.accurate_po_id) == 1
+    assert count_by_accurate_id(safety_db, e1.accurate_po_id) == 0
+    assert not is_po_repair_maintenance_active(safety_db)
+
+
+def test_original_exception_preserved_when_finish_run_fails(
+    safety_db: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Exception asli mid-batch + finish_run gagal → error asli tetap terlacak."""
+    import app.services.historical_po_recovery as hpr
+
+    full = _manifest()
+    m = replace(full, entries=full.entries[:2])
+    details = {
+        e.accurate_po_id: _detail(
+            e.accurate_po_id,
+            trans_date=e.trans_date.strftime("%d/%m/%Y"),
+            branch_id=e.branch_id,
+        )
+        for e in m.entries
+    }
+    client = FakeAccurateClient(details)
+    real_recover = hpr.recover_one_po
+    calls = {"n": 0}
+
+    def flaky_recover(*args, **kwargs):  # type: ignore[no-untyped-def]
+        calls["n"] += 1
+        if calls["n"] == 1:
+            return real_recover(*args, **kwargs)
+        raise RuntimeError("mid_batch_primary_error")
+
+    def boom_finish(*args, **kwargs):  # type: ignore[no-untyped-def]
+        raise RuntimeError("finish_run_secondary")
+
+    monkeypatch.setattr(hpr, "recover_one_po", flaky_recover)
+    monkeypatch.setattr(audit, "finish_run", boom_finish)
+    monkeypatch.setattr(
+        "app.services.historical_po_recovery.load_sealed_manifest",
+        lambda path=None: m,
+    )
+    with pytest.raises(RuntimeError, match="mid_batch_primary_error"):
+        run_historical_po_recovery(
+            safety_db,
+            approval=_apply_approval(full),
+            client=client,
+            mongo_guard="test",
+            app_env="test",
+        )
+    assert not is_po_repair_maintenance_active(safety_db)
+
+
+def test_finish_run_failure_still_releases_lock(
+    safety_db: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    full = _manifest()
+    m = _manifest_one_entry()
+    entry = m.entries[0]
+    client = FakeAccurateClient(
+        {
+            entry.accurate_po_id: _detail(
+                entry.accurate_po_id,
+                trans_date=entry.trans_date.strftime("%d/%m/%Y"),
+                branch_id=entry.branch_id,
+            )
+        }
+    )
+
+    def boom_finish(*args, **kwargs):  # type: ignore[no-untyped-def]
+        raise RuntimeError("finish_down")
+
+    monkeypatch.setattr(audit, "finish_run", boom_finish)
+    monkeypatch.setattr(
+        "app.services.historical_po_recovery.load_sealed_manifest",
+        lambda path=None: m,
+    )
+    run_historical_po_recovery(
+        safety_db,
+        approval=_apply_approval(full),
+        client=client,
+        mongo_guard="test",
+        app_env="test",
+    )
+    assert not is_po_repair_maintenance_active(safety_db)
+    handle = acquire_po_repair_maintenance(
+        safety_db, ttl_seconds=60, actor="probe_after_finish_fail"
+    )
+    release_po_repair_maintenance(
+        safety_db,
+        owner_token=str(handle["owner_token"]),
+        job_tokens=dict(handle["job_tokens"]),
+    )
+
+
+def test_dry_run_still_zero_writes_with_finalize_flags(safety_db: Database) -> None:
+    m = _manifest()
+    details = {
+        e.accurate_po_id: _detail(
+            e.accurate_po_id,
+            trans_date=e.trans_date.strftime("%d/%m/%Y"),
+            branch_id=e.branch_id,
+        )
+        for e in m.entries
+    }
+    report = run_historical_po_recovery(
+        safety_db,
+        approval=RecoveryApproval(
+            mode="dry_run",
+            expect_manifest_sha256=m.manifest_sha256,
+            expect_po_count=m.po_count,
+            expect_batch_id=m.batch_id,
+        ),
+        client=FakeAccurateClient(details),
+        mongo_guard="test",
+        app_env="test",
+    )
+    assert report["mode"] == "dry_run"
+    assert report["ok"] is True
+    assert report["audit_finalize_verified"] is True
+    assert report["summary"]["writes"] == 0
+    assert safety_db[audit.RUNS].count_documents({}) == 0
+    assert safety_db["accurate_sales_orders"].count_documents({}) == 0
