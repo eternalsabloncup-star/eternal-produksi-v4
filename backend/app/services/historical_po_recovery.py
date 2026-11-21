@@ -14,6 +14,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+import sys
 from dataclasses import dataclass
 from datetime import date
 from pathlib import Path
@@ -942,6 +943,49 @@ def run_historical_po_recovery(
     maintenance: dict[str, Any] | None = None
     fence_epoch: int | None = None
 
+    def _record_apply_item_failure(
+        *,
+        accurate_po_id: str,
+        expected_branch_id: str,
+        expected_trans_date: str,
+        error_code: str,
+    ) -> None:
+        """Durable audit gagal tanpa payload mentah. Gagal tulis → raise."""
+        assert run_id is not None
+        audit.mark_item_processing(
+            db,
+            batch_id=manifest.batch_id,
+            run_id=run_id,
+            accurate_po_id=accurate_po_id,
+            expected_branch_id=expected_branch_id,
+            expected_trans_date=expected_trans_date,
+            lease_fp=lease_fp,
+            attempt_number=1,
+            po_present_before=False,
+        )
+        audit.complete_item(
+            db,
+            run_id=run_id,
+            accurate_po_id=accurate_po_id,
+            outcome="failed",
+            writes=0,
+            error_code=error_code,
+            po_present_after=False,
+        )
+
+    def _release_own_maintenance() -> None:
+        """Lepas hanya lease milik eksekusi ini — jangan sentuh lock asing."""
+        nonlocal maintenance
+        handle = maintenance
+        maintenance = None
+        if handle is None:
+            return
+        release_po_repair_maintenance(
+            db,
+            owner_token=str(handle["owner_token"]),
+            job_tokens=dict(handle.get("job_tokens") or {}),
+        )
+
     if mode == "apply":
         try:
             maintenance = acquire_po_repair_maintenance(
@@ -954,21 +998,25 @@ def run_historical_po_recovery(
                 f"exclusive_writer_fence_unavailable: {exc}",
                 code="maintenance_acquire_failed",
             ) from exc
-        lease_fp = audit.lease_fingerprint(str(maintenance["owner_token"]))
-        fence_epoch = int(maintenance.get("fence_epoch") or 0)
-        run_doc = audit.start_run(
-            db,
-            batch_id=manifest.batch_id,
-            manifest_sha256=manifest.manifest_sha256,
-            live_sha=live_sha,
-            mode=mode,
-            po_count=manifest.po_count,
-            lease_fp=lease_fp,
-            fence_epoch=fence_epoch,
-        )
-        run_id = str(run_doc["run_id"])
 
     try:
+        if mode == "apply":
+            assert maintenance is not None
+            lease_fp = audit.lease_fingerprint(str(maintenance["owner_token"]))
+            fence_epoch = int(maintenance.get("fence_epoch") or 0)
+            # start_run / index preflight di dalam try agar finally selalu release.
+            run_doc = audit.start_run(
+                db,
+                batch_id=manifest.batch_id,
+                manifest_sha256=manifest.manifest_sha256,
+                live_sha=live_sha,
+                mode=mode,
+                po_count=manifest.po_count,
+                lease_fp=lease_fp,
+                fence_epoch=fence_epoch,
+            )
+            run_id = str(run_doc["run_id"])
+
         for entry in manifest.entries:
             try:
                 payload = client.fetch_sales_order_detail(entry.accurate_po_id)
@@ -983,26 +1031,21 @@ def run_historical_po_recovery(
                     "stop_batch": True,
                 }
                 if mode == "apply" and run_id:
-                    audit.mark_item_processing(
-                        db,
-                        batch_id=manifest.batch_id,
-                        run_id=run_id,
-                        accurate_po_id=entry.accurate_po_id,
-                        expected_branch_id=entry.branch_id,
-                        expected_trans_date=entry.trans_date.isoformat(),
-                        lease_fp=lease_fp,
-                        attempt_number=1,
-                        po_present_before=False,
-                    )
-                    audit.complete_item(
-                        db,
-                        run_id=run_id,
-                        accurate_po_id=entry.accurate_po_id,
-                        outcome="failed",
-                        writes=0,
-                        error_code="accurate_fetch_failed",
-                        po_present_after=False,
-                    )
+                    try:
+                        _record_apply_item_failure(
+                            accurate_po_id=entry.accurate_po_id,
+                            expected_branch_id=entry.branch_id,
+                            expected_trans_date=entry.trans_date.isoformat(),
+                            error_code="accurate_fetch_failed",
+                        )
+                    except Exception as audit_exc:  # noqa: BLE001
+                        item["reason"] = "audit_write_failed"
+                        item["error_type"] = type(audit_exc).__name__
+                        item["underlying_reason"] = "accurate_fetch_failed"
+                        results.append(item)
+                        stopped = True
+                        stop_reason = "audit_write_failed"
+                        break
                 results.append(item)
                 if stop_on_unsafe_error:
                     stopped = True
@@ -1011,21 +1054,35 @@ def run_historical_po_recovery(
                 continue
 
             if not isinstance(payload, Mapping):
-                results.append(
-                    {
-                        "accurate_po_id": entry.accurate_po_id,
-                        "ok": False,
-                        "outcome": "failed",
-                        "reason": "malformed_payload",
-                        "writes": 0,
-                        "stop_batch": True,
-                    }
-                )
-                if stop_on_unsafe_error:
-                    stopped = True
-                    stop_reason = "malformed_payload"
-                    break
-                continue
+                item = {
+                    "accurate_po_id": entry.accurate_po_id,
+                    "ok": False,
+                    "outcome": "failed",
+                    "reason": "malformed_payload",
+                    "payload_type": type(payload).__name__,
+                    "writes": 0,
+                    "stop_batch": True,
+                }
+                if mode == "apply" and run_id:
+                    try:
+                        _record_apply_item_failure(
+                            accurate_po_id=entry.accurate_po_id,
+                            expected_branch_id=entry.branch_id,
+                            expected_trans_date=entry.trans_date.isoformat(),
+                            error_code="malformed_payload",
+                        )
+                    except Exception as audit_exc:  # noqa: BLE001
+                        item["reason"] = "audit_write_failed"
+                        item["error_type"] = type(audit_exc).__name__
+                        item["underlying_reason"] = "malformed_payload"
+                        results.append(item)
+                        stopped = True
+                        stop_reason = "audit_write_failed"
+                        break
+                results.append(item)
+                stopped = True
+                stop_reason = "malformed_payload"
+                break
 
             item = recover_one_po(
                 db,
@@ -1068,6 +1125,7 @@ def run_historical_po_recovery(
                     stop_reason = str(item.get("reason"))
                     break
     finally:
+        in_flight = sys.exc_info()[1]
         if mode == "apply" and run_id:
             summary_preview: dict[str, Any] = {
                 "eligible": 0,
@@ -1090,23 +1148,26 @@ def run_historical_po_recovery(
             status = "stopped" if stopped else "completed"
             if summary_preview.get("reconciliation_required", 0) > 0:
                 status = "reconciliation_required"
+            if in_flight is not None and not stopped:
+                status = "failed"
+                stop_reason = stop_reason or type(in_flight).__name__
             try:
                 audit.finish_run(
                     db,
                     run_id=run_id,
                     status=status,
                     summary=summary_preview,
-                    stopped=stopped,
+                    stopped=stopped or in_flight is not None,
                     stop_reason=stop_reason,
                 )
             except Exception:  # noqa: BLE001 — jangan blokir release fence
                 pass
-        if maintenance is not None:
-            release_po_repair_maintenance(
-                db,
-                owner_token=str(maintenance["owner_token"]),
-                job_tokens=dict(maintenance.get("job_tokens") or {}),
-            )
+        try:
+            _release_own_maintenance()
+        except Exception:
+            # Jangan tutupi exception asli dari try body.
+            if in_flight is None:
+                raise
 
     summary = {
         "eligible": 0,

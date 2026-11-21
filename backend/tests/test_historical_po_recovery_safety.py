@@ -510,3 +510,214 @@ def test_active_writer_blocks_maintenance_acquire(safety_db: Database) -> None:
             )
     finally:
         exit_po_repair_writer_section(safety_db, fence)
+
+
+# --- PR #43 safety review fixes ---
+
+
+def test_audit_start_failure_releases_maintenance_lock(safety_db: Database) -> None:
+    """A: start_run gagal setelah acquire → lock dilepas; acquire ulang OK."""
+    m = _manifest()
+    client = FakeAccurateClient({})
+    real_start = audit.start_run
+
+    def boom(*args, **kwargs):  # type: ignore[no-untyped-def]
+        raise RuntimeError("audit_start_injected")
+
+    audit.start_run = boom  # type: ignore[assignment]
+    try:
+        with pytest.raises(RuntimeError, match="audit_start_injected"):
+            run_historical_po_recovery(
+                safety_db,
+                approval=_apply_approval(m),
+                client=client,
+                mongo_guard="test",
+                app_env="test",
+            )
+    finally:
+        audit.start_run = real_start  # type: ignore[assignment]
+
+    assert not is_po_repair_maintenance_active(safety_db)
+    assert safety_db["accurate_sales_orders"].count_documents({}) == 0
+    # Lock dapat diperoleh kembali setelah cleanup.
+    handle = acquire_po_repair_maintenance(
+        safety_db, ttl_seconds=60, actor="probe_after_cleanup"
+    )
+    release_po_repair_maintenance(
+        safety_db,
+        owner_token=str(handle["owner_token"]),
+        job_tokens=dict(handle["job_tokens"]),
+    )
+
+
+def test_audit_index_preflight_failure_releases_lock(
+    safety_db: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A: index preflight gagal → release lock milik sendiri."""
+    from app.services.index_preflight import MissingRequiredIndexError
+
+    m = _manifest()
+    client = FakeAccurateClient({})
+
+    def fail_require(db):  # type: ignore[no-untyped-def]
+        raise MissingRequiredIndexError(
+            "indexes missing", missing=["uniq_hist_po_recovery_run_id"], conflict=[]
+        )
+
+    monkeypatch.setattr(
+        audit, "require_historical_recovery_audit_indexes", fail_require
+    )
+    with pytest.raises(MissingRequiredIndexError):
+        run_historical_po_recovery(
+            safety_db,
+            approval=_apply_approval(m),
+            client=client,
+            mongo_guard="test",
+            app_env="test",
+        )
+    assert not is_po_repair_maintenance_active(safety_db)
+    handle = acquire_po_repair_maintenance(
+        safety_db, ttl_seconds=60, actor="probe_after_index_fail"
+    )
+    release_po_repair_maintenance(
+        safety_db,
+        owner_token=str(handle["owner_token"]),
+        job_tokens=dict(handle["job_tokens"]),
+    )
+
+
+def test_cleanup_failure_does_not_mask_start_run_error(
+    safety_db: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A: release gagal tidak menelan exception start_run."""
+    m = _manifest()
+    client = FakeAccurateClient({})
+
+    def boom_start(*args, **kwargs):  # type: ignore[no-untyped-def]
+        raise RuntimeError("start_run_primary")
+
+    def boom_release(*args, **kwargs):  # type: ignore[no-untyped-def]
+        raise RuntimeError("release_secondary")
+
+    monkeypatch.setattr(audit, "start_run", boom_start)
+    # release diimpor lokal di run_historical_po_recovery dari modul ini.
+    monkeypatch.setattr(
+        "app.services.po_repair_maintenance.release_po_repair_maintenance",
+        boom_release,
+    )
+    with pytest.raises(RuntimeError, match="start_run_primary"):
+        run_historical_po_recovery(
+            safety_db,
+            approval=_apply_approval(m),
+            client=client,
+            mongo_guard="test",
+            app_env="test",
+        )
+
+
+def test_malformed_payload_durable_audit_and_stop(safety_db: Database) -> None:
+    """B: APPLY + payload bukan Mapping → audit malformed_payload + STOP."""
+    m = _manifest()
+    entry0 = m.entries[0]
+
+    class BadClient:
+        def fetch_sales_order_detail(self, accurate_id: str | int) -> Any:
+            if str(accurate_id) == entry0.accurate_po_id:
+                return "not-a-mapping"
+            raise LookupError(str(accurate_id))
+
+    report = run_historical_po_recovery(
+        safety_db,
+        approval=_apply_approval(m),
+        client=BadClient(),
+        mongo_guard="test",
+        app_env="test",
+    )
+    assert report["ok"] is False
+    assert report["stopped"] is True
+    assert report["stop_reason"] == "malformed_payload"
+    assert report["summary"]["failed"] == 1
+    assert report["summary"]["writes"] == 0
+    assert count_by_accurate_id(safety_db, entry0.accurate_po_id) == 0
+    assert not is_po_repair_maintenance_active(safety_db)
+
+    run = safety_db[audit.RUNS].find_one({"run_id": report["run_id"]})
+    assert run is not None
+    assert run["status"] == "stopped"
+    assert run["stop_reason"] == "malformed_payload"
+    item = audit.find_item(
+        safety_db, run_id=str(report["run_id"]), accurate_po_id=entry0.accurate_po_id
+    )
+    assert item is not None
+    assert item["outcome"] == "failed"
+    assert item["error_code"] == "malformed_payload"
+    # Tidak ada payload mentah di audit.
+    for coll in (audit.ITEMS, audit.EVENTS, audit.RUNS):
+        for doc in safety_db[coll].find({}):
+            blob = str(doc)
+            assert "not-a-mapping" not in blob
+            assert "payload" not in doc or doc.get("payload") is None
+
+
+def test_malformed_payload_audit_write_failure_not_success(
+    safety_db: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """B/C: audit item gagal saat malformed → jangan klaim completion sukses."""
+    m = _manifest()
+    entry0 = m.entries[0]
+
+    class BadClient:
+        def fetch_sales_order_detail(self, accurate_id: str | int) -> Any:
+            return ["list-not-mapping"]
+
+    def boom_mark(*args, **kwargs):  # type: ignore[no-untyped-def]
+        raise RuntimeError("item_audit_down")
+
+    monkeypatch.setattr(audit, "mark_item_processing", boom_mark)
+    report = run_historical_po_recovery(
+        safety_db,
+        approval=_apply_approval(m),
+        client=BadClient(),
+        mongo_guard="test",
+        app_env="test",
+    )
+    assert report["ok"] is False
+    assert report["stopped"] is True
+    assert report["stop_reason"] == "audit_write_failed"
+    assert report["summary"]["writes"] == 0
+    run = safety_db[audit.RUNS].find_one({"run_id": report["run_id"]})
+    assert run is not None
+    assert run["status"] == "stopped"
+    assert run["status"] != "completed"
+    assert count_by_accurate_id(safety_db, entry0.accurate_po_id) == 0
+
+
+def test_review_fix_no_side_effect_mutations(safety_db: Database) -> None:
+    """C: malformed STOP tidak menyentuh Accepted/Payment/stok/Loading/Delivery."""
+    m = _manifest()
+
+    class BadClient:
+        def fetch_sales_order_detail(self, accurate_id: str | int) -> Any:
+            return 42
+
+    before = {
+        "po": safety_db["accurate_sales_orders"].count_documents({}),
+        "tasks": safety_db["operational_tasks"].count_documents({}),
+        "loading": safety_db["loading_events"].count_documents({}),
+        "delivery": safety_db["delivery_events"].count_documents({}),
+        "stock": safety_db["stock_movements"].count_documents({}),
+        "receipts": safety_db["receipts"].count_documents({}),
+    }
+    run_historical_po_recovery(
+        safety_db,
+        approval=_apply_approval(m),
+        client=BadClient(),
+        mongo_guard="test",
+        app_env="test",
+    )
+    assert safety_db["accurate_sales_orders"].count_documents({}) == before["po"]
+    assert safety_db["operational_tasks"].count_documents({}) == before["tasks"]
+    assert safety_db["loading_events"].count_documents({}) == before["loading"]
+    assert safety_db["delivery_events"].count_documents({}) == before["delivery"]
+    assert safety_db["stock_movements"].count_documents({}) == before["stock"]
+    assert safety_db["receipts"].count_documents({}) == before["receipts"]
