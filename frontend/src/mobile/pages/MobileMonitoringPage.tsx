@@ -27,8 +27,12 @@ export function MobileMonitoringPage() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
+  const canRead = Boolean(ops?.role || ops?.canViewAllTasks);
+  const filterRole = ops?.role ?? null;
+  const viewFilter = ops?.viewRoleFilter ?? null;
+
   useEffect(() => {
-    if (!ops?.role) {
+    if (!canRead) {
       setTasks([]);
       setLoading(false);
       setError(null);
@@ -39,15 +43,21 @@ export function MobileMonitoringPage() {
     setError(null);
     void (async () => {
       try {
+        const roleParam = filterRole
+          ? toOperationalRole(filterRole)
+          : viewFilter
+            ? viewFilter
+            : undefined;
         const res = await fetchTasks({
-          role: toOperationalRole(ops.role!),
+          role: roleParam,
           limit: TASK_LIST_FETCH_LIMIT,
         });
         if (cancelled) return;
         const scoped = filterTasksForActor(res.items, {
           isSuperAdmin: elevated,
           actorEmail: user?.email,
-          operationalRole: ops.role!.id,
+          operationalRole: filterRole?.id ?? viewFilter,
+          viewAllTasks: Boolean(ops?.canViewAllTasks),
         });
         setTasks(scoped);
         setTruncated(res.items.length >= TASK_LIST_FETCH_LIMIT);
@@ -64,22 +74,35 @@ export function MobileMonitoringPage() {
     return () => {
       cancelled = true;
     };
-  }, [ops?.role, elevated, user?.email]);
+  }, [
+    canRead,
+    filterRole,
+    viewFilter,
+    elevated,
+    user?.email,
+    ops?.canViewAllTasks,
+  ]);
 
   const summary = useMemo(() => buildMonitoringSummary(tasks), [tasks]);
 
-  if (!ops?.role) {
+  if (!canRead) {
     return (
       <div className="ep-m-locked" data-testid="mobile-monitoring-locked">
         <h2>Monitoring</h2>
-        <p>Peran operasional belum di-assign — ringkasan tidak tersedia.</p>
+        <p>Role operasional belum ditetapkan. Hubungi administrator.</p>
       </div>
     );
   }
 
+  const title = filterRole
+    ? filterRole.label
+    : viewFilter
+      ? viewFilter
+      : "Semua Role";
+
   return (
     <div className="ep-m-monitoring" data-testid="mobile-monitoring">
-      <h2>Monitoring — {ops.role.label}</h2>
+      <h2>Monitoring — {title}</h2>
       <p className="ep-m-monitoring-hint">
         Ringkasan read-only dari tugas yang sama dengan tab Tugas Saya. Bukan
         jalur konfirmasi.

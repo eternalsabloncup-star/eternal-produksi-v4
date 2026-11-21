@@ -13,6 +13,8 @@ from app.repositories import master_repository as master
 from app.repositories import task_repository as tasks
 
 PASSWORD = "password-kuat-123"
+BRANCH_HQ = "HQ"
+PO_ID = "95106"
 
 
 def _seed_super_admin(db: Database) -> None:
@@ -25,7 +27,13 @@ def _seed_super_admin(db: Database) -> None:
     )
 
 
-def _seed_operational_user(db: Database, email: str, operational_role: str) -> None:
+def _seed_operational_user(
+    db: Database,
+    email: str,
+    operational_role: str,
+    *,
+    branch_ids: list[str] | None = None,
+) -> None:
     db["users"].insert_one(
         {
             "email_normalized": normalize_email(email),
@@ -34,7 +42,22 @@ def _seed_operational_user(db: Database, email: str, operational_role: str) -> N
             "role": "user",
             "operational_role": operational_role,
             "is_active": True,
+            "branch_ids": branch_ids if branch_ids is not None else [BRANCH_HQ],
         }
+    )
+
+
+def _seed_po(db: Database, po_id: str = PO_ID, branch_id: str = BRANCH_HQ) -> None:
+    db["accurate_sales_orders"].update_one(
+        {"accurate_id": po_id},
+        {
+            "$set": {
+                "accurate_id": po_id,
+                "branch_id": branch_id,
+                "number": f"PO/{po_id}",
+            }
+        },
+        upsert=True,
     )
 
 
@@ -46,13 +69,14 @@ def _login(client: TestClient, email: str) -> str:
 
 def _seed_prep_task(db: Database, qty_target: float = 1000) -> str:
     master.seed_master_defaults(db)
+    _seed_po(db)
     task = tasks.upsert_task(
         db,
         task_type="persiapan-cup",
         scope="po_line",
         assigned_role="helper",
         ref=TaskRef(
-            accurate_po_id="95106",
+            accurate_po_id=PO_ID,
             po_no="PO/18/11/2026/000010",
             accurate_line_id="106318",
             item_code="100359",
@@ -100,6 +124,18 @@ def test_master_write_requires_csrf_and_permission(
         "/api/master/task-types/qc-packing/role", json={"role": "screener"}
     )
     assert no_csrf.status_code == 403
+
+    # Grant aksi dulu — assigned_role tidak menyalin role-actions otomatis.
+    grant = app_client.put(
+        "/api/master/role-actions",
+        json={
+            "role": "screener",
+            "task_type": "qc-packing",
+            "actions": ["confirm"],
+        },
+        headers={"X-CSRF-Token": csrf},
+    )
+    assert grant.status_code == 200, grant.text
 
     ok = app_client.put(
         "/api/master/task-types/qc-packing/role",
@@ -226,3 +262,117 @@ def test_missing_task_returns_404(app_client: TestClient, db: Database) -> None:
         headers={"X-CSRF-Token": csrf},
     )
     assert res.status_code == 404
+
+
+def test_task_list_rejects_role_spoof(app_client: TestClient, db: Database) -> None:
+    """Helper tidak boleh memuat tugas Designer lewat query role."""
+    helper_key = _seed_prep_task(db)
+    tasks.upsert_task(
+        db,
+        task_type="design",
+        scope="po",
+        assigned_role="designer",
+        ref=TaskRef(
+            accurate_po_id=PO_ID,
+            po_no="PO/18/11/2026/000010",
+        ),
+        qty_target=1,
+        label="Design",
+    )
+    _seed_super_admin(db)
+    _seed_operational_user(db, "helper@eternal.local", "helper")
+    _seed_operational_user(db, "designer@eternal.local", "designer")
+
+    _login(app_client, "helper@eternal.local")
+    spoof = app_client.get("/api/tasks?role=designer")
+    assert spoof.status_code == 403, spoof.text
+
+    own = app_client.get("/api/tasks?role=helper&done=false")
+    assert own.status_code == 200
+    assert own.json()["total"] == 1
+    assert own.json()["items"][0]["task_key"] == helper_key
+
+    # Tanpa query role: dipaksa ke operational_role akun (bukan semua role).
+    implied = app_client.get("/api/tasks?done=false")
+    assert implied.status_code == 200
+    assert implied.json()["total"] == 1
+    assert all(i["assigned_role"] == "helper" for i in implied.json()["items"])
+
+    _login(app_client, "designer@eternal.local")
+    design = app_client.get("/api/tasks?role=designer")
+    assert design.status_code == 200
+    assert design.json()["total"] >= 1
+    assert all(i["assigned_role"] == "designer" for i in design.json()["items"])
+
+
+def test_six_ops_roles_isolated_on_task_list(
+    app_client: TestClient, db: Database
+) -> None:
+    """Enam role operasional hanya melihat assigned_role miliknya."""
+    master.seed_master_defaults(db)
+    _seed_po(db)
+    _seed_super_admin(db)
+    roles = [
+        "production-head",
+        "designer",
+        "helper",
+        "screener",
+        "operator",
+        "driver",
+    ]
+    for role in roles:
+        _seed_operational_user(db, f"{role}@eternal.local", role)
+        tasks.upsert_task(
+            db,
+            task_type="design" if role == "designer" else "persiapan-cup",
+            scope="po" if role == "designer" else "po_line",
+            assigned_role=role,
+            ref=TaskRef(
+                accurate_po_id=PO_ID,
+                po_no="PO/X",
+                accurate_line_id=None if role == "designer" else f"line-{role}",
+                item_code="100359",
+                process_kind="Cetak",
+            ),
+            qty_target=1,
+            label=role,
+        )
+
+    for role in roles:
+        _login(app_client, f"{role}@eternal.local")
+        cross = [r for r in roles if r != role][0]
+        denied = app_client.get(f"/api/tasks?role={cross}")
+        assert denied.status_code == 403, role
+        own = app_client.get("/api/tasks")
+        assert own.status_code == 200, role
+        assert own.json()["total"] == 1, role
+        assert own.json()["items"][0]["assigned_role"] == role
+
+
+def test_task_list_fail_closed_without_ops_role(
+    app_client: TestClient, db: Database
+) -> None:
+    _seed_prep_task(db)
+    _seed_super_admin(db)
+    db["users"].insert_one(
+        {
+            "email_normalized": normalize_email("norole@eternal.local"),
+            "display_name": "No Role",
+            "password_hash": hash_password(PASSWORD),
+            "role": "user",
+            "operational_role": None,
+            "is_active": True,
+            "branch_ids": [BRANCH_HQ],
+        }
+    )
+    _login(app_client, "norole@eternal.local")
+    empty = app_client.get("/api/tasks")
+    assert empty.status_code == 200
+    assert empty.json()["items"] == []
+    assert empty.json()["total"] == 0
+
+    # Super Admin tanpa operational_role tetap boleh (bypass assignment).
+    _login(app_client, "owner@eternal.local")
+    sa = app_client.get("/api/tasks?role=helper")
+    assert sa.status_code == 200
+    assert sa.json()["total"] >= 1

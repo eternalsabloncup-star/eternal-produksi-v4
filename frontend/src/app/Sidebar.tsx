@@ -12,6 +12,7 @@ import { formatOpenTaskBadge } from "../api/openTaskCounts";
 import { useOpenTeamTaskCounts } from "../hooks/useOpenTeamTaskCounts";
 import type { ShellDataMode } from "../demo/resolveInboxMode";
 import { shellSidefootCopy } from "../demo/resolveInboxMode";
+import { EternalLogo } from "../brand/EternalLogo";
 import { NavIcon } from "./icons";
 import {
   APP_NAV,
@@ -25,11 +26,33 @@ type Props = {
   dataMode: ShellDataMode;
 };
 
+const SIDEBAR_COLLAPSE_KEY = "eternal.sidebar.collapsed";
+
+function readCollapsedPref(): boolean {
+  try {
+    const raw = localStorage.getItem(SIDEBAR_COLLAPSE_KEY);
+    // Default collapsed (rail 64px) — horizontal logo saat expand eksplisit.
+    if (raw == null) return true;
+    return raw === "1" || raw === "true";
+  } catch {
+    return true;
+  }
+}
+
 export function Sidebar({ inboxBadge, dataMode }: Props) {
   const foot = shellSidefootCopy(dataMode);
   const location = useLocation();
   const tasksActive = isTasksSectionPath(location.pathname);
+  const [collapsed, setCollapsed] = useState(readCollapsedPref);
   const [flyoutOpen, setFlyoutOpen] = useState(false);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(SIDEBAR_COLLAPSE_KEY, collapsed ? "1" : "0");
+    } catch {
+      /* ignore quota / private mode */
+    }
+  }, [collapsed]);
   const {
     counts: openTaskCounts,
     status: openTaskStatus,
@@ -211,9 +234,39 @@ export function Sidebar({ inboxBadge, dataMode }: Props) {
       : null;
 
   return (
-    <aside className="ep-sidebar ep-sidebar-rail" id="sidebar">
+    <aside
+      className={`ep-sidebar ep-sidebar-rail${collapsed ? " is-collapsed" : " is-expanded"}`}
+      id="sidebar"
+      data-testid="app-sidebar"
+      data-collapsed={collapsed ? "1" : "0"}
+    >
       <div className="ep-brand" title="Eternal Production V4">
-        <span className="ep-brandmark">E</span>
+        {/* Rail 64px: simbol saja. Expanded: horizontal — lebar dibatasi token. */}
+        {collapsed ? (
+          <EternalLogo
+            variant="mark"
+            className="ep-brand-logo ep-brand-logo-mark"
+            decorative
+          />
+        ) : (
+          <EternalLogo
+            variant="horizontal"
+            className="ep-brand-logo ep-brand-logo-horizontal"
+            decorative
+          />
+        )}
+        <span className="ep-sr-only">Eternal Production V4</span>
+        <button
+          type="button"
+          className="ep-sidebar-collapse"
+          data-testid="sidebar-collapse-btn"
+          aria-label={collapsed ? "Perluas sidebar" : "Ciutkan sidebar"}
+          aria-expanded={!collapsed}
+          aria-controls="sidebar"
+          onClick={() => setCollapsed((v) => !v)}
+        >
+          <span aria-hidden>{collapsed ? "»" : "«"}</span>
+        </button>
       </div>
       <nav className="ep-nav" aria-label="Navigasi utama">
         {APP_NAV.map((item) => {

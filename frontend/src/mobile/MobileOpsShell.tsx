@@ -1,10 +1,12 @@
 import { useEffect, useMemo, useState } from "react";
 import { Link, useLocation } from "react-router-dom";
 import { formatOpenTaskBadge } from "../api/openTaskCounts";
+import type { TeamTaskRoleId } from "../app/nav";
+import { TEAM_TASK_ROLES } from "../app/nav";
 import { useAuth } from "../auth";
 import { ApiSimulationBanner } from "../sim/ApiSimulationBanner";
 import { useOpenTeamTaskCounts } from "../hooks/useOpenTeamTaskCounts";
-import { TEAM_TASK_ROLES, type TeamTaskRoleId } from "../app/nav";
+import { isHoldingRole } from "../roles";
 import { MobileBottomNav } from "./MobileBottomNav";
 import { MobileOpsProvider, useMobileOps } from "./MobileOpsContext";
 import { mobileTabByPath, MOBILE_OPS_TABS } from "./mobileNav";
@@ -35,17 +37,51 @@ function MobileOpsChrome() {
   }, []);
 
   const badge = useMemo(() => {
-    if (!ops?.role) return null;
+    if (!ops) return null;
     if (status !== "ready" && status !== "truncated") return null;
-    const n = counts[ops.role.id] ?? 0;
-    return formatOpenTaskBadge(n, status);
-  }, [ops?.role, counts, status]);
+    if (ops.role) {
+      return formatOpenTaskBadge(counts[ops.role.id] ?? 0, status);
+    }
+    if (ops.canViewAllTasks) {
+      if (ops.viewRoleFilter) {
+        return formatOpenTaskBadge(counts[ops.viewRoleFilter] ?? 0, status);
+      }
+      const total = TEAM_TASK_ROLES.reduce(
+        (sum, r) => sum + (counts[r.id] ?? 0),
+        0,
+      );
+      return formatOpenTaskBadge(total, status);
+    }
+    return null;
+  }, [ops, counts, status]);
+
+  const showViewRoleFilter =
+    Boolean(ops?.canViewAllTasks) && !ops?.role;
 
   return (
     <div className="ep-m-app" data-testid="mobile-ops-shell">
       <header className="ep-m-header">
         <div className="ep-m-header-brand">
-          <strong>Eternal Ops</strong>
+          {/* Mobile: simbol. Tablet+: horizontal — CSS .ep-m-logo-*. */}
+          <span className="ep-m-logo-wrap" aria-label="ETERNAL">
+            <img
+              className="ep-m-logo ep-m-logo-mark"
+              src="/brand/eternal-logo-mark.png"
+              srcSet="/brand/eternal-logo-mark.png 1x, /brand/eternal-logo-mark@2x.png 2x"
+              alt=""
+              draggable={false}
+              decoding="async"
+            />
+            <img
+              className="ep-m-logo ep-m-logo-horizontal"
+              src="/brand/eternal-logo-horizontal.png"
+              srcSet="/brand/eternal-logo-horizontal.png 1x, /brand/eternal-logo-horizontal@2x.png 2x"
+              alt=""
+              draggable={false}
+              decoding="async"
+            />
+          </span>
+          <strong className="ep-m-header-product">Eternal Ops</strong>
           <span className="ep-m-header-tab">{tab.label}</span>
         </div>
         <div className="ep-m-header-meta">
@@ -53,21 +89,32 @@ function MobileOpsChrome() {
             <span className="ep-m-role" data-testid="mobile-ops-role">
               {ops.role.label}
             </span>
+          ) : ops?.canViewAllTasks ? (
+            <span className="ep-m-role" data-testid="mobile-ops-role-viewall">
+              {isHoldingRole(user?.role)
+                ? "Holding · baca tugas"
+                : "Baca tugas (view_all)"}
+            </span>
           ) : (
             <span className="ep-m-role is-locked" data-testid="mobile-ops-role-locked">
-              Role belum di-assign
+              Role operasional belum ditetapkan
             </span>
           )}
-          {ops?.canPickRole ? (
-            <label className="ep-m-rolepick">
-              <span className="sr-only">Pilih peran</span>
+          {showViewRoleFilter ? (
+            <label className="ep-m-rolefilter">
+              <span className="sr-only">Filter role tugas</span>
               <select
-                value={ops.role?.id ?? "production-head"}
-                onChange={(e) =>
-                  ops.setRoleOverride(e.target.value as TeamTaskRoleId)
-                }
-                aria-label="Pilih peran operasional"
+                value={ops?.viewRoleFilter ?? ""}
+                onChange={(e) => {
+                  const v = e.target.value;
+                  ops?.setViewRoleFilter(
+                    v ? (v as TeamTaskRoleId) : null,
+                  );
+                }}
+                aria-label="Filter role tugas"
+                data-testid="mobile-ops-role-filter"
               >
+                <option value="">Semua Role</option>
                 {TEAM_TASK_ROLES.map((r) => (
                   <option key={r.id} value={r.id}>
                     {r.label}

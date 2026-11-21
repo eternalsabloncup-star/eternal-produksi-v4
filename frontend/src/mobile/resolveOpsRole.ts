@@ -1,6 +1,7 @@
 /**
  * Resolve peran operasional mobile dari user Master — fail-closed.
  * Tidak menebak role dari email atau system role admin.
+ * Tidak ada override URL / storage / state — hanya operational_role akun.
  */
 
 import {
@@ -18,22 +19,22 @@ export function isOperationalRoleId(value: string | null | undefined): value is 
 }
 
 export function teamTaskRoleById(id: TeamTaskRoleId): TeamTaskRole {
-  return TEAM_TASK_ROLES.find((r) => r.id === id) ?? TEAM_TASK_ROLES[0];
+  const found = TEAM_TASK_ROLES.find((r) => r.id === id);
+  if (!found) {
+    throw new Error(`Unknown operational role id: ${id}`);
+  }
+  return found;
 }
 
 /**
  * Role aktif untuk tab Tugas Saya.
- * - operational_role Master menang
- * - Super Admin tanpa ops role: boleh memilih (caller menyediakan override)
- * - Selain itu: null → UI terkunci, tanpa dummy task
+ * - `operational_role` akun login menang (source-of-truth authentication)
+ * - Super Admin tanpa ops role: null (tidak impersonate Kepala Produksi)
+ * - Role kosong / tidak valid: null → UI terkunci, tanpa dummy task
  */
 export function resolveOpsRoleFromUser(
   user: Pick<UserPublic, "operational_role" | "role"> | null | undefined,
-  override?: TeamTaskRoleId | null,
 ): TeamTaskRole | null {
-  if (override && isOperationalRoleId(override)) {
-    return teamTaskRoleById(override);
-  }
   const op = (user?.operational_role || "").trim();
   if (isOperationalRoleId(op)) {
     return teamTaskRoleById(op);

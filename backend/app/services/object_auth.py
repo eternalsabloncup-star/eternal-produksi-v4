@@ -187,12 +187,18 @@ DELIVERY_SCOPED_TASKS: Final[frozenset[str]] = frozenset(
 def loading_sj_visible_to_actor(user: dict[str, Any], task: dict[str, Any]) -> bool:
     """Visibility Loading-SJ untuk worklist/badge — selaras filterTasksForActor FE.
 
-    Super Admin / operations.full: semua. Tanpa assignee: terlihat.
-    Dengan assignee: hanya email yang ditugaskan.
+    Super Admin / operations.full / view_all (read): semua.
+    Tanpa assignee: terlihat. Dengan assignee: hanya email yang ditugaskan.
     """
+    from app.auth.permissions import has_view_all_tasks
+
     if str(task.get("task_type") or "") != "loading-sj":
         return True
-    if is_super_admin(user.get("role")) or has_operations_full(user):
+    if (
+        is_super_admin(user.get("role"))
+        or has_operations_full(user)
+        or has_view_all_tasks(user)
+    ):
         return True
     ctx = task.get("context") if isinstance(task.get("context"), dict) else {}
     assigned = str(ctx.get("assigned_user_email") or "").strip().lower()

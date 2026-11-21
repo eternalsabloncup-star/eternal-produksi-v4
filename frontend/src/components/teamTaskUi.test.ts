@@ -210,6 +210,68 @@ describe("filterTasksForActor", () => {
       }).map((t) => t.task_key),
     ).toEqual(["x1"]);
   });
+
+  it("Holding view_all sees Loading SJ of other assignees (read parity)", () => {
+    const rows = [
+      task({
+        task_key: "load-a",
+        task_type: "loading-sj",
+        status: "belum_dikerjakan",
+        assigned_role: "helper",
+        context: { assigned_user_email: "helper-a@eternal.local" },
+      }),
+      task({
+        task_key: "load-b",
+        task_type: "loading-sj",
+        status: "belum_dikerjakan",
+        assigned_role: "helper",
+        context: { assigned_user_email: "helper-b@eternal.local" },
+      }),
+      task({
+        task_key: "cetak-1",
+        task_type: "cetak",
+        status: "belum_dikerjakan",
+        assigned_role: "operator",
+      }),
+    ];
+    const holding = filterTasksForActor(rows, {
+      isSuperAdmin: false,
+      actorEmail: "holding@eternal.local",
+      operationalRole: null,
+      viewAllTasks: true,
+    });
+    expect(holding.map((t) => t.task_key)).toEqual([
+      "load-a",
+      "load-b",
+      "cetak-1",
+    ]);
+  });
+
+  it("Helper without view_all only sees own Loading SJ assignee", () => {
+    const rows = [
+      task({
+        task_key: "load-a",
+        task_type: "loading-sj",
+        status: "belum_dikerjakan",
+        assigned_role: "helper",
+        context: { assigned_user_email: "helper-a@eternal.local" },
+      }),
+      task({
+        task_key: "load-b",
+        task_type: "loading-sj",
+        status: "belum_dikerjakan",
+        assigned_role: "helper",
+        context: { assigned_user_email: "helper-b@eternal.local" },
+      }),
+    ];
+    const filtered = filterTasksForActor(rows, {
+      isSuperAdmin: false,
+      actorEmail: "helper-a@eternal.local",
+      operationalRole: "helper",
+      viewAllTasks: false,
+    });
+    expect(filtered.map((t) => t.task_key)).toEqual(["load-a"]);
+  });
 });
 
 describe("sample ulang labels", () => {

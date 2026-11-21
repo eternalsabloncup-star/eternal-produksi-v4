@@ -3,7 +3,8 @@
  * Transform scale + sizer — bukan browser page zoom.
  */
 
-export const TABLE_ZOOM_MIN = 0.7;
+/** Minimum scale PWA — ~50% agar lebih banyak baris/kolom terlihat. */
+export const TABLE_ZOOM_MIN = 0.5;
 export const TABLE_ZOOM_MAX = 1.85;
 export const TABLE_ZOOM_DEFAULT = 1;
 export const TABLE_ZOOM_STEP = 0.08;

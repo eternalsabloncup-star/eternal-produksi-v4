@@ -104,14 +104,9 @@ def verify_csrf(session: dict[str, Any], csrf_token: str | None) -> bool:
 
 
 def public_user(user: dict[str, Any]) -> dict[str, Any]:
-    from app.auth.permissions import ALL_PERMISSIONS
-    from app.auth.roles import is_super_admin
+    from app.auth.permissions import effective_permissions_list
 
     role = user.get("role", "user")
-    if is_super_admin(role):
-        perms: list[str] = sorted(ALL_PERMISSIONS)
-    else:
-        perms = list(user.get("effective_module_permissions") or [])
     return {
         "id": str(user["_id"]),
         "email": user.get("email_normalized", ""),
@@ -119,7 +114,7 @@ def public_user(user: dict[str, Any]) -> dict[str, Any]:
         "role": role,
         "operational_role": user.get("operational_role"),
         "branch_ids": list(user.get("branch_ids") or []),
-        "permissions": perms,
+        "permissions": effective_permissions_list(user),
     }
 
 

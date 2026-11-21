@@ -215,6 +215,50 @@ def put_product_screen_size(
     }
 
 
+def _can_read_all_ops_roles(user: dict[str, Any]) -> bool:
+    """SA / operations.full / operations.tasks.view_all — read lintas role."""
+    from app.auth.permissions import has_view_all_tasks
+    from app.services.object_auth import bypasses_assignment
+
+    return bypasses_assignment(user) or has_view_all_tasks(user)
+
+
+def _authorized_list_role(auth: AuthContext, role: str | None) -> str | None:
+    """Role filter untuk GET /tasks — anti spoof query ``role``.
+
+    - Elevated (SA / operations.full) atau view_all: boleh filter role manapun / semua.
+    - Selain itu: hanya ``operational_role`` akun; request role lain → 403.
+    - Akun tanpa ops role dan tanpa view_all: fail-closed (None → daftar kosong).
+    """
+    from app.domain.operational import normalize_operational_role
+
+    requested = normalize_operational_role(role) if role else None
+    if role and requested is None:
+        raise HTTPException(
+            status.HTTP_422_UNPROCESSABLE_ENTITY,
+            "Role operasional tidak dikenal.",
+        )
+
+    if _can_read_all_ops_roles(auth.user):
+        return requested
+
+    actor_role = task_engine.actor_operational_role(auth.user)
+    if actor_role is None:
+        # Spoof query role tanpa ops role / view_all → 403 (bukan daftar kosong).
+        if requested is not None:
+            raise HTTPException(
+                status.HTTP_403_FORBIDDEN,
+                "Role operasional tidak diizinkan untuk akun ini.",
+            )
+        return None
+    if requested is not None and requested != actor_role:
+        raise HTTPException(
+            status.HTTP_403_FORBIDDEN,
+            "Role operasional tidak diizinkan untuk akun ini.",
+        )
+    return actor_role
+
+
 @router.get("/tasks")
 def list_operational_tasks(
     role: str | None = Query(default=None),
@@ -227,11 +271,16 @@ def list_operational_tasks(
     from app.services.object_auth import filter_tasks_for_actor
 
     db = get_db()
+    assigned_role = _authorized_list_role(auth, role)
+    # Tanpa ops role dan tanpa view_all/elevated: jangan bocor tugas.
+    if assigned_role is None and not _can_read_all_ops_roles(auth.user):
+        return {"items": [], "total": 0, "source": "mongodb"}
+
     # Ambil lebih longgar lalu saring object-scope agar limit tetap bermakna.
     fetch_limit = min(max(limit * 3, limit), 1000)
     items = tasks.list_tasks(
         db,
-        assigned_role=role,
+        assigned_role=assigned_role,
         task_type=task_type,
         done=done,
         accurate_po_id=accurate_po_id,
@@ -249,9 +298,18 @@ def get_open_task_counts(
     auth: AuthContext = Depends(require_session),
 ) -> dict[str, Any]:
     """Badge Tugas Tim — total actionable per role (tanpa cap list 1000)."""
-    from app.services.task_open_counts import count_actionable_open_by_role
+    from app.services.task_open_counts import (
+        count_actionable_open_by_role,
+        empty_role_counts,
+    )
 
     counts = count_actionable_open_by_role(get_db(), auth.user)
+    if not _can_read_all_ops_roles(auth.user):
+        actor_role = task_engine.actor_operational_role(auth.user)
+        scoped = empty_role_counts()
+        if actor_role is not None:
+            scoped[actor_role] = counts.get(actor_role, 0)
+        counts = scoped
     return {
         "counts": counts,
         "source": "mongodb",
@@ -271,6 +329,14 @@ def get_task_confirmations(
     task = tasks.get_task(db, task_key)
     if task is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Tugas tidak ditemukan")
+    if not _can_read_all_ops_roles(auth.user):
+        actor_role = task_engine.actor_operational_role(auth.user)
+        assigned = str(task.get("assigned_role") or "")
+        if actor_role is None or assigned != actor_role:
+            raise HTTPException(
+                status.HTTP_403_FORBIDDEN,
+                "Role operasional tidak diizinkan untuk akun ini.",
+            )
     try:
         require_task_branch_access(db, auth.user, task)
     except ObjectAuthError as exc:
