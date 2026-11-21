@@ -1041,6 +1041,10 @@
   border-left: 0;
 }
 
+.ep-sj-mobile-row.is-muted {
+  opacity: 0.78;
+}
+
 .ep-sj-item-list {
   list-style: none;
   margin: 0;

@@ -63,4 +63,19 @@ describe("DeliverySjDetailModal UI contract (Owner revision)", () => {
     expect(source).toContain("Qty Tersedia:");
     expect(source).toContain("ep-sj-desk-only");
   });
+
+  it("provides mobile compact lists for loading and delivery history", () => {
+    expect(source).toContain('data-testid="sj-loading-list-mobile"');
+    expect(source).toContain('data-testid="sj-delivery-list-mobile"');
+    expect(source).toContain("Detail Pembatalan");
+    expect(source).toContain("Alasan Gagal");
+    expect(source).toContain("Loading {event.sequence}");
+    expect(source).toContain("Percobaan {event.attempt}");
+    expect(source).toMatch(
+      /Riwayat Loading[\s\S]*ep-sj-desk-only[\s\S]*sj-loading-list-mobile/,
+    );
+    expect(source).toMatch(
+      /Riwayat Pengiriman[\s\S]*ep-sj-desk-only[\s\S]*sj-delivery-list-mobile/,
+    );
+  });
 });

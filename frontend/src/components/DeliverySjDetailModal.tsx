@@ -73,6 +73,12 @@ export function DeliverySjDetailModal({
   const [openValidationReasons, setOpenValidationReasons] = useState<
     Record<string, boolean>
   >({});
+  const [openLoadingExtras, setOpenLoadingExtras] = useState<
+    Record<string, boolean>
+  >({});
+  const [openDeliveryExtras, setOpenDeliveryExtras] = useState<
+    Record<string, boolean>
+  >({});
 
   const revisionRows = revisions.flatMap((rev) =>
     rev.changed_items.map((change) => ({
@@ -238,7 +244,7 @@ export function DeliverySjDetailModal({
           {loadings.length > 0 ? (
             <>
               <div className="ep-sectionlabel">Riwayat Loading</div>
-              <div className="ep-sj-tbl-scroll">
+              <div className="ep-sj-tbl-scroll ep-sj-desk-only">
                 <table className="ep-tbl ep-tbl-sheet ep-tbl-detail">
                   <thead>
                     <tr>
@@ -269,13 +275,77 @@ export function DeliverySjDetailModal({
                   </tbody>
                 </table>
               </div>
+              <ul
+                className="ep-sj-mobile-list ep-sj-loading-list"
+                data-testid="sj-loading-list-mobile"
+              >
+                {loadings.map((event) => {
+                  const cancelBy = (event.cancelled_by || "").trim();
+                  const cancelReason = (event.cancel_reason || "").trim();
+                  const hasExtra = Boolean(cancelBy || cancelReason);
+                  const open = Boolean(openLoadingExtras[event.loading_id]);
+                  return (
+                    <li
+                      key={event.loading_id}
+                      className={`ep-sj-mobile-row${
+                        event.status === "dibatalkan" ? " is-muted" : ""
+                      }`}
+                    >
+                      <div className="ep-sj-mobile-row-main">
+                        <div className="ep-sj-mobile-row-copy">
+                          <div className="ep-sj-mobile-row-title">
+                            Loading {event.sequence} · Versi SJ {event.sj_version}
+                          </div>
+                          <div className="ep-sj-mobile-row-meta ep-sj-mobile-row-wrap">
+                            Status: {loadingEventStatusLabel(event.status)}
+                          </div>
+                          <div className="ep-sj-mobile-row-meta ep-sj-mobile-row-wrap">
+                            Petugas: {display(event.actor_email)}
+                          </div>
+                        </div>
+                      </div>
+                      {hasExtra ? (
+                        <>
+                          <button
+                            type="button"
+                            className="ep-sj-item-detail-toggle"
+                            aria-expanded={open}
+                            onClick={() =>
+                              setOpenLoadingExtras((prev) => ({
+                                ...prev,
+                                [event.loading_id]: !prev[event.loading_id],
+                              }))
+                            }
+                          >
+                            {open ? "Sembunyikan Detail" : "Detail Pembatalan"}
+                          </button>
+                          {open ? (
+                            <div className="ep-sj-item-extra">
+                              <div className="ep-sj-item-extra-row">
+                                <span className="lbl">Dibatalkan oleh</span>
+                                <strong>{display(event.cancelled_by)}</strong>
+                              </div>
+                              <div className="ep-sj-item-extra-row">
+                                <span className="lbl">Alasan</span>
+                                <strong className="ep-sj-mobile-row-wrap">
+                                  {display(event.cancel_reason)}
+                                </strong>
+                              </div>
+                            </div>
+                          ) : null}
+                        </>
+                      ) : null}
+                    </li>
+                  );
+                })}
+              </ul>
             </>
           ) : null}
 
           {events.length > 0 ? (
             <>
               <div className="ep-sectionlabel">Riwayat Pengiriman &amp; Bukti</div>
-              <div className="ep-sj-tbl-scroll">
+              <div className="ep-sj-tbl-scroll ep-sj-desk-only">
                 <table className="ep-tbl ep-tbl-sheet ep-tbl-detail">
                   <thead>
                     <tr>
@@ -301,6 +371,64 @@ export function DeliverySjDetailModal({
                   </tbody>
                 </table>
               </div>
+              <ul
+                className="ep-sj-mobile-list ep-sj-delivery-list"
+                data-testid="sj-delivery-list-mobile"
+              >
+                {events.map((event) => {
+                  const fail = (event.failure_reason || "").trim();
+                  const open = Boolean(openDeliveryExtras[String(event.attempt)]);
+                  return (
+                    <li key={event.attempt} className="ep-sj-mobile-row">
+                      <div className="ep-sj-mobile-row-main">
+                        <div className="ep-sj-mobile-row-copy">
+                          <div className="ep-sj-mobile-row-title">
+                            Percobaan {event.attempt} ·{" "}
+                            {deliveryStatusLabel(event.status)}
+                          </div>
+                          <div className="ep-sj-mobile-row-meta ep-sj-mobile-row-wrap">
+                            Driver: {display(event.courier_email)}
+                          </div>
+                          <div className="ep-sj-mobile-row-meta ep-sj-mobile-row-wrap">
+                            Penerima: {display(event.recipient_name)}
+                          </div>
+                          <div className="ep-sj-mobile-row-meta">
+                            Foto: {event.photo_evidence_ids.length}
+                          </div>
+                        </div>
+                      </div>
+                      {fail ? (
+                        <>
+                          <button
+                            type="button"
+                            className="ep-sj-item-detail-toggle"
+                            aria-expanded={open}
+                            onClick={() =>
+                              setOpenDeliveryExtras((prev) => ({
+                                ...prev,
+                                [String(event.attempt)]:
+                                  !prev[String(event.attempt)],
+                              }))
+                            }
+                          >
+                            {open ? "Sembunyikan Alasan" : "Alasan Gagal"}
+                          </button>
+                          {open ? (
+                            <div className="ep-sj-item-extra">
+                              <div className="ep-sj-item-extra-row">
+                                <span className="lbl">Alasan Gagal</span>
+                                <strong className="ep-sj-mobile-row-wrap">
+                                  {fail}
+                                </strong>
+                              </div>
+                            </div>
+                          ) : null}
+                        </>
+                      ) : null}
+                    </li>
+                  );
+                })}
+              </ul>
               <p className="ep-po-confirm-hint">
                 Bukti aktif: {photos.length} foto · {signatures.length} tanda tangan
               </p>
