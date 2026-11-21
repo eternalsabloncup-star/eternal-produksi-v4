@@ -102,10 +102,8 @@ export function MobileMonitoringPage() {
 
   return (
     <div className="ep-m-monitoring" data-testid="mobile-monitoring">
-      <h2>Monitoring — {title}</h2>
       <p className="ep-m-monitoring-hint">
-        Ringkasan read-only dari tugas yang sama dengan tab Tugas Saya. Bukan
-        jalur konfirmasi.
+        Ringkasan read-only · {title}. Bukan jalur konfirmasi.
       </p>
       {loading ? <p className="muted">Memuat…</p> : null}
       {error ? (

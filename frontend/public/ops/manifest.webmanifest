@@ -1,7 +1,7 @@
 {
-  "name": "Eternal Ops Mobile",
-  "short_name": "Eternal Ops",
-  "description": "PWA Operasional Mobile Eternal Production V4",
+  "name": "Eternal Packaging Mobile",
+  "short_name": "Eternal Packaging",
+  "description": "PWA Operasional Mobile Eternal Packaging V4",
   "start_url": "/app/m/tasks",
   "scope": "/app/m/",
   "display": "standalone",

@@ -1,4 +1,4 @@
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
 import type {
   DeliveryDetail,
   DeliveryScheduleRow,
@@ -7,7 +7,6 @@ import type {
 import {
   deliveryStatusLabel,
   display,
-  displayBoolean,
   formatQtyByUnit,
   loadingEventStatusLabel,
   loadingStatusLabel,
@@ -15,8 +14,11 @@ import {
   qtyText,
   revisionStatusLabel,
 } from "../lib/deliverySj";
-import { formatDateDisplay, formatDateTimeDisplay } from "../lib/formatDate";
 import { SjApiLineItems } from "./SjApiLineItems";
+
+function qtyOrDash(value: number | null | undefined): string {
+  return value == null ? "—" : qtyText(value);
+}
 
 type Props = {
   row: DeliveryScheduleRow;
@@ -35,7 +37,7 @@ type Props = {
   onClose: () => void;
 };
 
-/** Popup Detail Surat Jalan — header, rincian barang, dan status operasional. */
+/** Popup Detail Surat Jalan — rincian barang dan status operasional. */
 export function DeliverySjDetailModal({
   row,
   detail,
@@ -61,31 +63,6 @@ export function DeliverySjDetailModal({
 
   const note = detail?.delivery_note ?? row;
   const items = note.items || [];
-  const header: [string, string][] = [
-    ["Nomor SJ", display(note.sj_no)],
-    ["No. PO (Sales Order Accurate)", display(note.po_no)],
-    ["No. PO Pelanggan", display(note.customer_po_no)],
-    ["Outlet / Pelanggan", display(note.customer_name)],
-    ["ID Pelanggan", display(note.customer_no)],
-    ["Alamat Lengkap", display(note.destination)],
-    ["Kontak", display(note.contact_info)],
-    ["Telepon Kontak", display(note.contact_phone)],
-    ["Penjual", display(note.salesman_name)],
-    ["Pembuat Data", display(note.created_by_user_name)],
-    ["Ekspedisi", display(note.shipment)],
-    ["Zona Pengiriman", display(note.ship_zone)],
-    ["Cabang", display(note.branch_name)],
-    ["Tanggal SJ", formatDateDisplay(note.sj_date || note.ship_date)],
-    ["Tanggal Kirim", formatDateDisplay(note.ship_date)],
-    ["Dicetak/Email oleh", display(note.printed_by_user)],
-    ["Waktu Cetak/Email", formatDateTimeDisplay(note.printed_time)],
-    ["No. Pengepakan", display(note.packing_number)],
-    ["Status Accurate", display(note.accurate_status_name)],
-    ["Memiliki Dokumen", displayBoolean(note.attachment_exist)],
-    ["Keterangan", display(note.description)],
-  ];
-
-  const absentFields = note.source_meta?.absent_fields || [];
   const revisions = detail?.revisions || [];
   const loadings = detail?.loadings || [];
   const events = detail?.events || [];
@@ -93,6 +70,20 @@ export function DeliverySjDetailModal({
   const signatures = detail?.evidence?.signatures || [];
   const lastEvent = events.length > 0 ? events[events.length - 1] : null;
   const cancelledLoadings = loadings.filter((l) => l.status === "dibatalkan");
+  const [openValidationReasons, setOpenValidationReasons] = useState<
+    Record<string, boolean>
+  >({});
+
+  const revisionRows = revisions.flatMap((rev) =>
+    rev.changed_items.map((change) => ({
+      key: `${rev.version}-${change.sj_line_id}`,
+      version: rev.version,
+      accurate_line_id: change.accurate_line_id,
+      qty_before: change.qty_before,
+      qty_after: change.qty_after,
+      change: change.change,
+    })),
+  );
 
   return (
     <div
@@ -140,36 +131,22 @@ export function DeliverySjDetailModal({
             </p>
           ) : null}
 
-          <div className="ep-sectionlabel">Header Surat Jalan</div>
-          <div className="ep-po-info-grid" data-testid="sj-detail-header">
-            {header.map(([label, value]) => (
-              <div key={label} className="ep-po-info-cell">
-                <div className="lbl">{label}</div>
-                <strong>{value}</strong>
-              </div>
-            ))}
-          </div>
-          {absentFields.length > 0 ? (
-            <p className="ep-note" data-testid="sj-absent-fields">
-              Tidak dikirim Accurate pada SJ ini: {absentFields.join(", ")}.
-              Nilainya ditampilkan kosong, bukan diisi asumsi.
-            </p>
-          ) : null}
-          {note.source_meta?.char_field3_zone_unproven ? (
-            <p className="ep-note">
-              Zona Pengiriman berasal dari <code>charField3</code> Accurate;
-              semantik nilainya belum diverifikasi Owner.
-            </p>
-          ) : null}
-
-          <div className="ep-sectionlabel">
-            Rincian Barang · {items.length} baris · Total{" "}
-            {formatQtyByUnit(qtyByUnit(items))}
+          <div className="ep-sectionlabel ep-sj-items-section-label">
+            <span className="ep-sj-items-section-desktop">
+              Rincian Barang · {items.length} baris · Total{" "}
+              {formatQtyByUnit(qtyByUnit(items))}
+            </span>
+            <span className="ep-sj-items-section-mobile">
+              Rincian Barang — {items.length} Baris
+            </span>
           </div>
           <SjApiLineItems items={items} />
 
           <div className="ep-sectionlabel">Operasional</div>
-          <div className="ep-po-info-grid" data-testid="sj-detail-operational">
+          <div
+            className="ep-po-info-grid ep-sj-ops"
+            data-testid="sj-detail-operational"
+          >
             <div className="ep-po-info-cell">
               <div className="lbl">Status Loading</div>
               <strong>{loadingStatusLabel(row)}</strong>
@@ -207,95 +184,123 @@ export function DeliverySjDetailModal({
           {revisions.length > 0 ? (
             <>
               <div className="ep-sectionlabel">Riwayat Revisi SJ</div>
-              <table className="ep-tbl ep-tbl-sheet ep-tbl-detail">
-                <thead>
-                  <tr>
-                    <th>Versi</th>
-                    <th>Item Line</th>
-                    <th>Qty Sebelum</th>
-                    <th>Qty Sesudah</th>
-                    <th>Perubahan</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {revisions.flatMap((rev) =>
-                    rev.changed_items.map((change) => (
-                      <tr key={`${rev.version}-${change.sj_line_id}`}>
-                        <td>{rev.version}</td>
-                        <td>{display(change.accurate_line_id)}</td>
-                        <td>{change.qty_before ?? "—"}</td>
-                        <td>{change.qty_after ?? "—"}</td>
-                        <td>{change.change}</td>
+              <div className="ep-sj-tbl-scroll ep-sj-desk-only">
+                <table className="ep-tbl ep-tbl-sheet ep-tbl-detail">
+                  <thead>
+                    <tr>
+                      <th>Versi</th>
+                      <th>Item Line</th>
+                      <th>Qty Sebelum</th>
+                      <th>Qty Sesudah</th>
+                      <th>Perubahan</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {revisionRows.map((row) => (
+                      <tr key={row.key}>
+                        <td>{row.version}</td>
+                        <td>{display(row.accurate_line_id)}</td>
+                        <td>{qtyOrDash(row.qty_before)}</td>
+                        <td>{qtyOrDash(row.qty_after)}</td>
+                        <td>{row.change}</td>
                       </tr>
-                    )),
-                  )}
-                </tbody>
-              </table>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+              <ul
+                className="ep-sj-mobile-list ep-sj-rev-list"
+                data-testid="sj-revision-list-mobile"
+              >
+                {revisionRows.map((row) => (
+                  <li key={row.key} className="ep-sj-mobile-row">
+                    <div className="ep-sj-mobile-row-main">
+                      <div className="ep-sj-mobile-row-copy">
+                        <div className="ep-sj-mobile-row-title">
+                          Line {display(row.accurate_line_id)} · Versi{" "}
+                          {row.version}
+                        </div>
+                        <div className="ep-sj-mobile-row-meta">
+                          Qty: {qtyOrDash(row.qty_before)} →{" "}
+                          {qtyOrDash(row.qty_after)}
+                        </div>
+                        <div className="ep-sj-mobile-row-meta ep-sj-mobile-row-wrap">
+                          Perubahan: {row.change}
+                        </div>
+                      </div>
+                    </div>
+                  </li>
+                ))}
+              </ul>
             </>
           ) : null}
 
           {loadings.length > 0 ? (
             <>
               <div className="ep-sectionlabel">Riwayat Loading</div>
-              <table className="ep-tbl ep-tbl-sheet ep-tbl-detail">
-                <thead>
-                  <tr>
-                    <th>Loading</th>
-                    <th>Versi SJ</th>
-                    <th>Status</th>
-                    <th>Petugas</th>
-                    <th>Dibatalkan oleh</th>
-                    <th>Alasan</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {loadings.map((event) => (
-                    <tr
-                      key={event.loading_id}
-                      className={
-                        event.status === "dibatalkan" ? "ep-row-muted" : undefined
-                      }
-                    >
-                      <td>{event.sequence}</td>
-                      <td>{event.sj_version}</td>
-                      <td>{loadingEventStatusLabel(event.status)}</td>
-                      <td>{display(event.actor_email)}</td>
-                      <td>{display(event.cancelled_by)}</td>
-                      <td>{display(event.cancel_reason)}</td>
+              <div className="ep-sj-tbl-scroll">
+                <table className="ep-tbl ep-tbl-sheet ep-tbl-detail">
+                  <thead>
+                    <tr>
+                      <th>Loading</th>
+                      <th>Versi SJ</th>
+                      <th>Status</th>
+                      <th>Petugas</th>
+                      <th>Dibatalkan oleh</th>
+                      <th>Alasan</th>
                     </tr>
-                  ))}
-                </tbody>
-              </table>
+                  </thead>
+                  <tbody>
+                    {loadings.map((event) => (
+                      <tr
+                        key={event.loading_id}
+                        className={
+                          event.status === "dibatalkan" ? "ep-row-muted" : undefined
+                        }
+                      >
+                        <td>{event.sequence}</td>
+                        <td>{event.sj_version}</td>
+                        <td>{loadingEventStatusLabel(event.status)}</td>
+                        <td>{display(event.actor_email)}</td>
+                        <td>{display(event.cancelled_by)}</td>
+                        <td>{display(event.cancel_reason)}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
             </>
           ) : null}
 
           {events.length > 0 ? (
             <>
               <div className="ep-sectionlabel">Riwayat Pengiriman &amp; Bukti</div>
-              <table className="ep-tbl ep-tbl-sheet ep-tbl-detail">
-                <thead>
-                  <tr>
-                    <th>Percobaan</th>
-                    <th>Status</th>
-                    <th>Driver</th>
-                    <th>Penerima</th>
-                    <th>Foto</th>
-                    <th>Alasan Gagal</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {events.map((event) => (
-                    <tr key={event.attempt}>
-                      <td>{event.attempt}</td>
-                      <td>{deliveryStatusLabel(event.status)}</td>
-                      <td>{display(event.courier_email)}</td>
-                      <td>{display(event.recipient_name)}</td>
-                      <td>{event.photo_evidence_ids.length}</td>
-                      <td>{display(event.failure_reason)}</td>
+              <div className="ep-sj-tbl-scroll">
+                <table className="ep-tbl ep-tbl-sheet ep-tbl-detail">
+                  <thead>
+                    <tr>
+                      <th>Percobaan</th>
+                      <th>Status</th>
+                      <th>Driver</th>
+                      <th>Penerima</th>
+                      <th>Foto</th>
+                      <th>Alasan Gagal</th>
                     </tr>
-                  ))}
-                </tbody>
-              </table>
+                  </thead>
+                  <tbody>
+                    {events.map((event) => (
+                      <tr key={event.attempt}>
+                        <td>{event.attempt}</td>
+                        <td>{deliveryStatusLabel(event.status)}</td>
+                        <td>{display(event.courier_email)}</td>
+                        <td>{display(event.recipient_name)}</td>
+                        <td>{event.photo_evidence_ids.length}</td>
+                        <td>{display(event.failure_reason)}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
               <p className="ep-po-confirm-hint">
                 Bukti aktif: {photos.length} foto · {signatures.length} tanda tangan
               </p>
@@ -337,33 +342,103 @@ export function DeliverySjDetailModal({
           {validation === null ? (
             <p className="ep-empty">Memuat validasi…</p>
           ) : (
-            <table className="ep-tbl ep-tbl-sheet ep-tbl-detail">
-              <thead>
-                <tr>
-                  <th>Item Line</th>
-                  <th>Proses</th>
-                  <th>Qty SJ</th>
-                  <th>Qty Tersedia</th>
-                  <th>Cocok</th>
-                  <th>Keterangan</th>
-                </tr>
-              </thead>
-              <tbody>
-                {validation.items.map((item) => (
-                  <tr
-                    key={item.sj_line_id}
-                    className={item.matched ? undefined : "ep-row-danger"}
-                  >
-                    <td>{item.accurate_line_id}</td>
-                    <td>{display(item.process_kind)}</td>
-                    <td>{qtyText(item.qty)}</td>
-                    <td>{qtyText(item.qty_available)}</td>
-                    <td>{item.matched ? "Ya" : "Tidak"}</td>
-                    <td>{display(item.reason)}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
+            <>
+              <div className="ep-sj-tbl-scroll ep-sj-desk-only">
+                <table className="ep-tbl ep-tbl-sheet ep-tbl-detail">
+                  <thead>
+                    <tr>
+                      <th>Item Line</th>
+                      <th>Proses</th>
+                      <th>Qty SJ</th>
+                      <th>Qty Tersedia</th>
+                      <th>Cocok</th>
+                      <th>Keterangan</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {validation.items.map((item) => (
+                      <tr
+                        key={item.sj_line_id}
+                        className={item.matched ? undefined : "ep-row-danger"}
+                      >
+                        <td>{item.accurate_line_id}</td>
+                        <td>{display(item.process_kind)}</td>
+                        <td>{qtyText(item.qty)}</td>
+                        <td>{qtyText(item.qty_available)}</td>
+                        <td>{item.matched ? "Ya" : "Tidak"}</td>
+                        <td>{display(item.reason)}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+              <ul
+                className="ep-sj-mobile-list ep-sj-val-list"
+                data-testid="sj-validation-list-mobile"
+              >
+                {validation.items.map((item) => {
+                  const reason = (item.reason || "").trim();
+                  const open = Boolean(openValidationReasons[item.sj_line_id]);
+                  return (
+                    <li
+                      key={item.sj_line_id}
+                      className={`ep-sj-mobile-row${
+                        item.matched ? " is-ok" : " is-bad"
+                      }`}
+                    >
+                      <div className="ep-sj-mobile-row-main">
+                        <div className="ep-sj-mobile-row-copy">
+                          <div className="ep-sj-mobile-row-title">
+                            Line {display(item.accurate_line_id)}{" "}
+                            <span
+                              className={`ep-sj-val-status${
+                                item.matched ? " is-ok" : " is-bad"
+                              }`}
+                            >
+                              {item.matched ? "Cocok" : "Tidak Cocok"}
+                            </span>
+                          </div>
+                          <div className="ep-sj-mobile-row-meta">
+                            {display(item.process_kind)}
+                          </div>
+                          <div className="ep-sj-mobile-row-meta">
+                            Qty SJ: {qtyText(item.qty)}
+                            {item.unit ? ` ${item.unit}` : ""} · Qty Tersedia:{" "}
+                            {qtyText(item.qty_available)}
+                            {item.unit ? ` ${item.unit}` : ""}
+                          </div>
+                        </div>
+                      </div>
+                      {reason ? (
+                        <>
+                          <button
+                            type="button"
+                            className="ep-sj-item-detail-toggle"
+                            aria-expanded={open}
+                            onClick={() =>
+                              setOpenValidationReasons((prev) => ({
+                                ...prev,
+                                [item.sj_line_id]: !prev[item.sj_line_id],
+                              }))
+                            }
+                          >
+                            {open ? "Sembunyikan Keterangan" : "Keterangan"}
+                          </button>
+                          {open ? (
+                            <div className="ep-sj-item-extra">
+                              <div className="ep-sj-item-extra-row">
+                                <span className="lbl">Keterangan</span>
+                                <strong>{reason}</strong>
+                              </div>
+                            </div>
+                          ) : null}
+                        </>
+                      ) : null}
+                    </li>
+                  );
+                })}
+              </ul>
+            </>
           )}
 
           {validation?.already_loaded && !validation.delivered ? (

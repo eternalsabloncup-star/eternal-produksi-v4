@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { Link } from "react-router-dom";
 import { useAuth } from "../auth";
 import { EternalLogo } from "../brand/EternalLogo";
 import type { ShellDataMode } from "../demo/resolveInboxMode";
@@ -50,6 +51,13 @@ export function Header({ current, dataMode }: Props) {
             {badge}
           </span>
         ) : null}
+        <Link
+          className="ep-btn sm"
+          to="/app/m/tasks"
+          data-testid="shell-mobile-ops-link"
+        >
+          Mobile
+        </Link>
         <span className="ep-sub" title={user?.email}>
           {user?.display_name || user?.email}
           {user?.role ? ` · ${user.role}` : ""}
