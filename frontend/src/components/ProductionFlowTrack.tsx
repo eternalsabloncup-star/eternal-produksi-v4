@@ -128,20 +128,22 @@ export function ProductionFlowTrack({
         title={step.label}
         data-testid={`flow-chip-${step.id}`}
       >
-        <span className="ep-flow-chip-label">{step.label}</span>
-        <span
-          className={`ep-flow-chip-badge${isZero ? " is-zero" : ""}`}
-          aria-label={
-            countsStatus === "error"
-              ? countsError || "Jumlah tidak tersedia"
-              : countsStatus === "loading"
-                ? "Memuat…"
-                : `${badge} PO pada ${step.label}`
-          }
-          data-testid={`flow-badge-${step.id}`}
-          data-status={countsStatus}
-        >
-          {badge}
+        <span className="ep-flow-chip-inner">
+          <span className="ep-flow-chip-label">{step.label}</span>
+          <span
+            className={`ep-flow-chip-badge${isZero ? " is-zero" : ""}`}
+            aria-label={
+              countsStatus === "error"
+                ? countsError || "Jumlah tidak tersedia"
+                : countsStatus === "loading"
+                  ? "Memuat…"
+                  : `${badge} PO pada ${step.label}`
+            }
+            data-testid={`flow-badge-${step.id}`}
+            data-status={countsStatus}
+          >
+            {badge}
+          </span>
         </span>
       </button>
     );
@@ -162,10 +164,18 @@ export function ProductionFlowTrack({
         aria-label="Gulir tahapan alur produksi"
       >
         <div className="ep-flow-chiprows" role="list">
-          <div className="ep-flow-chiprow" data-testid="flow-stage-row-1">
+          <div
+            className="ep-flow-chiprow"
+            data-cols={row1.length}
+            data-testid="flow-stage-row-1"
+          >
             {row1.map(renderChip)}
           </div>
-          <div className="ep-flow-chiprow" data-testid="flow-stage-row-2">
+          <div
+            className="ep-flow-chiprow"
+            data-cols={row2.length}
+            data-testid="flow-stage-row-2"
+          >
             {row2.map(renderChip)}
           </div>
         </div>

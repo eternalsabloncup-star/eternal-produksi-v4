@@ -2229,7 +2229,7 @@
   box-shadow:
     0 1px 0 rgba(255, 255, 255, 0.75) inset,
     0 6px 18px rgba(16, 45, 36, 0.05);
-  padding: 14px 12px 10px;
+  padding: 10px 10px 8px;
 }
 
 .ep-flow-edge {
@@ -2261,11 +2261,10 @@
   -webkit-overflow-scrolling: touch;
   scrollbar-width: thin;
   scrollbar-color: #a8c4b6 transparent;
-  padding: 2px 0 4px;
-  /* Soft edge hint saat konten melebihi viewport (local attachment). */
+  padding: 1px 0 3px;
   background:
-    linear-gradient(90deg, #f4faf6 55%, rgba(244, 250, 246, 0)) 0 0 / 18px 100% local,
-    linear-gradient(270deg, #f4faf6 55%, rgba(244, 250, 246, 0)) 100% 0 / 18px 100% local;
+    linear-gradient(90deg, #f4faf6 55%, rgba(244, 250, 246, 0)) 0 0 / 14px 100% local,
+    linear-gradient(270deg, #f4faf6 55%, rgba(244, 250, 246, 0)) 100% 0 / 14px 100% local;
   background-repeat: no-repeat;
   background-attachment: local, local;
 }
@@ -2282,46 +2281,82 @@
 .ep-flow-chiprows {
   display: flex;
   flex-direction: column;
-  gap: 6px;
-  width: max-content;
-  min-width: 100%;
+  gap: 4px;
+  width: 100%;
+  min-width: 0;
   box-sizing: border-box;
 }
 
+/*
+ * Stable operational grid: equal-width cards per row (9 + 8).
+ * Prefer internal scroll over shrinking type below 11px.
+ */
 .ep-flow-chiprow {
-  display: flex;
-  flex-wrap: nowrap;
-  gap: 6px;
+  display: grid;
+  gap: 4px;
   align-items: stretch;
   width: 100%;
-  min-width: 100%;
+  min-width: 0;
   box-sizing: border-box;
+}
+
+.ep-flow-chiprow[data-cols="9"] {
+  grid-template-columns: repeat(9, minmax(0, 1fr));
+}
+
+.ep-flow-chiprow[data-cols="8"] {
+  grid-template-columns: repeat(8, minmax(0, 1fr));
+}
+
+/* <1600: floor keeps 11px labels readable; scroll instead of tiny type. */
+@media (max-width: 1599px) {
+  .ep-flow-chiprows,
+  .ep-flow-chiprow {
+    min-width: max-content;
+  }
+
+  .ep-flow-chiprow[data-cols="9"] {
+    grid-template-columns: repeat(9, minmax(8.75rem, 1fr));
+  }
+
+  .ep-flow-chiprow[data-cols="8"] {
+    grid-template-columns: repeat(8, minmax(8.75rem, 1fr));
+  }
 }
 
 .ep-flow-chip {
   display: inline-flex;
   flex-direction: row;
   align-items: center;
-  justify-content: flex-start;
-  gap: 6px;
-  flex: 1 1 0;
-  /* Content-aware: jangan menyusut di bawah label penuh. */
-  min-width: max-content;
-  height: 40px;
-  padding: 0 10px;
+  justify-content: center;
+  width: 100%;
+  min-width: 0;
+  height: 36px;
+  padding: 0 6px;
   margin: 0;
   border: 1px solid var(--ep-line, #b7c9be);
-  border-radius: var(--ep-radius, 8px);
+  border-radius: 6px;
   background: var(--ep-chip-gradient, linear-gradient(145deg, #f4faf6 0%, #e4efe8 100%));
   color: var(--ep-ink, #123d30);
   font-family: inherit;
   font-size: 11px;
   font-weight: 650;
-  line-height: 1.2;
+  line-height: 1.15;
   white-space: nowrap;
   cursor: pointer;
   box-shadow: none;
   box-sizing: border-box;
+}
+
+/* Judul + badge sebagai satu grup — gap 5px, bukan space-between. */
+.ep-flow-chip-inner {
+  display: inline-flex;
+  flex-direction: row;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  max-width: 100%;
+  min-width: 0;
 }
 
 .ep-flow-chip:hover {
@@ -2341,11 +2376,13 @@
 }
 
 .ep-flow-chip-label {
-  flex: none;
+  flex: 0 1 auto;
+  min-width: 0;
   overflow: visible;
   text-overflow: clip;
+  white-space: nowrap;
   font-weight: 700;
-  letter-spacing: -0.01em;
+  letter-spacing: -0.015em;
   color: #1a4d3e;
 }
 
@@ -2354,12 +2391,11 @@
   font-weight: 800;
 }
 
-/* Badge tepat di kanan judul — gap 6px, bukan space-between. */
 .ep-flow-chip-badge {
-  flex: none;
-  min-width: 18px;
-  height: 18px;
-  padding: 0 5px;
+  flex: 0 0 auto;
+  min-width: 16px;
+  height: 16px;
+  padding: 0 4px;
   border-radius: 999px;
   background: var(--ep-primary, #1f4f58);
   color: #fff;
@@ -2378,10 +2414,18 @@
   box-shadow: inset 0 0 0 1px #b7c9be;
 }
 
-/* Desktop lebar: isi sisa ruang proporsional setelah min content terpenuhi. */
+/* Desktop lebar: fill grid + font ideal 12px. */
 @media (min-width: 1600px) {
   .ep-flow-chip {
-    flex: 1 1 0;
+    height: 38px;
+    padding: 0 8px;
+    font-size: 12px;
+  }
+
+  .ep-flow-chip-badge {
+    min-width: 17px;
+    height: 17px;
+    font-size: 10px;
   }
 }
 
