@@ -295,6 +295,9 @@ def test_multi_sj_independent_tasks(
 def test_sj_links_preliminary_by_line_id(
     db: Database, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    """Print-before-SJ: menunggu → tautan → selesai informatif."""
+    from app.services.object_auth import is_actionable_open_task
+
     _env(monkeypatch, V4_LOADING_SJ_TASK_ENABLED=True)
     alloc = _ready_print(db, prep_qty=200)
     prod.confirm_print(
@@ -303,6 +306,8 @@ def test_sj_links_preliminary_by_line_id(
     prelim = tasks.get_task(db, prod.preliminary_loading_task_key(PO_ID, LINE_PRINT))
     assert prelim is not None
     assert prelim["context"]["waiting_for_sj"] is True
+    assert prelim["status"] == tasks.TASK_STATUS_OPEN
+    assert is_actionable_open_task(prelim) is True
 
     delivery.ingest_delivery_note(db, OWNER, _sj(qty=50))
     prelim2 = tasks.get_task(db, prod.preliminary_loading_task_key(PO_ID, LINE_PRINT))
@@ -310,8 +315,71 @@ def test_sj_links_preliminary_by_line_id(
     assert prelim2["context"]["waiting_for_sj"] is False
     assert SJ_ID in (prelim2["context"].get("linked_sj_ids") or [])
     assert prelim2["context"].get("association") == "line_id_match"
+    assert prelim2["status"] == tasks.TASK_STATUS_DONE
+    assert is_actionable_open_task(prelim2) is False
     # Actionable confirm remains SJ-scoped only.
     assert len(tasks.list_tasks(db, task_type="loading-sj")) == 1
+    loading = tasks.list_tasks(db, task_type="loading-sj")[0]
+    assert loading["status"] != tasks.TASK_STATUS_DONE
+
+
+def test_sj_before_print_associates_immediately(
+    db: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from app.services.object_auth import is_actionable_open_task
+
+    _env(monkeypatch, V4_LOADING_SJ_TASK_ENABLED=True)
+    delivery.ingest_delivery_note(db, OWNER, _sj(qty=80))
+    alloc = _ready_print(db, prep_qty=200)
+    prod.confirm_print(
+        db, OPERATOR, allocation_id=alloc, qty=100, idempotency_key="sj-first-print"
+    )
+    prelim = tasks.get_task(db, prod.preliminary_loading_task_key(PO_ID, LINE_PRINT))
+    assert prelim is not None
+    assert prelim["context"]["waiting_for_sj"] is False
+    assert SJ_ID in (prelim["context"].get("linked_sj_ids") or [])
+    assert prelim["status"] == tasks.TASK_STATUS_DONE
+    assert is_actionable_open_task(prelim) is False
+    assert len(tasks.list_tasks(db, task_type="loading-sj")) == 1
+
+
+def test_no_sj_stays_waiting_actionable(db: Database) -> None:
+    from app.services.object_auth import is_actionable_open_task
+
+    alloc = _ready_print(db, prep_qty=200)
+    prod.confirm_print(
+        db, OPERATOR, allocation_id=alloc, qty=100, idempotency_key="wait-print"
+    )
+    prelim = tasks.get_task(db, prod.preliminary_loading_task_key(PO_ID, LINE_PRINT))
+    assert prelim is not None
+    assert prelim["context"]["waiting_for_sj"] is True
+    assert prelim["context"].get("linked_sj_ids") in (None, [])
+    assert prelim["status"] == tasks.TASK_STATUS_OPEN
+    assert is_actionable_open_task(prelim) is True
+
+
+def test_multi_sj_keeps_loading_sj_independent(
+    db: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Beberapa SJ → preliminary selesai informatif; Loading SJ tetap terpisah/open."""
+    from app.services.object_auth import is_actionable_open_task
+
+    _env(monkeypatch, V4_LOADING_SJ_TASK_ENABLED=True)
+    alloc = _ready_print(db, prep_qty=300)
+    prod.confirm_print(
+        db, OPERATOR, allocation_id=alloc, qty=200, idempotency_key="multi-sj-print"
+    )
+    delivery.ingest_delivery_note(db, OWNER, _sj(SJ_ID, 50))
+    delivery.ingest_delivery_note(db, OWNER, _sj(SJ_ID_B, 60))
+    prelim = tasks.get_task(db, prod.preliminary_loading_task_key(PO_ID, LINE_PRINT))
+    assert prelim is not None
+    assert prelim["status"] == tasks.TASK_STATUS_DONE
+    assert is_actionable_open_task(prelim) is False
+    linked = set(prelim["context"].get("linked_sj_ids") or [])
+    assert linked == {SJ_ID, SJ_ID_B}
+    loading_rows = tasks.list_tasks(db, task_type="loading-sj")
+    assert len(loading_rows) == 2
+    assert all(r["status"] != tasks.TASK_STATUS_DONE for r in loading_rows)
 
 
 def test_packing_gate_still_blocks(

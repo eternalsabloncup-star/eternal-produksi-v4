@@ -730,7 +730,10 @@ def _sync_preliminary_loading_task(
 
     Bukan transaksi Loading: tidak menulis loading_events / delivery / stok.
     Fail-closed diam jika Master task_type belum diaktifkan (rilis dependency).
+    Jika SJ untuk PO+line sudah ada (SJ-before-Print), tautkan segera.
     """
+    from app.services import delivery_service as delivery
+
     try:
         role = master.require_task_type_assigned_role(db, PRELIMINARY_LOADING_TASK)
     except (LookupError, master.MissingMasterConfigError):
@@ -744,31 +747,14 @@ def _sync_preliminary_loading_task(
         return {}
     key = preliminary_loading_task_key(accurate_po_id, accurate_line_id)
     existing = tasks.get_task(db, key)
-    prev = dict((existing or {}).get("context") or {})
-    waiting = not bool(prev.get("linked_sj_ids"))
-    ctx: dict[str, Any] = {
-        **prev,
-        "qty_printed": printed,
-        "waiting_for_sj": waiting,
-        "display_status": (
-            "Menunggu Surat Jalan"
-            if waiting
-            else str(
-                prev.get("display_status")
-                or "SJ tersedia — konfirmasi pada tugas Loading Surat Jalan"
-            )
-        ),
-        "sj_available": not waiting,
-    }
-    return tasks.upsert_task(
+    return delivery.upsert_preliminary_loading_for_line(
         db,
-        task_type=PRELIMINARY_LOADING_TASK,
-        scope="po_line",
+        accurate_po_id=accurate_po_id,
+        accurate_line_id=accurate_line_id,
         assigned_role=role,
         ref=_line_ref(alloc),
-        qty_target=printed,
-        label="Loading — Menunggu Surat Jalan",
-        context=ctx,
+        qty_printed=printed,
+        prev_context=dict((existing or {}).get("context") or {}),
     )
 
 

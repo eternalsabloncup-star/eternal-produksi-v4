@@ -4,11 +4,14 @@ import {
   aggregateStatusCounts,
   allocationCanReviseQty,
   allocationReviseBounds,
+  actionableOpenCount,
   allowTaskAction,
   canShowQtyConfirmForm,
   filterTasksByStatus,
   filterTasksForActor,
   formatCountBadge,
+  isActionableOpenTask,
+  isCancelledOrInactiveTask,
   isPreliminaryLoadingTask,
   isSchedulingTask,
   latestDraftSample,
@@ -250,6 +253,36 @@ describe("teamTaskUi labels & scheduling", () => {
     });
     expect(linked.waiting).toBe(false);
     expect(linked.sjLabel).toBe("SJ/001");
+  });
+
+  it("drops linked preliminary Loading from actionable open workload", () => {
+    const waiting = task({
+      task_key: "p-wait",
+      task_type: "loading-menunggu-sj",
+      status: "belum_dikerjakan",
+      context: { waiting_for_sj: true, qty_printed: 100 },
+    });
+    const linked = task({
+      task_key: "p-linked",
+      task_type: "loading-menunggu-sj",
+      status: "selesai",
+      context: {
+        waiting_for_sj: false,
+        linked_sj_ids: ["SJ-1"],
+        linked_sj_nos: ["SJ/001"],
+      },
+    });
+    const linkedStillOpen = task({
+      task_key: "p-stale",
+      task_type: "loading-menunggu-sj",
+      status: "belum_dikerjakan",
+      context: { waiting_for_sj: false, linked_sj_ids: ["SJ-2"] },
+    });
+    expect(isActionableOpenTask(waiting)).toBe(true);
+    expect(isActionableOpenTask(linked)).toBe(false);
+    expect(isCancelledOrInactiveTask(linkedStillOpen)).toBe(true);
+    expect(isActionableOpenTask(linkedStillOpen)).toBe(false);
+    expect(actionableOpenCount([waiting, linked, linkedStillOpen])).toBe(1);
   });
 
   it("reads Screen qty_alokasi as info only", () => {

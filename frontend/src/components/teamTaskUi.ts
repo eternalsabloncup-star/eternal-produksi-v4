@@ -55,13 +55,23 @@ export function statusLabel(status: OperationalTask["status"]): string {
   return "Belum Dikerjakan";
 }
 
-/** Loading dibatalkan tetap status open di engine — bukan pekerjaan aktif. */
+/** Loading dibatalkan / preliminary sudah bertaut SJ — bukan pekerjaan aktif. */
 export function isCancelledOrInactiveTask(
-  task: Pick<OperationalTask, "context">,
+  task: Pick<OperationalTask, "task_type" | "context">,
 ): boolean {
   const ctx = task.context;
   if (!ctx || typeof ctx !== "object") return false;
-  return (ctx as { loading_cancelled?: unknown }).loading_cancelled === true;
+  const c = ctx as {
+    loading_cancelled?: unknown;
+    waiting_for_sj?: unknown;
+    linked_sj_ids?: unknown;
+  };
+  if (c.loading_cancelled === true) return true;
+  if (task.task_type === "loading-menunggu-sj") {
+    if (c.waiting_for_sj === false) return true;
+    if (Array.isArray(c.linked_sj_ids) && c.linked_sj_ids.length > 0) return true;
+  }
+  return false;
 }
 
 /**
@@ -69,7 +79,7 @@ export function isCancelledOrInactiveTask(
  * status terbuka dan belum dibatalkan.
  */
 export function isActionableOpenTask(
-  task: Pick<OperationalTask, "status" | "context">,
+  task: Pick<OperationalTask, "status" | "task_type" | "context">,
 ): boolean {
   if (task.status === "selesai") return false;
   if (isCancelledOrInactiveTask(task)) return false;
