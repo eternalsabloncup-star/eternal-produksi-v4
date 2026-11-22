@@ -59,6 +59,10 @@ import {
 import { TaskItemProgress } from "./TaskItemProgress";
 import { TeamTaskSchedulingForm } from "./TeamTaskSchedulingForm";
 import {
+  pwaBodyShouldRepeatDocumentRef,
+  pwaItemSummaryShowsRemaining,
+} from "./teamTaskDedupe";
+import {
   allowTaskAction,
   aggregateStatusCounts,
   canShowQtyConfirmForm,
@@ -1507,62 +1511,84 @@ export function TeamTaskApiPanel({
                 </div>
               ) : selectedIsScheduling ? null : selectedIsDriver ? null : pwaOps &&
                 (isLoadingSjTask(selected.task_type) ||
-                  isCoordinationTask(selected.task_type)) ? null : (
+                  isCoordinationTask(selected.task_type) ||
+                  isPreliminaryLoadingTask(selected.task_type)) ? null : (
                 <TaskItemProgress
                   items={taskItemLines(selected)}
                   showItemQty={false}
-                  fields={[
-                    {
-                      label:
-                        selected.task_type === "screen" &&
-                        selected.qty_target === undefined
-                          ? "Qty Alokasi"
-                          : "Qty",
-                      value:
-                        selected.qty_target !== undefined
-                          ? `${formatQty(selected.qty_target)} pcs`
-                          : screenAllocQty(selected) !== null
-                            ? `${formatQty(screenAllocQty(selected) ?? undefined)} pcs`
-                            : "—",
-                      numeric: true,
-                    },
-                    ...(selected.print_color !== undefined ||
-                    selected.ref.allocation_id
-                      ? [
-                          {
-                            label: "Warna Cat",
-                            value:
-                              String(selected.print_color || "").trim() || "—",
-                          },
-                        ]
-                      : []),
-                    {
-                      label: "Qty Terkonfirmasi",
-                      value: `${formatQty(selected.qty_confirmed)} pcs`,
-                      numeric: true,
-                    },
-                    ...(remainingQty(selected) != null
-                      ? [
-                          {
-                            label: "Sisa",
-                            value: `${formatQty(remainingQty(selected) ?? undefined)} pcs`,
-                            numeric: true as const,
-                          },
-                        ]
-                      : []),
-                    ...(pwaOps
-                      ? []
-                      : [
-                          {
-                            label: "Status",
-                            value: (
-                              <span className={statusBadgeClass(selected.status)}>
-                                {statusLabel(selected.status)}
-                              </span>
-                            ),
-                          },
-                        ]),
-                  ]}
+                  fields={(() => {
+                    const qtyLabel =
+                      selected.task_type === "screen" &&
+                      selected.qty_target === undefined
+                        ? "Qty Alokasi"
+                        : "Qty";
+                    const qtyValue =
+                      selected.qty_target !== undefined
+                        ? `${formatQty(selected.qty_target)} pcs`
+                        : screenAllocQty(selected) !== null
+                          ? `${formatQty(screenAllocQty(selected) ?? undefined)} pcs`
+                          : null;
+                    return [
+                      ...(qtyValue != null
+                        ? [
+                            {
+                              label: qtyLabel,
+                              value: qtyValue,
+                              numeric: true as const,
+                            },
+                          ]
+                        : pwaOps
+                          ? []
+                          : [
+                              {
+                                label: qtyLabel,
+                                value: "—",
+                                numeric: true as const,
+                              },
+                            ]),
+                      ...(selected.print_color !== undefined ||
+                      selected.ref.allocation_id
+                        ? [
+                            {
+                              label: "Warna Cat",
+                              value:
+                                String(selected.print_color || "").trim() ||
+                                "—",
+                            },
+                          ]
+                        : []),
+                      {
+                        label: "Qty Terkonfirmasi",
+                        value: `${formatQty(selected.qty_confirmed)} pcs`,
+                        numeric: true as const,
+                      },
+                      // PWA: Sisa lives only in sticky footer next to confirm input.
+                      ...(pwaItemSummaryShowsRemaining(pwaOps) &&
+                      remainingQty(selected) != null
+                        ? [
+                            {
+                              label: "Sisa",
+                              value: `${formatQty(remainingQty(selected) ?? undefined)} pcs`,
+                              numeric: true as const,
+                            },
+                          ]
+                        : []),
+                      ...(pwaOps
+                        ? []
+                        : [
+                            {
+                              label: "Status",
+                              value: (
+                                <span
+                                  className={statusBadgeClass(selected.status)}
+                                >
+                                  {statusLabel(selected.status)}
+                                </span>
+                              ),
+                            },
+                          ]),
+                    ];
+                  })()}
                 />
               )}
 
@@ -1834,48 +1860,77 @@ export function TeamTaskApiPanel({
                   className="ep-loading-sj"
                   data-testid="loading-menunggu-sj-block"
                 >
-                  <p className="ep-sectionlabel">Loading — Menunggu Surat Jalan</p>
+                  <p className="ep-sectionlabel">Ringkasan menunggu SJ</p>
                   {(() => {
                     const prelim = preliminaryLoadingDisplay(selected);
+                    const qtyCetak =
+                      prelim.qtyPrinted != null
+                        ? formatQty(prelim.qtyPrinted)
+                        : selected.qty_target != null
+                          ? formatQty(selected.qty_target)
+                          : "—";
                     return (
                       <>
-                        <p>
-                          Nama Barang:{" "}
-                          <strong>{taskItemDisplayName(selected)}</strong>
-                        </p>
-                        <p>
-                          Qty Cetak:{" "}
-                          <strong>
-                            {prelim.qtyPrinted != null
-                              ? formatQty(prelim.qtyPrinted)
-                              : selected.qty_target != null
-                                ? formatQty(selected.qty_target)
-                                : "—"}
-                          </strong>
-                        </p>
-                        <p>
-                          Surat Jalan: <strong>{prelim.sjLabel}</strong>
-                        </p>
-                        <p>
-                          Status: <strong>{prelim.statusText}</strong>
-                        </p>
+                        {pwaOps ? (
+                          <div className="ep-ws-stack-list">
+                            <WorkSheetCard testId="loading-menunggu-summary">
+                              <WorkSheetStackRow
+                                label="Nama Barang"
+                                value={taskItemDisplayName(selected)}
+                                emphasize
+                              />
+                              <WorkSheetStackRow
+                                label="Qty Cetak"
+                                value={
+                                  <span className="ep-num">{qtyCetak}</span>
+                                }
+                                kpi
+                              />
+                              <WorkSheetStackRow
+                                label="Surat Jalan"
+                                value={prelim.sjLabel}
+                              />
+                              <WorkSheetStackRow
+                                label="Status SJ"
+                                value={prelim.statusText}
+                                emphasize
+                              />
+                            </WorkSheetCard>
+                          </div>
+                        ) : (
+                          <>
+                            <p>
+                              Nama Barang:{" "}
+                              <strong>{taskItemDisplayName(selected)}</strong>
+                            </p>
+                            <p>
+                              Qty Cetak: <strong>{qtyCetak}</strong>
+                            </p>
+                            <p>
+                              Surat Jalan: <strong>{prelim.sjLabel}</strong>
+                            </p>
+                            <p>
+                              Status: <strong>{prelim.statusText}</strong>
+                            </p>
+                          </>
+                        )}
                         {prelim.waiting ? (
                           <p className="ep-notice">
-                            Tugas informatif setelah konfirmasi Cetak. Konfirmasi
-                            Qty Loading dinonaktifkan sampai Surat Jalan Accurate
-                            tersedia. Backend menolak konfirmasi tanpa SJ.
+                            Konfirmasi Qty Loading dinonaktifkan sampai Surat
+                            Jalan tersedia.
                           </p>
                         ) : prelim.pendingLoading ? (
-                          <p className="ep-notice" data-testid="loading-pending-notice">
-                            Surat Jalan untuk line ini sudah ada, tetapi tugas
-                            Loading Surat Jalan belum siap. Tetap informatif —
-                            konfirmasi Qty Loading tidak tersedia di sini.
+                          <p
+                            className="ep-notice"
+                            data-testid="loading-pending-notice"
+                          >
+                            Surat Jalan sudah ada, tetapi tugas Loading Surat
+                            Jalan belum siap — konfirmasi tidak tersedia di sini.
                           </p>
                         ) : (
                           <p className="ep-notice">
-                            Surat Jalan terkait line ini sudah masuk. Konfirmasi
-                            Loading dilakukan pada tugas Loading Surat Jalan per
-                            SJ — bukan pada tugas menunggu ini.
+                            Surat Jalan sudah masuk. Konfirmasi Loading ada pada
+                            tugas Loading Surat Jalan per SJ.
                           </p>
                         )}
                       </>
@@ -1886,15 +1941,17 @@ export function TeamTaskApiPanel({
 
               {isLoadingSjTask(selected.task_type) ? (
                 <div className="ep-loading-sj" data-testid="loading-sj-block">
-                  <p className="ep-sectionlabel">Loading Surat Jalan</p>
-                  <p>
-                    SJ:{" "}
-                    <strong>
-                      {selected.ref.sj_no ||
-                        selected.ref.accurate_delivery_note_id ||
-                        "—"}
-                    </strong>
-                  </p>
+                  <p className="ep-sectionlabel">Validasi Loading</p>
+                  {pwaBodyShouldRepeatDocumentRef(pwaOps, selected) ? (
+                    <p>
+                      SJ:{" "}
+                      <strong>
+                        {selected.ref.sj_no ||
+                          selected.ref.accurate_delivery_note_id ||
+                          "—"}
+                      </strong>
+                    </p>
+                  ) : null}
                   {loadingValidationError ? (
                     <p className="ep-error">{loadingValidationError}</p>
                   ) : null}
@@ -2031,11 +2088,16 @@ export function TeamTaskApiPanel({
 
               {isCoordinationTask(selected.task_type) ? (
                 <div className="ep-coordination" data-testid="coordination-block">
-                  <p className="ep-sectionlabel">
-                    {taskDisplayLabel(selected)}
-                  </p>
-                  {selected.ref.sj_no ||
-                  selected.ref.accurate_delivery_note_id ? (
+                  {!pwaOps ? (
+                    <p className="ep-sectionlabel">
+                      {taskDisplayLabel(selected)}
+                    </p>
+                  ) : (
+                    <p className="ep-sectionlabel">Penjelasan</p>
+                  )}
+                  {pwaBodyShouldRepeatDocumentRef(pwaOps, selected) &&
+                  (selected.ref.sj_no ||
+                    selected.ref.accurate_delivery_note_id) ? (
                     <p>
                       SJ:{" "}
                       <strong>
@@ -2121,20 +2183,30 @@ export function TeamTaskApiPanel({
 
               {selected.task_type === DRIVER_TASK ? (
                 <div data-testid="driver-block">
-                  <dl className="ep-kv ep-kv-compact">
-                    <dt>Driver</dt>
-                    <dd>
-                      {actorDisplayLabel({
+                  {pwaOps ? (
+                    <WorkSheetStackRow
+                      label="Driver"
+                      value={actorDisplayLabel({
                         display_name: user?.display_name,
                       })}
-                    </dd>
-                    <dt>No. SJ</dt>
-                    <dd>
-                      {selected.ref.sj_no ||
-                        selected.ref.accurate_delivery_note_id ||
-                        "—"}
-                    </dd>
-                  </dl>
+                      emphasize
+                    />
+                  ) : (
+                    <dl className="ep-kv ep-kv-compact">
+                      <dt>Driver</dt>
+                      <dd>
+                        {actorDisplayLabel({
+                          display_name: user?.display_name,
+                        })}
+                      </dd>
+                      <dt>No. SJ</dt>
+                      <dd>
+                        {selected.ref.sj_no ||
+                          selected.ref.accurate_delivery_note_id ||
+                          "—"}
+                      </dd>
+                    </dl>
+                  )}
                   {deliveryDetailError ? (
                     <p className="ep-error" role="alert">
                       {deliveryDetailError}
@@ -2469,13 +2541,7 @@ export function TeamTaskApiPanel({
                 </div>
               ) : busy ? (
                 <span className="ep-muted ep-foot-hint">Memproses…</span>
-              ) : pwaOps ? (
-                selectedIsScheduling ? (
-                  <span className="ep-muted ep-foot-hint">
-                    Penjadwalan · alokasi operator
-                  </span>
-                ) : null
-              ) : (
+              ) : !pwaOps ? (
                 <span className="ep-muted">
                   {selectedIsDesigner
                     ? "Desain"
@@ -2483,7 +2549,7 @@ export function TeamTaskApiPanel({
                       ? "Penjadwalan · alokasi operator"
                       : null}
                 </span>
-              )}
+              ) : null}
               {!pwaOps ? (
                 <div className="ep-modal-foot-actions">
                   <button

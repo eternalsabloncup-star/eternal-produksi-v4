@@ -25,6 +25,7 @@ import {
   operatorsLoadFromSuccess,
   type OperatorsLoadState,
 } from "./schedulingOperators";
+import { allocCardNeedsItemIdentity } from "./teamTaskDedupe";
 import {
   allocationCanReviseQty,
   allocationReviseBounds,
@@ -609,19 +610,21 @@ export function TeamTaskSchedulingForm({
                       }
                       emphasize
                     />
-                    <WorkSheetStackRow
-                      label="Item"
-                      value={
-                        <>
-                          <span className="ep-sched-item-name">
-                            {itemNameForLine(l)}
-                          </span>
-                          <span className="ep-sched-item-code">
-                            {a.accurate_line_id}
-                          </span>
-                        </>
-                      }
-                    />
+                    {allocCardNeedsItemIdentity(lines.length) ? (
+                      <WorkSheetStackRow
+                        label="Item"
+                        value={
+                          <>
+                            <span className="ep-sched-item-name">
+                              {itemNameForLine(l)}
+                            </span>
+                            <span className="ep-sched-item-code">
+                              {a.accurate_line_id}
+                            </span>
+                          </>
+                        }
+                      />
+                    ) : null}
                     <WorkSheetStackRow
                       label="Qty Alokasi"
                       value={<span className="ep-num">{qty(a.qty)}</span>}
