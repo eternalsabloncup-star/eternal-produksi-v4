@@ -46,6 +46,12 @@ import type { ColumnDef } from "./DataTable/types";
 import { DesignWorkflowPanel } from "./DesignWorkflowPanel";
 import { EvidenceContentPreview } from "./EvidenceContentPreview";
 import {
+  CollapsibleTaskSection,
+  WorkSheetCard,
+  WorkSheetSegment,
+  WorkSheetStackRow,
+} from "./compactTaskSheet";
+import {
   SIGNATURE_CANVAS_HEIGHT,
   canvasPointerPos,
   syncSignatureCanvasSize,
@@ -175,6 +181,10 @@ export function TeamTaskApiPanel({
   const [poDetailError, setPoDetailError] = useState<string | null>(null);
   const [poDetailLoading, setPoDetailLoading] = useState(false);
   const [headerReloading, setHeaderReloading] = useState(false);
+  /** Driver work-sheet mode — tidak mencampur input berhasil/gagal. */
+  const [driverMode, setDriverMode] = useState<"berhasil" | "gagal">(
+    "berhasil",
+  );
   const designReloadRef = useRef<(() => Promise<void>) | null>(null);
   const registerDesignReload = useCallback((fn: () => Promise<void>) => {
     designReloadRef.current = fn;
@@ -238,8 +248,8 @@ export function TeamTaskApiPanel({
     const ro = new ResizeObserver(sync);
     ro.observe(wrap);
     return () => ro.disconnect();
-    // grants/readOnly: canvas baru muncul setelah izin confirm tersedia.
-  }, [selected, grantsByTaskType, readOnly, elevated]);
+    // grants/readOnly/driverMode: canvas mount saat mode berhasil + izin confirm.
+  }, [selected, grantsByTaskType, readOnly, elevated, driverMode]);
 
   useEffect(() => {
     let cancelled = false;
@@ -354,6 +364,9 @@ export function TeamTaskApiPanel({
     setSelected(task);
     setQtyInput("");
     setRejectReason("");
+    setDriverMode("berhasil");
+    setRecipientName("");
+    setFailureReason("");
     setActionError(null);
     setActionNotice(null);
     setEvidencePreview(null);
@@ -1033,6 +1046,48 @@ export function TeamTaskApiPanel({
   const selectedIsDriver =
     selected != null && selected.task_type === DRIVER_TASK;
 
+  const showQtyConfirm =
+    selected != null &&
+    canShowQtyConfirmForm(selected) &&
+    selected.task_type !== DRIVER_TASK &&
+    selected.task_type !== DESIGN_TASK &&
+    !isLoadingSjTask(selected.task_type) &&
+    !isPreliminaryLoadingTask(selected.task_type) &&
+    !isCoordinationTask(selected.task_type) &&
+    !selectedIsSample &&
+    !isSchedulingTask(selected.task_type) &&
+    (canAct(selected.task_type, "confirm") ||
+      canAct(selected.task_type, "input"));
+
+  const qtyConfirmForm = showQtyConfirm ? (
+    <div className="ep-filterbar ep-ws-qty-form" data-testid="qty-confirm-form">
+      <label htmlFor="qty-confirm">Qty</label>
+      <input
+        id="qty-confirm"
+        data-testid="qty-confirm-input"
+        type="number"
+        min={1}
+        inputMode="numeric"
+        value={qtyInput}
+        onChange={(e) => setQtyInput(e.target.value)}
+      />
+      {selected && remainingQty(selected) != null ? (
+        <span className="ep-ws-qty-remain" data-testid="qty-remaining-hint">
+          Sisa {formatQty(remainingQty(selected) ?? undefined)}
+        </span>
+      ) : null}
+      <button
+        type="button"
+        className="ep-btn primary"
+        data-testid="qty-confirm-btn"
+        disabled={busy}
+        onClick={() => void onConfirm()}
+      >
+        {busy ? "Menyimpan…" : "Konfirmasi"}
+      </button>
+    </div>
+  ) : null;
+
   return (
     <div className="ep-taskpanel" data-testid="team-task-api-panel">
       {error ? (
@@ -1197,19 +1252,49 @@ export function TeamTaskApiPanel({
         >
           <div
             className={`ep-modal ep-task-modal${
-              selectedIsDesigner ? " is-designer" : ""
-            }${selectedIsScheduling ? " is-scheduling" : ""}`}
+              pwaOps ? " is-worksheet" : ""
+            }${selectedIsDesigner ? " is-designer" : ""}${
+              selectedIsScheduling ? " is-scheduling" : ""
+            }`}
             role="dialog"
             aria-modal="true"
             data-testid="team-task-modal"
             data-task-type={selected.task_type}
+            data-worksheet={pwaOps ? "true" : undefined}
           >
             <header className="ep-modal-head">
               <div className="ep-modal-head-main">
-                <div className="ep-modal-kicker">{roleLabel}</div>
-                <h2 data-testid="task-modal-title">
-                  {taskDisplayLabel(selected)}
-                </h2>
+                {!pwaOps ? (
+                  <div className="ep-modal-kicker">{roleLabel}</div>
+                ) : null}
+                <div className="ep-ws-title-row">
+                  <h2 data-testid="task-modal-title">
+                    {taskDisplayLabel(selected)}
+                  </h2>
+                  <span
+                    className={statusBadgeClass(selected.status)}
+                    data-testid="task-head-task-status"
+                  >
+                    {statusLabel(selected.status)}
+                  </span>
+                  {!selectedIsDriver && poDetail?.urgent === true ? (
+                    <span
+                      className="ep-task-status is-urgent"
+                      data-testid="task-head-urgency"
+                    >
+                      {urgencyLabel(true)}
+                    </span>
+                  ) : !selectedIsDriver ? (
+                    <span
+                      className="ep-task-status is-belum"
+                      data-testid="task-head-urgency"
+                    >
+                      {poDetailLoading
+                        ? "…"
+                        : urgencyLabel(poDetail?.urgent ?? null)}
+                    </span>
+                  ) : null}
+                </div>
                 {!selectedIsDriver ? (
                   <div
                     className="ep-sched-head-meta"
@@ -1218,6 +1303,11 @@ export function TeamTaskApiPanel({
                     <span
                       className="ep-sched-head-customer"
                       data-testid="task-head-customer"
+                      title={
+                        poDetailLoading
+                          ? undefined
+                          : poDetail?.customer ?? undefined
+                      }
                     >
                       {poDetailLoading
                         ? "Memuat…"
@@ -1237,41 +1327,13 @@ export function TeamTaskApiPanel({
                           selected.ref.accurate_delivery_note_id}
                       </span>
                     ) : null}
-                    <span
-                      className={
-                        poDetail?.urgent === true
-                          ? "ep-task-status is-urgent"
-                          : "ep-task-status is-belum"
-                      }
-                      data-testid="task-head-urgency"
-                    >
-                      {poDetailLoading
-                        ? "…"
-                        : urgencyLabel(poDetail?.urgent ?? null)}
-                    </span>
-                    <span
-                      className="ep-muted"
-                      data-testid="task-head-branch"
-                      data-branch-missing-mapping={
-                        pwaOps &&
-                        !poDetailLoading &&
-                        formatPwaBranchLabel({
-                          branchId: poDetail?.branchId,
-                          branchName: poDetail?.branchName,
-                          branchNameVerified: poDetail?.branchNameVerified,
-                        }).missingMapping
-                          ? "true"
-                          : undefined
-                      }
-                    >
-                      {poDetailLoading
-                        ? "…"
-                        : pwaOps
-                          ? formatPwaBranchLabel({
-                              branchId: poDetail?.branchId,
-                              branchName: poDetail?.branchName,
-                              branchNameVerified: poDetail?.branchNameVerified,
-                            }).label
+                    {!pwaOps ? (
+                      <span
+                        className="ep-muted"
+                        data-testid="task-head-branch"
+                      >
+                        {poDetailLoading
+                          ? "…"
                           : poDetail?.branchId
                             ? `Cabang ${poDetail.branchId}${
                                 poDetail.branchName
@@ -1281,13 +1343,8 @@ export function TeamTaskApiPanel({
                                     : " · belum diverifikasi"
                               }`
                             : "Cabang belum tersedia"}
-                    </span>
-                    <span
-                      className={statusBadgeClass(selected.status)}
-                      data-testid="task-head-task-status"
-                    >
-                      {statusLabel(selected.status)}
-                    </span>
+                      </span>
+                    ) : null}
                   </div>
                 ) : (
                   <div
@@ -1306,12 +1363,6 @@ export function TeamTaskApiPanel({
                     {selected.ref.po_no ? (
                       <span className="ep-muted">PO {selected.ref.po_no}</span>
                     ) : null}
-                    <span
-                      className={statusBadgeClass(selected.status)}
-                      data-testid="task-head-task-status"
-                    >
-                      {statusLabel(selected.status)}
-                    </span>
                   </div>
                 )}
               </div>
@@ -1343,15 +1394,32 @@ export function TeamTaskApiPanel({
                 ) : null}
                 <button
                   type="button"
-                  className="ep-btn sm"
+                  className="ep-btn sm ep-ws-close"
+                  aria-label="Tutup"
                   onClick={() => setSelected(null)}
                 >
-                  Tutup
+                  {pwaOps ? "×" : "Tutup"}
                 </button>
               </div>
             </header>
             <div className="ep-modal-body">
-              {selectedIsDesigner ? (
+              {pwaOps && !selectedIsDriver ? (
+                <CollapsibleTaskSection
+                  title="Cabang & meta"
+                  testId="task-meta-collapse"
+                >
+                  <p className="ep-muted" data-testid="task-head-branch">
+                    {poDetailLoading
+                      ? "…"
+                      : formatPwaBranchLabel({
+                          branchId: poDetail?.branchId,
+                          branchName: poDetail?.branchName,
+                          branchNameVerified: poDetail?.branchNameVerified,
+                        }).label}
+                  </p>
+                </CollapsibleTaskSection>
+              ) : null}
+              {selectedIsDesigner && !pwaOps ? (
                 <div
                   className="ep-designer-summary"
                   data-testid="designer-summary-grid"
@@ -1437,7 +1505,9 @@ export function TeamTaskApiPanel({
                     })()}
                   </div>
                 </div>
-              ) : selectedIsScheduling ? null : selectedIsDriver ? null : (
+              ) : selectedIsScheduling ? null : selectedIsDriver ? null : pwaOps &&
+                (isLoadingSjTask(selected.task_type) ||
+                  isCoordinationTask(selected.task_type)) ? null : (
                 <TaskItemProgress
                   items={taskItemLines(selected)}
                   showItemQty={false}
@@ -1471,14 +1541,27 @@ export function TeamTaskApiPanel({
                       value: `${formatQty(selected.qty_confirmed)} pcs`,
                       numeric: true,
                     },
-                    {
-                      label: "Status",
-                      value: (
-                        <span className={statusBadgeClass(selected.status)}>
-                          {statusLabel(selected.status)}
-                        </span>
-                      ),
-                    },
+                    ...(remainingQty(selected) != null
+                      ? [
+                          {
+                            label: "Sisa",
+                            value: `${formatQty(remainingQty(selected) ?? undefined)} pcs`,
+                            numeric: true as const,
+                          },
+                        ]
+                      : []),
+                    ...(pwaOps
+                      ? []
+                      : [
+                          {
+                            label: "Status",
+                            value: (
+                              <span className={statusBadgeClass(selected.status)}>
+                                {statusLabel(selected.status)}
+                              </span>
+                            ),
+                          },
+                        ]),
                   ]}
                 />
               )}
@@ -1649,43 +1732,6 @@ export function TeamTaskApiPanel({
                 </>
               ) : null}
 
-              <div
-                className={`ep-task-history-block${
-                  selectedIsDesigner || selectedIsScheduling
-                    ? " is-compact"
-                    : ""
-                }`}
-                data-testid="task-history-block"
-              >
-                <p className="ep-sectionlabel">Riwayat Konfirmasi</p>
-                {historyError ? (
-                  <p className="ep-error" role="alert">
-                    {historyError}{" "}
-                    <button
-                      type="button"
-                      className="ep-btn sm"
-                      onClick={() => void openTask(selected)}
-                    >
-                      Coba Lagi
-                    </button>
-                  </p>
-                ) : history.length === 0 ? (
-                  <p className="ep-empty ep-empty-inline">Belum ada konfirmasi.</p>
-                ) : (
-                  <ul className="ep-history">
-                    {history.map((h) => (
-                      <li key={h.idempotency_key}>
-                        {formatQty(h.qty)} ·{" "}
-                        {actorDisplayLabel({
-                          actor_display_name: h.actor_display_name,
-                        })}{" "}
-                        · {formatDateTimeDisplay(h.created_at)}
-                      </li>
-                    ))}
-                  </ul>
-                )}
-              </div>
-
               {isPreliminaryLoadingTask(selected.task_type) ? (
                 <div
                   className="ep-loading-sj"
@@ -1756,50 +1802,92 @@ export function TeamTaskApiPanel({
                     <p className="ep-error">{loadingValidationError}</p>
                   ) : null}
                   {loadingValidation ? (
-                    <div className="ep-tblscroll ep-tblscroll-embed">
-                      <table className="ep-table">
-                        <thead>
-                          <tr>
-                            <th>Nama Barang</th>
-                            <th className="ep-num">Qty SJ</th>
-                            <th className="ep-num">Qty Packing tersedia</th>
-                            <th>Status</th>
-                          </tr>
-                        </thead>
-                        <tbody>
-                          {loadingValidation.items.map((it) => {
-                            const name =
-                              String(it.item_name || "").trim() ||
-                              "Nama barang belum tersedia";
-                            return (
-                              <tr
-                                key={String(it.accurate_line_id)}
-                                className={
-                                  it.matched ? undefined : "ep-row-danger"
-                                }
-                              >
-                                <td className="ep-sched-td-text">
-                                  <span className="ep-sched-item-name">
-                                    {name}
-                                  </span>
-                                </td>
-                                <td className="ep-num">
-                                  {formatQty(Number(it.qty))}
-                                </td>
-                                <td className="ep-num">
-                                  {formatQty(Number(it.qty_available))}
-                                </td>
-                                <td>
-                                  {it.matched
+                    pwaOps ? (
+                      <div
+                        className="ep-ws-stack-list"
+                        data-testid="loading-sj-cards"
+                      >
+                        {loadingValidation.items.map((it) => {
+                          const name =
+                            String(it.item_name || "").trim() ||
+                            "Nama barang belum tersedia";
+                          return (
+                            <WorkSheetCard
+                              key={String(it.accurate_line_id)}
+                              className={it.matched ? "" : "is-danger"}
+                            >
+                              <WorkSheetStackRow
+                                label="Nama Barang"
+                                value={name}
+                                emphasize
+                              />
+                              <WorkSheetStackRow
+                                label="Qty SJ"
+                                value={formatQty(Number(it.qty))}
+                              />
+                              <WorkSheetStackRow
+                                label="Qty Packing tersedia"
+                                value={formatQty(Number(it.qty_available))}
+                              />
+                              <WorkSheetStackRow
+                                label="Status"
+                                value={
+                                  it.matched
                                     ? "Cocok"
-                                    : it.reason || "Tidak cocok"}
-                                </td>
-                              </tr>
-                            );
-                          })}
-                        </tbody>
-                      </table>
-                    </div>
+                                    : it.reason || "Tidak cocok"
+                                }
+                                danger={!it.matched}
+                              />
+                            </WorkSheetCard>
+                          );
+                        })}
+                      </div>
+                    ) : (
+                      <div className="ep-tblscroll ep-tblscroll-embed">
+                        <table className="ep-table">
+                          <thead>
+                            <tr>
+                              <th>Nama Barang</th>
+                              <th className="ep-num">Qty SJ</th>
+                              <th className="ep-num">Qty Packing tersedia</th>
+                              <th>Status</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {loadingValidation.items.map((it) => {
+                              const name =
+                                String(it.item_name || "").trim() ||
+                                "Nama barang belum tersedia";
+                              return (
+                                <tr
+                                  key={String(it.accurate_line_id)}
+                                  className={
+                                    it.matched ? undefined : "ep-row-danger"
+                                  }
+                                >
+                                  <td className="ep-sched-td-text">
+                                    <span className="ep-sched-item-name">
+                                      {name}
+                                    </span>
+                                  </td>
+                                  <td className="ep-num">
+                                    {formatQty(Number(it.qty))}
+                                  </td>
+                                  <td className="ep-num">
+                                    {formatQty(Number(it.qty_available))}
+                                  </td>
+                                  <td>
+                                    {it.matched
+                                      ? "Cocok"
+                                      : it.reason || "Tidak cocok"}
+                                  </td>
+                                </tr>
+                              );
+                            })}
+                          </tbody>
+                        </table>
+                      </div>
+                    )
                   ) : null}
                   <p className="ep-notice">
                     Pilih Sesuai atau Tidak Sesuai — tanpa menginput ulang Qty SJ.
@@ -1807,7 +1895,8 @@ export function TeamTaskApiPanel({
                   </p>
                   {(canAct("loading-sj", "confirm") ||
                     canAct(DRIVER_TASK, "confirm")) &&
-                  selected.status !== "selesai" ? (
+                  selected.status !== "selesai" &&
+                  !pwaOps ? (
                     <div
                       className="ep-btnrow ep-task-action-row"
                       data-testid="loading-sj-actions"
@@ -1910,7 +1999,7 @@ export function TeamTaskApiPanel({
                     Konfirmasi hanya menandai koordinasi selesai — tidak mengubah
                     SJ atau Qty pengiriman.
                   </p>
-                  {canAct(selected.task_type, "confirm") ? (
+                  {canAct(selected.task_type, "confirm") && !pwaOps ? (
                     <button
                       type="button"
                       className="ep-btn primary"
@@ -1925,8 +2014,8 @@ export function TeamTaskApiPanel({
 
               {selected.task_type === DRIVER_TASK ? (
                 <div data-testid="driver-block">
-                  <dl className="ep-kv">
-                    <dt>Driver (akun login)</dt>
+                  <dl className="ep-kv ep-kv-compact">
+                    <dt>Driver</dt>
                     <dd>
                       {actorDisplayLabel({
                         display_name: user?.display_name,
@@ -1945,8 +2034,12 @@ export function TeamTaskApiPanel({
                     </p>
                   ) : null}
                   {deliveryDetail ? (
-                    <>
-                      <p className="ep-sectionlabel">Riwayat & Bukti (baca)</p>
+                    <CollapsibleTaskSection
+                      title="Riwayat & Bukti"
+                      testId="driver-evidence-history"
+                      count={deliveryDetail.events.length}
+                      defaultOpen={!pwaOps}
+                    >
                       <ul className="ep-history">
                         {deliveryDetail.events.map((ev) => (
                           <li key={`${ev.attempt}-${ev.created_at}`}>
@@ -1995,79 +2088,115 @@ export function TeamTaskApiPanel({
                         Soft-delete bukti pengiriman hanya di menu Jadwal
                         Pengiriman.
                       </p>
-                    </>
+                    </CollapsibleTaskSection>
                   ) : null}
 
                   {canAct(DRIVER_TASK, "confirm") ? (
                     <>
-                      <p className="ep-sectionlabel">Pengiriman Berhasil</p>
-                      <div className="ep-filterbar">
-                        <label htmlFor="recipient-name">Nama penerima</label>
-                        <input
-                          id="recipient-name"
-                          value={recipientName}
-                          onChange={(e) => setRecipientName(e.target.value)}
+                      {pwaOps ? (
+                        <WorkSheetSegment
+                          testId="driver-mode-segment"
+                          value={driverMode}
+                          onChange={(id) =>
+                            setDriverMode(id as "berhasil" | "gagal")
+                          }
+                          options={[
+                            { id: "berhasil", label: "Berhasil" },
+                            { id: "gagal", label: "Gagal" },
+                          ]}
                         />
-                        <input
-                          ref={photosRef}
-                          type="file"
-                          multiple
-                          aria-label="Foto bukti pengiriman"
-                          accept="image/png,image/jpeg,image/webp"
-                        />
-                      </div>
-                      <div
-                        className="ep-signature-wrap"
-                        ref={signatureWrapRef}
-                        data-testid="delivery-signature-wrap"
-                      >
-                        <p className="ep-signature-label" id="delivery-signature-label">
-                          Tanda tangan
-                        </p>
-                        <canvas
-                          ref={signatureRef}
-                          width={300}
-                          height={SIGNATURE_CANVAS_HEIGHT}
-                          className="ep-signature"
-                          data-testid="delivery-signature"
-                          aria-labelledby="delivery-signature-label"
-                          onPointerDown={startSignature}
-                          onPointerMove={moveSignature}
-                          onPointerUp={endSignature}
-                          onPointerCancel={endSignature}
-                          onPointerLeave={endSignature}
-                        />
-                      </div>
-                      <div className="ep-filterbar ep-task-action-row">
-                        <button
-                          type="button"
-                          className="ep-btn primary"
-                          disabled={busy}
-                          onClick={() => void onDeliverySuccess()}
-                        >
-                          {busy
-                            ? "Menyimpan…"
-                            : "Konfirmasi Pengiriman Berhasil"}
-                        </button>
-                      </div>
+                      ) : (
+                        <p className="ep-sectionlabel">Pengiriman Berhasil</p>
+                      )}
+                      {(!pwaOps || driverMode === "berhasil") && (
+                        <>
+                          {!pwaOps ? null : (
+                            <p className="ep-sectionlabel">Pengiriman Berhasil</p>
+                          )}
+                          <div className="ep-filterbar">
+                            <label htmlFor="recipient-name">Nama penerima</label>
+                            <input
+                              id="recipient-name"
+                              value={recipientName}
+                              onChange={(e) =>
+                                setRecipientName(e.target.value)
+                              }
+                            />
+                            <input
+                              ref={photosRef}
+                              type="file"
+                              multiple
+                              aria-label="Foto bukti pengiriman"
+                              accept="image/png,image/jpeg,image/webp"
+                            />
+                          </div>
+                          <div
+                            className="ep-signature-wrap"
+                            ref={signatureWrapRef}
+                            data-testid="delivery-signature-wrap"
+                          >
+                            <p
+                              className="ep-signature-label"
+                              id="delivery-signature-label"
+                            >
+                              Tanda tangan
+                            </p>
+                            <canvas
+                              ref={signatureRef}
+                              width={300}
+                              height={SIGNATURE_CANVAS_HEIGHT}
+                              className="ep-signature"
+                              data-testid="delivery-signature"
+                              aria-labelledby="delivery-signature-label"
+                              onPointerDown={startSignature}
+                              onPointerMove={moveSignature}
+                              onPointerUp={endSignature}
+                              onPointerCancel={endSignature}
+                              onPointerLeave={endSignature}
+                            />
+                          </div>
+                          {!pwaOps ? (
+                            <div className="ep-filterbar ep-task-action-row">
+                              <button
+                                type="button"
+                                className="ep-btn primary"
+                                disabled={busy}
+                                onClick={() => void onDeliverySuccess()}
+                              >
+                                {busy
+                                  ? "Menyimpan…"
+                                  : "Konfirmasi Pengiriman Berhasil"}
+                              </button>
+                            </div>
+                          ) : null}
+                        </>
+                      )}
 
-                      <p className="ep-sectionlabel">Pengiriman Gagal</p>
-                      <div className="ep-filterbar ep-task-action-row">
-                        <label htmlFor="failure-reason">Alasan</label>
-                        <input
-                          id="failure-reason"
-                          value={failureReason}
-                          onChange={(e) => setFailureReason(e.target.value)}
-                        />
-                        <button
-                          type="button"
-                          className="ep-btn"
-                          disabled={busy}
-                          onClick={() => void onDeliveryFailed()}
-                        >
-                          Pengiriman Gagal
-                        </button>
-                      </div>
+                      {(!pwaOps || driverMode === "gagal") && (
+                        <>
+                          <p className="ep-sectionlabel">Pengiriman Gagal</p>
+                          <div className="ep-filterbar ep-task-action-row">
+                            <label htmlFor="failure-reason">Alasan</label>
+                            <input
+                              id="failure-reason"
+                              value={failureReason}
+                              onChange={(e) =>
+                                setFailureReason(e.target.value)
+                              }
+                            />
+                            {!pwaOps ? (
+                              <button
+                                type="button"
+                                className="ep-btn"
+                                disabled={busy}
+                                onClick={() => void onDeliveryFailed()}
+                              >
+                                Pengiriman Gagal
+                              </button>
+                            ) : null}
+                          </div>
+                        </>
+                      )}
                     </>
                   ) : (
                     <p className="ep-notice">Mode lihat — tanpa aksi mutasi.</p>
@@ -2075,40 +2204,8 @@ export function TeamTaskApiPanel({
                 </div>
               ) : null}
 
-              {canShowQtyConfirmForm(selected) &&
-              selected.task_type !== DRIVER_TASK &&
-              selected.task_type !== DESIGN_TASK &&
-              !isLoadingSjTask(selected.task_type) &&
-              !isPreliminaryLoadingTask(selected.task_type) &&
-              !isCoordinationTask(selected.task_type) &&
-              !selectedIsSample &&
-              !isSchedulingTask(selected.task_type) &&
-              (canAct(selected.task_type, "confirm") ||
-                canAct(selected.task_type, "input")) ? (
-                <div
-                  className="ep-filterbar"
-                  data-testid="qty-confirm-form"
-                >
-                  <label htmlFor="qty-confirm">Qty</label>
-                  <input
-                    id="qty-confirm"
-                    data-testid="qty-confirm-input"
-                    type="number"
-                    min={1}
-                    value={qtyInput}
-                    onChange={(e) => setQtyInput(e.target.value)}
-                  />
-                  <button
-                    type="button"
-                    className="ep-btn primary"
-                    data-testid="qty-confirm-btn"
-                    disabled={busy}
-                    onClick={() => void onConfirm()}
-                  >
-                    {busy ? "Menyimpan…" : "Konfirmasi"}
-                  </button>
-                </div>
-              ) : null}
+              {/* Qty form di body hanya desktop; PWA memakai sticky footer. */}
+              {!pwaOps ? qtyConfirmForm : null}
 
               {actionError ? (
                 <p className="ep-error" role="alert">
@@ -2116,26 +2213,175 @@ export function TeamTaskApiPanel({
                 </p>
               ) : null}
               {actionNotice ? <p className="ep-notice">{actionNotice}</p> : null}
+
+              {pwaOps ? (
+                <CollapsibleTaskSection
+                  title="Riwayat Konfirmasi"
+                  testId="task-history-block"
+                  count={history.length}
+                  className="ep-task-history-block is-compact"
+                >
+                  {historyError ? (
+                    <p className="ep-error" role="alert">
+                      {historyError}{" "}
+                      <button
+                        type="button"
+                        className="ep-btn sm"
+                        onClick={() => void openTask(selected)}
+                      >
+                        Coba Lagi
+                      </button>
+                    </p>
+                  ) : history.length === 0 ? (
+                    <p className="ep-empty ep-empty-inline">
+                      Belum ada konfirmasi.
+                    </p>
+                  ) : (
+                    <ul className="ep-history">
+                      {history.map((h) => (
+                        <li key={h.idempotency_key}>
+                          {formatQty(h.qty)} ·{" "}
+                          {actorDisplayLabel({
+                            actor_display_name: h.actor_display_name,
+                          })}{" "}
+                          · {formatDateTimeDisplay(h.created_at)}
+                        </li>
+                      ))}
+                    </ul>
+                  )}
+                </CollapsibleTaskSection>
+              ) : (
+                <div
+                  className={`ep-task-history-block${
+                    selectedIsDesigner || selectedIsScheduling
+                      ? " is-compact"
+                      : ""
+                  }`}
+                  data-testid="task-history-block"
+                >
+                  <p className="ep-sectionlabel">Riwayat Konfirmasi</p>
+                  {historyError ? (
+                    <p className="ep-error" role="alert">
+                      {historyError}{" "}
+                      <button
+                        type="button"
+                        className="ep-btn sm"
+                        onClick={() => void openTask(selected)}
+                      >
+                        Coba Lagi
+                      </button>
+                    </p>
+                  ) : history.length === 0 ? (
+                    <p className="ep-empty ep-empty-inline">
+                      Belum ada konfirmasi.
+                    </p>
+                  ) : (
+                    <ul className="ep-history">
+                      {history.map((h) => (
+                        <li key={h.idempotency_key}>
+                          {formatQty(h.qty)} ·{" "}
+                          {actorDisplayLabel({
+                            actor_display_name: h.actor_display_name,
+                          })}{" "}
+                          · {formatDateTimeDisplay(h.created_at)}
+                        </li>
+                      ))}
+                    </ul>
+                  )}
+                </div>
+              )}
             </div>
             <footer className="ep-modal-foot">
-              <span className="ep-muted">
-                {busy
-                  ? "Memproses…"
-                  : selectedIsDesigner
-                    ? "Desain"
-                    : selectedIsScheduling
-                      ? "Penjadwalan · alokasi operator"
-                      : "Backend tetap otorisasi final."}
-              </span>
-              <div className="ep-modal-foot-actions">
-                <button
-                  type="button"
-                  className="ep-btn sm"
-                  onClick={() => setSelected(null)}
+              {pwaOps && qtyConfirmForm ? (
+                qtyConfirmForm
+              ) : pwaOps &&
+                isLoadingSjTask(selected.task_type) &&
+                (canAct("loading-sj", "confirm") ||
+                  canAct(DRIVER_TASK, "confirm")) &&
+                selected.status !== "selesai" ? (
+                <div
+                  className="ep-btnrow ep-task-action-row ep-ws-footer-actions"
+                  data-testid="loading-sj-actions"
                 >
-                  Tutup
-                </button>
-              </div>
+                  <button
+                    type="button"
+                    className="ep-btn primary"
+                    disabled={busy}
+                    onClick={() => void onLoadingMatch()}
+                  >
+                    {busy ? "Menyimpan…" : "Sesuai"}
+                  </button>
+                  <button
+                    type="button"
+                    className="ep-btn"
+                    disabled={busy}
+                    onClick={() => void onLoadingMismatch()}
+                  >
+                    Tidak Sesuai
+                  </button>
+                </div>
+              ) : pwaOps &&
+                isCoordinationTask(selected.task_type) &&
+                canAct(selected.task_type, "confirm") ? (
+                <div className="ep-ws-footer-actions">
+                  <button
+                    type="button"
+                    className="ep-btn primary"
+                    disabled={busy || selected.status === "selesai"}
+                    onClick={() => void onConfirmCoordination()}
+                    data-testid="coordination-confirm-btn"
+                  >
+                    {busy ? "Menyimpan…" : "Konfirmasi"}
+                  </button>
+                </div>
+              ) : pwaOps &&
+                selectedIsDriver &&
+                canAct(DRIVER_TASK, "confirm") ? (
+                <div className="ep-ws-footer-actions">
+                  {driverMode === "berhasil" ? (
+                    <button
+                      type="button"
+                      className="ep-btn primary"
+                      disabled={busy}
+                      onClick={() => void onDeliverySuccess()}
+                    >
+                      {busy
+                        ? "Menyimpan…"
+                        : "Konfirmasi Pengiriman Berhasil"}
+                    </button>
+                  ) : (
+                    <button
+                      type="button"
+                      className="ep-btn"
+                      disabled={busy}
+                      onClick={() => void onDeliveryFailed()}
+                    >
+                      {busy ? "Menyimpan…" : "Pengiriman Gagal"}
+                    </button>
+                  )}
+                </div>
+              ) : (
+                <span className="ep-muted">
+                  {busy
+                    ? "Memproses…"
+                    : selectedIsDesigner
+                      ? "Desain"
+                      : selectedIsScheduling
+                        ? "Penjadwalan · alokasi operator"
+                        : "Backend tetap otorisasi final."}
+                </span>
+              )}
+              {!pwaOps ? (
+                <div className="ep-modal-foot-actions">
+                  <button
+                    type="button"
+                    className="ep-btn sm"
+                    onClick={() => setSelected(null)}
+                  >
+                    Tutup
+                  </button>
+                </div>
+              ) : null}
             </footer>
             <ConfirmationSuccessOverlay
               open={successOpen}
