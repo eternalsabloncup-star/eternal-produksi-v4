@@ -1,9 +1,11 @@
 """Durable SJ sync quarantine / deferred review (bukan ingest Surat Jalan).
 
 Kontrak:
-- MULTI_SO_NOT_SUPPORTED → review terbuka, tidak menulis ``accurate_delivery_notes``.
+- MULTI_SO_NOT_SUPPORTED → legacy reason (P8C: multi-PO native ingest bila parent lengkap;
+  review historis tetap dihormati untuk cooldown fair-budget).
 - DELIVERY_NOTE_IDENTITY → quarantine data (line/SO hilang/konflik); cooldown panjang.
-- po_not_registered → deferred retryable setelah PO terdaftar.
+- po_not_registered → deferred retryable setelah SEMUA parent PO terdaftar.
+
 - Upsert idempotent per ``accurate_sj_id`` (``_id`` stabil).
 - Tanpa createIndex di request path — identitas unik lewat ``_id``.
 - Payload mentah / PII pelanggan tidak disimpan.

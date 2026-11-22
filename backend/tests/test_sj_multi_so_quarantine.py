@@ -23,7 +23,6 @@ from app.services import delivery_sync
 from app.services.accurate_auto_sync import sj_job
 from app.services.accurate_auto_sync.checkpoint import load_job_checkpoint
 from app.services.accurate_auto_sync.sj_sync_review import (
-    REASON_MULTI_SO,
     REASON_PO_NOT_REGISTERED,
     get_sj_sync_review,
 )
@@ -122,15 +121,17 @@ class _Client:
         return copy.deepcopy(doc)
 
 
-def test_multi_so_119068_quarantine_not_ingested(sdb: Database) -> None:
-    """Representative DO 119068: multi-SO → review, zero DN."""
+def test_multi_so_119068_missing_parent_deferred(sdb: Database) -> None:
+    """Representative DO 119068: multi-SO + parent hilang → deferred, zero DN."""
     detail = _sj(119068, so_ids=[95106, 99901])
     result = delivery_sync.sync_delivery_order_payload(
         sdb, OWNER, detail, mongo_guard="test"
     )
-    assert result["outcome"] == "review_required"
-    assert result["reason"] == REASON_MULTI_SO
+    assert result["outcome"] == "skipped"
+    assert result["reason"] == REASON_PO_NOT_REGISTERED
     assert result.get("writes") == 0
+    assert result.get("deferred") is True
+    assert set(result.get("missing_po_ids") or []) == {"95106", "99901"}
     assert deliveries.get_delivery_note(sdb, "119068") is None
     review = get_sj_sync_review(sdb, "119068")
     assert review is not None
@@ -150,7 +151,7 @@ def test_valid_do_after_multi_so_same_page_advances_checkpoint(sdb: Database) ->
     result = sj_job.run_sj_auto_sync(
         sdb, client=client, mongo_guard="test", page_size=20, max_pages=5, max_rows=50
     )
-    assert result["counters"]["review_required"] >= 1
+    assert result["counters"]["skipped"] >= 1
     assert result["counters"]["created"] >= 1
     assert result["counters"]["failed"] == 0
     assert result.get("stopped_reason") != "page_failed"
@@ -162,7 +163,7 @@ def test_valid_do_after_multi_so_same_page_advances_checkpoint(sdb: Database) ->
     assert cp.get("last_completed_page") == 1 or cp.get("backfill_complete") is True
 
 
-def test_repeated_multi_so_idempotent_review(sdb: Database) -> None:
+def test_repeated_multi_so_idempotent_deferred_review(sdb: Database) -> None:
     detail = _sj(119068, so_ids=[1, 2])
     first = delivery_sync.sync_delivery_order_payload(
         sdb, OWNER, detail, mongo_guard="test"
@@ -170,7 +171,8 @@ def test_repeated_multi_so_idempotent_review(sdb: Database) -> None:
     second = delivery_sync.sync_delivery_order_payload(
         sdb, OWNER, detail, mongo_guard="test"
     )
-    assert first["outcome"] == second["outcome"] == "review_required"
+    assert first["outcome"] == second["outcome"] == "skipped"
+    assert first["reason"] == REASON_PO_NOT_REGISTERED
     assert sdb["accurate_sj_sync_reviews"].count_documents({}) == 1
     review = get_sj_sync_review(sdb, "119068")
     assert int(review["seen_count"]) >= 2
@@ -282,14 +284,15 @@ def test_dual_flag_off_blocks_auto_sync(sdb: Database, monkeypatch: pytest.Monke
     assert out["writes"] == 0
 
 
-def test_targeted_multi_so_is_review_not_failed(sdb: Database) -> None:
+def test_targeted_multi_so_missing_parent_deferred_not_failed(sdb: Database) -> None:
     upsert_sales_order(sdb, normalize_sales_order(SAMPLE_SALES_ORDER_STRUCTURE))
     details = {9: _sj(9, so_ids=[95106, 100])}
     client = _Client(details, {})
     result = delivery_sync.sync_selected_delivery_orders_from_accurate(
         sdb, OWNER, ["9"], client=client, scope="multi-q"
     )
-    assert result["review_required"] == 1
+    assert result["skipped"] == 1
     assert result["failed"] == 0
     assert result["created"] == 0
     assert get_sj_sync_review(sdb, "9") is not None
+    assert get_sj_sync_review(sdb, "9")["reason"] == REASON_PO_NOT_REGISTERED
