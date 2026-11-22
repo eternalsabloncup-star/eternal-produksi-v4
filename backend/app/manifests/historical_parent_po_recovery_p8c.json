@@ -1,0 +1,154 @@
+{
+  "label": "historical_parent_po_recovery_p8c",
+  "version": "2026-11-23-p10",
+  "batch_id": "historical_parent_po_recovery_p8c",
+  "audit_date": "2026-11-22",
+  "audit_source": "p9_accurate_ro_seal_probe",
+  "created_at_utc": "2026-11-22T19:11:39.761392+00:00",
+  "provenance": {
+    "source": "P9 Accurate read-only + P8B quarantine audit",
+    "p9_id_list_sha256_comma_join": "caafffe91513a018dbf2f2de3b107e03cfcbe4646286cd58e6f9b1cffc96e1b6",
+    "p9_candidate_manifest_sha256_prefix_note": "55839b37… was pre-seal candidate without customer/related_sj enrichment"
+  },
+  "global_date_floor": "2026-11-01",
+  "allowed_branches": [
+    "50",
+    "150"
+  ],
+  "po_count": 10,
+  "id_list_sha256": "9f8b77f80a962883951234d60497ea031e269191f035be98adc696f870e551e4",
+  "target_sj_ids": [
+    "119068",
+    "119155",
+    "119721",
+    "119950",
+    "119979",
+    "120806"
+  ],
+  "excluded_sj_ids": [
+    "120851"
+  ],
+  "entries": [
+    {
+      "accurate_po_id": "89867",
+      "trans_date": "2026-08-13",
+      "branch_id": "50",
+      "sj_count": 1,
+      "customer_id": "30501",
+      "related_sj_ids": [
+        "119068"
+      ],
+      "line_ids_sha256": "764a4c70a1ea571ad3bbde0b3af7c95b66199d6e3c347fa70ae771e42726214e",
+      "po_no": "PO/2026/08/13/000018"
+    },
+    {
+      "accurate_po_id": "91580",
+      "trans_date": "2026-09-14",
+      "branch_id": "50",
+      "sj_count": 1,
+      "customer_id": "32300",
+      "related_sj_ids": [
+        "119950"
+      ],
+      "line_ids_sha256": "9c2404376b21fac4eda410716c6416d772422b3b07878d2dacc803fd5205322e",
+      "po_no": "PO/2026/09/14/000030"
+    },
+    {
+      "accurate_po_id": "92201",
+      "trans_date": "2026-09-23",
+      "branch_id": "50",
+      "sj_count": 1,
+      "customer_id": "24950",
+      "related_sj_ids": [
+        "119155"
+      ],
+      "line_ids_sha256": "8bdf48174dc506f7e54d89701edaccd6e2dd5141df000f887ed89a65339d9412",
+      "po_no": "PO/2026/09/23/000023"
+    },
+    {
+      "accurate_po_id": "92300",
+      "trans_date": "2026-09-14",
+      "branch_id": "50",
+      "sj_count": 1,
+      "customer_id": "32300",
+      "related_sj_ids": [
+        "119950"
+      ],
+      "line_ids_sha256": "4759d96ba7d3f0796669cf9c29a85c537791be8293574d128986f8213f6cd3dd",
+      "po_no": "PO/2026/09/14/000035"
+    },
+    {
+      "accurate_po_id": "93084",
+      "trans_date": "2026-10-15",
+      "branch_id": "50",
+      "sj_count": 1,
+      "customer_id": "32300",
+      "related_sj_ids": [
+        "119950"
+      ],
+      "line_ids_sha256": "7ab5cb67b9be1b66e7604089073ce32331da476fe417fb3ccdd50d29a6f1fd07",
+      "po_no": "PO/15/10/2026/000014"
+    },
+    {
+      "accurate_po_id": "93125",
+      "trans_date": "2026-10-15",
+      "branch_id": "50",
+      "sj_count": 1,
+      "customer_id": "16450",
+      "related_sj_ids": [
+        "119721"
+      ],
+      "line_ids_sha256": "0ebef6c3c9115e05b8d854984615d487f3ae24e00017df9bd48ffa9fbeb95af4",
+      "po_no": "PO/15/10/2026/000016"
+    },
+    {
+      "accurate_po_id": "93319",
+      "trans_date": "2026-10-17",
+      "branch_id": "50",
+      "sj_count": 1,
+      "customer_id": "24950",
+      "related_sj_ids": [
+        "119155"
+      ],
+      "line_ids_sha256": "2125e1538970e6a49d6b1b060b4b38eea9bb4ef295b9b987a71786a99633da0f",
+      "po_no": "PO/17/10/2026/000022"
+    },
+    {
+      "accurate_po_id": "93807",
+      "trans_date": "2026-10-29",
+      "branch_id": "50",
+      "sj_count": 1,
+      "customer_id": "16450",
+      "related_sj_ids": [
+        "119721"
+      ],
+      "line_ids_sha256": "6730e3d46de18128b88be0733a02cba0906ab982ef66d03f6326e5dd69733f9e",
+      "po_no": "PO/29/10/2026/000018"
+    },
+    {
+      "accurate_po_id": "93905",
+      "trans_date": "2026-10-29",
+      "branch_id": "50",
+      "sj_count": 1,
+      "customer_id": "30501",
+      "related_sj_ids": [
+        "119068"
+      ],
+      "line_ids_sha256": "9f05b97d03db3c7c3444bd0825b2e086d81360b8526cb7af63943a9a42988e75",
+      "po_no": "PO/29/10/2026/000019"
+    },
+    {
+      "accurate_po_id": "94059",
+      "trans_date": "2026-10-31",
+      "branch_id": "50",
+      "sj_count": 1,
+      "customer_id": "30501",
+      "related_sj_ids": [
+        "119068"
+      ],
+      "line_ids_sha256": "8b04e309b69bfe7693f16d4bee3945b74de05b53f4f9d2269e974a628a5643cb",
+      "po_no": "PO/31/10/2026/000014"
+    }
+  ],
+  "manifest_sha256": "ed7e32c96fe54e2a90ec8a93cd1758b335a377706776c6c3d23e9902de56759d"
+}

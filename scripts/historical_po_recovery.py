@@ -36,12 +36,23 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "--expect-po-count",
         type=int,
         required=True,
-        help="Wajib 80 untuk batch historical_po_recovery_20261121.",
+        help=(
+            "Exact sealed count: 80 untuk historical_po_recovery_20261121; "
+            "10 untuk historical_parent_po_recovery_p8c."
+        ),
     )
     p.add_argument(
         "--expect-batch-id",
         default="historical_po_recovery_20261121",
-        help="Batch id exact.",
+        help=(
+            "Batch id exact dari registry sealed "
+            "(historical_po_recovery_20261121 | historical_parent_po_recovery_p8c)."
+        ),
+    )
+    p.add_argument(
+        "--expect-id-list-sha256",
+        default=None,
+        help="Wajib untuk batch P8C (id_list_sha256 sealed).",
     )
     p.add_argument(
         "--apply",
@@ -107,6 +118,7 @@ def main(argv: list[str] | None = None) -> int:
         ),
         expect_live_sha=args.expect_live_sha,
         confirm_batch_id=args.confirm_batch_id,
+        expect_id_list_sha256=args.expect_id_list_sha256,
     )
 
     live_sha = None

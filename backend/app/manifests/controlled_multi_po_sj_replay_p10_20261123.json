@@ -1,0 +1,91 @@
+{
+  "label": "controlled_multi_po_sj_replay_p10_20261123",
+  "version": "2026-11-23-p10",
+  "batch_id": "controlled_multi_po_sj_replay_p10_20261123",
+  "audit_date": "2026-11-22",
+  "audit_source": "p9_accurate_ro_seal_probe",
+  "created_at_utc": "2026-11-22T19:11:39.761392+00:00",
+  "provenance": {
+    "source": "P9 Accurate Delivery Order read-only revalidation",
+    "excluded_forever": [
+      "120851"
+    ]
+  },
+  "sj_count": 6,
+  "id_list_sha256": "1d5c2b22deb7388cb8734298be6a7d090cb8602ddb40e6f0221582323b7d4ac6",
+  "excluded_sj_ids": [
+    "120851"
+  ],
+  "entries": [
+    {
+      "accurate_sj_id": "119068",
+      "parent_po_ids": [
+        "89867",
+        "93905",
+        "94059"
+      ],
+      "branch_id": "50",
+      "sj_no": "DO/2026/11/02/000013",
+      "detail_attr_sha256": "272d527e5f83ef0f600653f590b4b311d4a71af97e5c7906ae9985a67680feaf",
+      "item_count": 7
+    },
+    {
+      "accurate_sj_id": "119155",
+      "parent_po_ids": [
+        "92201",
+        "93319"
+      ],
+      "branch_id": "50",
+      "sj_no": "DO/2026/11/03/000014",
+      "detail_attr_sha256": "e2b55648ba47bd40ce84a4c96f3eb2b8e44fb46950f5a1f209bb12dbc5b662cb",
+      "item_count": 2
+    },
+    {
+      "accurate_sj_id": "119721",
+      "parent_po_ids": [
+        "93125",
+        "93807",
+        "93854"
+      ],
+      "branch_id": "50",
+      "sj_no": "DO/2026/11/11/000008",
+      "detail_attr_sha256": "012c339dca4f9639dddd3abf44a70b3804205126a9ab1ba07fc2f97079c830a2",
+      "item_count": 6
+    },
+    {
+      "accurate_sj_id": "119950",
+      "parent_po_ids": [
+        "91580",
+        "92300",
+        "93084"
+      ],
+      "branch_id": "50",
+      "sj_no": "DO/2026/11/14/000020",
+      "detail_attr_sha256": "4f957fbd60f39070f4158e72e7bb13dcc1543e94a6e226a4d57c0772a1a9c92c",
+      "item_count": 3
+    },
+    {
+      "accurate_sj_id": "119979",
+      "parent_po_ids": [
+        "94581",
+        "94688"
+      ],
+      "branch_id": "50",
+      "sj_no": "DO/2026/11/16/000035",
+      "detail_attr_sha256": "8488b9aa652296ad7ca4b8d16621e1160714b91d9bca07b2d46a8538aa44e0ec",
+      "item_count": 5
+    },
+    {
+      "accurate_sj_id": "120806",
+      "parent_po_ids": [
+        "91902",
+        "94106"
+      ],
+      "branch_id": "50",
+      "sj_no": "DO/2026/11/21/000011",
+      "detail_attr_sha256": "bde03d0e195c9a5e5c7665b81e7940e22021f892e7f211465653b7c0d0ef1edc",
+      "item_count": 2
+    }
+  ],
+  "manifest_sha256": "b2dcc14e660b6291a1471ee4e30730a7536627cb12a2d4e67514ac3e529dc6d6"
+}

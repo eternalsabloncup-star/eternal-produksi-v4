@@ -35,6 +35,8 @@ from app.services.po_sync import MongoGuardMode, sync_sales_order_payload
 
 BATCH_ID = "historical_po_recovery_20261121"
 DEFAULT_MANIFEST_NAME = "historical_po_recovery_20261121.json"
+P8C_BATCH_ID = "historical_parent_po_recovery_p8c"
+P8C_MANIFEST_NAME = "historical_parent_po_recovery_p8c.json"
 ALLOWED_BRANCHES = frozenset({"50", "150"})
 SHA40_RE = re.compile(r"^[0-9a-f]{40}$")
 
@@ -50,7 +52,43 @@ Outcome = Literal[
 ]
 
 MAINTENANCE_ACTOR = "historical_po_recovery_apply"
+P8C_MAINTENANCE_ACTOR = "historical_parent_po_recovery_p8c_apply"
 DEFAULT_MAINTENANCE_TTL_SECONDS = 1800
+
+
+@dataclass(frozen=True)
+class BatchSpec:
+    """Sealed batch registry entry — tidak menerima batch arbitrary di runtime."""
+
+    batch_id: str
+    label: str
+    expected_po_count: int
+    default_manifest_name: str
+    require_id_list_sha256: bool
+    require_customer_and_related_sj: bool
+    maintenance_actor: str
+
+
+BATCH_REGISTRY: dict[str, BatchSpec] = {
+    BATCH_ID: BatchSpec(
+        batch_id=BATCH_ID,
+        label=BATCH_ID,
+        expected_po_count=80,
+        default_manifest_name=DEFAULT_MANIFEST_NAME,
+        require_id_list_sha256=False,
+        require_customer_and_related_sj=False,
+        maintenance_actor=MAINTENANCE_ACTOR,
+    ),
+    P8C_BATCH_ID: BatchSpec(
+        batch_id=P8C_BATCH_ID,
+        label=P8C_BATCH_ID,
+        expected_po_count=10,
+        default_manifest_name=P8C_MANIFEST_NAME,
+        require_id_list_sha256=True,
+        require_customer_and_related_sj=True,
+        maintenance_actor=P8C_MAINTENANCE_ACTOR,
+    ),
+}
 
 
 class HistoricalRecoveryError(RuntimeError):
@@ -65,6 +103,9 @@ class ManifestEntry:
     trans_date: date
     branch_id: str
     sj_count: int
+    customer_id: str = ""
+    related_sj_ids: tuple[str, ...] = ()
+    line_ids_sha256: str = ""
 
 
 @dataclass(frozen=True)
@@ -79,6 +120,8 @@ class SealedManifest:
     entries: tuple[ManifestEntry, ...]
     manifest_sha256: str
     path: Path
+    id_list_sha256: str = ""
+    batch_spec: BatchSpec | None = None
 
     @property
     def ids(self) -> frozenset[str]:
@@ -90,6 +133,11 @@ class SealedManifest:
             if e.accurate_po_id == aid:
                 return e
         return None
+
+    def maintenance_actor(self) -> str:
+        if self.batch_spec is not None:
+            return self.batch_spec.maintenance_actor
+        return MAINTENANCE_ACTOR
 
 
 @dataclass(frozen=True)
@@ -130,10 +178,27 @@ class RecoveryApproval:
     i_understand_this_writes_production: bool = False
     expect_live_sha: str | None = None
     confirm_batch_id: str | None = None
+    expect_id_list_sha256: str | None = None
 
 
-def default_manifest_path() -> Path:
-    return Path(__file__).resolve().parents[1] / "manifests" / DEFAULT_MANIFEST_NAME
+def default_manifest_path(batch_id: str | None = None) -> Path:
+    """Default sealed path. Tanpa argumen → P6 (backward compatible)."""
+    if batch_id is None or batch_id == BATCH_ID:
+        name = DEFAULT_MANIFEST_NAME
+    else:
+        spec = BATCH_REGISTRY.get(batch_id)
+        if spec is None:
+            raise HistoricalRecoveryError(
+                f"batch_id tidak terdaftar: {batch_id}",
+                code="manifest_batch_mismatch",
+            )
+        name = spec.default_manifest_name
+    return Path(__file__).resolve().parents[1] / "manifests" / name
+
+
+def compute_id_list_sha256(po_ids: list[str]) -> str:
+    blob = "\n".join(po_ids) + ("\n" if po_ids else "")
+    return hashlib.sha256(blob.encode("utf-8")).hexdigest()
 
 
 def compute_manifest_sha256(body: Mapping[str, Any]) -> str:
@@ -174,7 +239,8 @@ def load_sealed_manifest(path: Path | None = None) -> SealedManifest:
 
     batch_id = str(raw.get("batch_id") or "").strip()
     label = str(raw.get("label") or "").strip()
-    if batch_id != BATCH_ID or label != BATCH_ID:
+    spec = BATCH_REGISTRY.get(batch_id)
+    if spec is None or label != spec.label:
         raise HistoricalRecoveryError(
             "batch_id/label manifest tidak dikenali.",
             code="manifest_batch_mismatch",
@@ -200,9 +266,9 @@ def load_sealed_manifest(path: Path | None = None) -> SealedManifest:
             code="manifest_invalid",
         )
     po_count = int(raw.get("po_count") or 0)
-    if po_count != 80 or len(entries_raw) != 80:
+    if po_count != spec.expected_po_count or len(entries_raw) != spec.expected_po_count:
         raise HistoricalRecoveryError(
-            "po_count/entries wajib tepat 80.",
+            f"po_count/entries wajib tepat {spec.expected_po_count}.",
             code="manifest_count_mismatch",
         )
 
@@ -244,13 +310,58 @@ def load_sealed_manifest(path: Path | None = None) -> SealedManifest:
                 f"Cabang luar scope untuk {aid}: {br!r}",
                 code="manifest_branch_out_of_scope",
             )
+        customer_id = str(item.get("customer_id") or "").strip()
+        related_raw = item.get("related_sj_ids") or []
+        if related_raw and not isinstance(related_raw, list):
+            raise HistoricalRecoveryError(
+                f"related_sj_ids invalid untuk {aid}",
+                code="manifest_invalid",
+            )
+        related_sj_ids = tuple(
+            str(x).strip() for x in related_raw if str(x).strip().isdigit()
+        )
+        line_ids_sha256 = str(item.get("line_ids_sha256") or "").strip().lower()
+        if spec.require_customer_and_related_sj:
+            if not customer_id.isdigit():
+                raise HistoricalRecoveryError(
+                    f"customer_id wajib untuk {aid}",
+                    code="manifest_invalid_customer",
+                )
+            if not related_sj_ids:
+                raise HistoricalRecoveryError(
+                    f"related_sj_ids wajib untuk {aid}",
+                    code="manifest_invalid_related_sj",
+                )
+            if not line_ids_sha256 or len(line_ids_sha256) != 64:
+                raise HistoricalRecoveryError(
+                    f"line_ids_sha256 wajib untuk {aid}",
+                    code="manifest_invalid_line_hash",
+                )
         entries.append(
             ManifestEntry(
                 accurate_po_id=aid,
                 trans_date=td,
                 branch_id=br or "",
                 sj_count=int(item.get("sj_count") or 0),
+                customer_id=customer_id,
+                related_sj_ids=related_sj_ids,
+                line_ids_sha256=line_ids_sha256,
             )
+        )
+
+    id_list = [e.accurate_po_id for e in entries]
+    computed_id_list = compute_id_list_sha256(id_list)
+    claimed_id_list = str(raw.get("id_list_sha256") or "").strip().lower()
+    if spec.require_id_list_sha256:
+        if not claimed_id_list or claimed_id_list != computed_id_list:
+            raise HistoricalRecoveryError(
+                "id_list_sha256 tidak cocok.",
+                code="manifest_id_list_mismatch",
+            )
+    elif claimed_id_list and claimed_id_list != computed_id_list:
+        raise HistoricalRecoveryError(
+            "id_list_sha256 tidak cocok.",
+            code="manifest_id_list_mismatch",
         )
 
     return SealedManifest(
@@ -264,6 +375,8 @@ def load_sealed_manifest(path: Path | None = None) -> SealedManifest:
         entries=tuple(entries),
         manifest_sha256=claimed,
         path=manifest_path,
+        id_list_sha256=claimed_id_list or computed_id_list,
+        batch_spec=spec,
     )
 
 
@@ -319,6 +432,21 @@ def assert_runtime_approval(
             "expect_po_count tidak cocok.",
             code="approval_count_mismatch",
         )
+    spec = manifest.batch_spec or BATCH_REGISTRY.get(manifest.batch_id)
+    if spec is not None and spec.require_id_list_sha256:
+        got = (approval.expect_id_list_sha256 or "").strip().lower()
+        if not got or got != manifest.id_list_sha256:
+            raise HistoricalRecoveryError(
+                "expect_id_list_sha256 tidak cocok.",
+                code="approval_id_list_mismatch",
+            )
+    elif approval.expect_id_list_sha256:
+        got = approval.expect_id_list_sha256.strip().lower()
+        if got != manifest.id_list_sha256:
+            raise HistoricalRecoveryError(
+                "expect_id_list_sha256 tidak cocok.",
+                code="approval_id_list_mismatch",
+            )
 
     if approval.mode == "dry_run":
         return
@@ -478,6 +606,20 @@ def validate_payload_against_entry(
             "outcome": "ineligible",
             "reason": "out_of_scope_branch",
         }
+    if entry.customer_id:
+        cust = payload.get("customer")
+        cust_id = ""
+        if isinstance(cust, dict):
+            cust_id = as_text(cust.get("id"))
+        cust_id = cust_id or as_text(payload.get("customerId"))
+        if cust_id != entry.customer_id:
+            return {
+                "ok": False,
+                "outcome": "ineligible",
+                "reason": "customer_mismatch",
+                "expected": entry.customer_id,
+                "actual": cust_id,
+            }
     try:
         _require_active_branch(db, br or "")
     except HistoricalRecoveryError as exc:
@@ -996,7 +1138,7 @@ def run_historical_po_recovery(
             maintenance = acquire_po_repair_maintenance(
                 db,
                 ttl_seconds=DEFAULT_MAINTENANCE_TTL_SECONDS,
-                actor=MAINTENANCE_ACTOR,
+                actor=manifest.maintenance_actor(),
             )
         except (PoRepairMaintenanceError, AutoSyncLockError) as exc:
             raise HistoricalRecoveryError(
