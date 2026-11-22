@@ -152,6 +152,69 @@ export async function createSettingsRole(role_key: string, label: string) {
   });
 }
 
+export async function duplicateSettingsRole(
+  roleKey: string,
+  new_key: string,
+  label: string,
+) {
+  return request<SettingsRole>(
+    `/api/settings/roles/${encodeURIComponent(roleKey)}/duplicate`,
+    {
+      method: "POST",
+      body: JSON.stringify({ new_key, label }),
+    },
+  );
+}
+
+export async function updateSettingsRoleLabel(roleKey: string, label: string) {
+  return request<SettingsRole>(
+    `/api/settings/roles/${encodeURIComponent(roleKey)}`,
+    {
+      method: "PATCH",
+      body: JSON.stringify({ label }),
+    },
+  );
+}
+
+export async function deactivateSettingsRole(roleKey: string, reason?: string) {
+  return request<SettingsRole>(
+    `/api/settings/roles/${encodeURIComponent(roleKey)}/deactivate`,
+    {
+      method: "POST",
+      body: JSON.stringify({ is_active: false, reason }),
+    },
+  );
+}
+
+export async function fetchUserSessions(userId: string) {
+  return request<{
+    items: Array<{
+      id: string;
+      created_at?: string;
+      last_seen_at?: string;
+      user_agent?: string | null;
+      ip?: string | null;
+    }>;
+  }>(`/api/settings/users/${encodeURIComponent(userId)}/sessions`);
+}
+
+export async function revokeUserSession(userId: string, sessionId: string) {
+  return request<{ ok: boolean }>(
+    `/api/settings/users/${encodeURIComponent(userId)}/sessions/${encodeURIComponent(sessionId)}`,
+    { method: "DELETE" },
+  );
+}
+
+export async function deactivateTaskType(taskType: string, reason?: string) {
+  return request(
+    `/api/settings/task-types/${encodeURIComponent(taskType)}/deactivate`,
+    {
+      method: "POST",
+      body: JSON.stringify({ is_active: false, reason }),
+    },
+  );
+}
+
 export async function saveRolePermissions(
   roleKey: string,
   body: {

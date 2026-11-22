@@ -20,7 +20,8 @@ export type TaskAction =
   | "approve"
   | "edit"
   | "delete"
-  | "manage_evidence";
+  | "manage_evidence"
+  | "cancel";
 
 export type MasterTaskType = {
   task_type: string;
