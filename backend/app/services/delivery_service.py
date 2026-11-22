@@ -445,20 +445,41 @@ def _assert_loading_assignee(db: Database, user: dict[str, Any], accurate_sj_id:
         )
 
 
-def _set_preliminary_waiting_status(
+def _loading_sj_task_ready_ids(
+    db: Database,
+    sj_ids: list[str],
+    *,
+    session: Any | None = None,
+    extra_ready_sj_ids: list[str] | None = None,
+) -> list[str]:
+    """SJ yang sudah punya tugas loading-sj valid (bukan sekadar dokumen SJ)."""
+    ready: list[str] = []
+    seen: set[str] = set()
+    for raw in list(extra_ready_sj_ids or []) + list(sj_ids):
+        sj_id = str(raw or "").strip()
+        if not sj_id or sj_id in seen:
+            continue
+        seen.add(sj_id)
+        if tasks.get_task(db, loading_sj_task_key(sj_id), session=session) is None:
+            continue
+        ready.append(sj_id)
+    return ready
+
+
+def _set_preliminary_lifecycle_status(
     db: Database,
     task_key: str,
     *,
-    waiting: bool,
+    can_close: bool,
     session: Any | None = None,
 ) -> None:
-    """Menunggu SJ = open/actionable; setelah tautan SJ = selesai informatif.
+    """Selesai informatif hanya jika semua SJ terkait punya loading-sj.
 
     Tidak menyelesaikan Loading SJ / Driver — hanya menutup tujuan menunggu.
     """
     from datetime import datetime, timezone
 
-    status = tasks.TASK_STATUS_OPEN if waiting else tasks.TASK_STATUS_DONE
+    status = tasks.TASK_STATUS_DONE if can_close else tasks.TASK_STATUS_OPEN
     tasks.tasks_collection(db).update_one(
         {"task_key": task_key},
         {"$set": {"status": status, "updated_at": datetime.now(timezone.utc)}},
@@ -477,12 +498,13 @@ def upsert_preliminary_loading_for_line(
     label: str = "Loading — Menunggu Surat Jalan",
     prev_context: dict[str, Any] | None = None,
     extra_links: list[dict[str, str]] | None = None,
+    extra_ready_sj_ids: list[str] | None = None,
     session: Any | None = None,
 ) -> dict[str, Any]:
-    """Upsert tugas menunggu-SJ + tautan SJ existing (PO+line) + status lifecycle.
+    """Upsert tugas menunggu-SJ + tautan SJ (PO+line) + readiness loading-sj.
 
-    ``extra_links``: SJ yang sedang di-ingest dalam transaksi yang sama (belum
-    terlihat oleh baca tanpa session) — tetap hanya identitas SJ+line, bukan tebakan.
+    SJ_EXISTS ≠ SJ_LOADING_TASK_READY. Preliminary boleh ``selesai`` hanya jika
+    setiap SJ terkait memiliki tugas ``loading-sj``. Tanpa itu tetap visible.
     """
     po_id = str(accurate_po_id or "").strip()
     line_id = str(accurate_line_id or "").strip()
@@ -504,21 +526,40 @@ def upsert_preliminary_loading_for_line(
             linked_ids.append(sj_id)
         if sj_no and sj_no not in linked_nos:
             linked_nos.append(sj_no)
-    waiting = len(linked_ids) == 0
+
+    waiting_for_sj = len(linked_ids) == 0
+    ready_ids = _loading_sj_task_ready_ids(
+        db,
+        linked_ids,
+        session=session,
+        extra_ready_sj_ids=extra_ready_sj_ids,
+    )
+    ready_set = set(ready_ids)
+    missing_ids = [sj for sj in linked_ids if sj not in ready_set]
+    loading_task_ready = (not waiting_for_sj) and len(missing_ids) == 0
+    can_close = loading_task_ready
+
+    if waiting_for_sj:
+        display = "Menunggu Surat Jalan"
+    elif loading_task_ready:
+        display = "SJ tersedia — konfirmasi pada tugas Loading Surat Jalan"
+    else:
+        display = "SJ tersedia — tugas Loading belum siap"
+
     ctx: dict[str, Any] = {
         **prev,
         "qty_printed": qty_printed,
-        "waiting_for_sj": waiting,
-        "sj_available": not waiting,
-        "display_status": (
-            "Menunggu Surat Jalan"
-            if waiting
-            else "SJ tersedia — konfirmasi pada tugas Loading Surat Jalan"
-        ),
+        "waiting_for_sj": waiting_for_sj,
+        "sj_available": not waiting_for_sj,
+        "sj_exists": not waiting_for_sj,
+        "loading_task_ready": loading_task_ready,
+        "ready_loading_sj_ids": ready_ids,
+        "missing_loading_sj_ids": missing_ids,
+        "display_status": display,
         "linked_sj_ids": linked_ids,
         "linked_sj_nos": linked_nos,
     }
-    if not waiting:
+    if not waiting_for_sj:
         ctx["association"] = "line_id_match"
     key = build_task_key(
         PRELIMINARY_LOADING_TASK,
@@ -536,7 +577,9 @@ def upsert_preliminary_loading_for_line(
         context=ctx,
         session=session,
     )
-    _set_preliminary_waiting_status(db, key, waiting=waiting, session=session)
+    _set_preliminary_lifecycle_status(
+        db, key, can_close=can_close, session=session
+    )
     return tasks.get_task(db, key, session=session) or task
 
 
@@ -568,6 +611,8 @@ def _link_preliminary_loading_for_note(
         if sj_id
         else []
     )
+    # loading-sj baru dalam txn yang sama → anggap ready untuk SJ ini.
+    extra_ready = [sj_id] if sj_id else []
     for line_id in line_ids:
         key = build_task_key(
             PRELIMINARY_LOADING_TASK,
@@ -598,6 +643,7 @@ def _link_preliminary_loading_for_note(
             label=str(existing.get("label") or "Loading — Menunggu Surat Jalan"),
             prev_context=dict((existing.get("context") or {})),
             extra_links=extra,
+            extra_ready_sj_ids=extra_ready,
             session=session,
         )
 

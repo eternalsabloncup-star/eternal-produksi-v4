@@ -313,6 +313,7 @@ def test_sj_links_preliminary_by_line_id(
     prelim2 = tasks.get_task(db, prod.preliminary_loading_task_key(PO_ID, LINE_PRINT))
     assert prelim2 is not None
     assert prelim2["context"]["waiting_for_sj"] is False
+    assert prelim2["context"]["loading_task_ready"] is True
     assert SJ_ID in (prelim2["context"].get("linked_sj_ids") or [])
     assert prelim2["context"].get("association") == "line_id_match"
     assert prelim2["status"] == tasks.TASK_STATUS_DONE
@@ -337,10 +338,72 @@ def test_sj_before_print_associates_immediately(
     prelim = tasks.get_task(db, prod.preliminary_loading_task_key(PO_ID, LINE_PRINT))
     assert prelim is not None
     assert prelim["context"]["waiting_for_sj"] is False
+    assert prelim["context"]["loading_task_ready"] is True
     assert SJ_ID in (prelim["context"].get("linked_sj_ids") or [])
     assert prelim["status"] == tasks.TASK_STATUS_DONE
     assert is_actionable_open_task(prelim) is False
     assert len(tasks.list_tasks(db, task_type="loading-sj")) == 1
+
+
+def test_sj_exists_without_loading_task_keeps_preliminary_visible(
+    db: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Historical SJ dokumen tanpa loading-sj → preliminary tetap visible."""
+    from app.services.object_auth import is_actionable_open_task
+
+    _env(monkeypatch, V4_LOADING_SJ_TASK_ENABLED=False)
+    _seed_po(db)
+    # Insert SJ without creating loading-sj (flag off).
+    delivery.ingest_delivery_note(db, OWNER, _sj(qty=80))
+    assert tasks.list_tasks(db, task_type="loading-sj") == []
+    assert deliveries.get_delivery_note(db, SJ_ID) is not None
+
+    _env(monkeypatch, V4_LOADING_SJ_TASK_ENABLED=True)
+    alloc = _ready_print(db, prep_qty=200)
+    prod.confirm_print(
+        db, OPERATOR, allocation_id=alloc, qty=100, idempotency_key="hist-sj-print"
+    )
+    prelim = tasks.get_task(db, prod.preliminary_loading_task_key(PO_ID, LINE_PRINT))
+    assert prelim is not None
+    assert prelim["context"]["waiting_for_sj"] is False
+    assert prelim["context"]["sj_exists"] is True
+    assert prelim["context"]["loading_task_ready"] is False
+    assert SJ_ID in (prelim["context"].get("missing_loading_sj_ids") or [])
+    assert prelim["status"] == tasks.TASK_STATUS_OPEN
+    assert is_actionable_open_task(prelim) is True
+    assert "belum siap" in str(prelim["context"].get("display_status") or "").lower()
+
+
+def test_multi_sj_one_loading_missing_keeps_visible(
+    db: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from app.services.object_auth import is_actionable_open_task
+
+    _env(monkeypatch, V4_LOADING_SJ_TASK_ENABLED=True)
+    alloc = _ready_print(db, prep_qty=300)
+    prod.confirm_print(
+        db, OPERATOR, allocation_id=alloc, qty=200, idempotency_key="partial-ready-print"
+    )
+    # First SJ creates loading-sj.
+    delivery.ingest_delivery_note(db, OWNER, _sj(SJ_ID, 50))
+    # Second SJ document without loading-sj (direct upsert, no ingest ensure).
+    _env(monkeypatch, V4_LOADING_SJ_TASK_ENABLED=False)
+    deliveries.upsert_delivery_note(db, _sj(SJ_ID_B, 60))
+    assert tasks.get_task(db, f"task:loading-sj:sj:{SJ_ID_B}") is None
+
+    _env(monkeypatch, V4_LOADING_SJ_TASK_ENABLED=True)
+    # Re-sync preliminary via another print partial.
+    prod.confirm_print(
+        db, OPERATOR, allocation_id=alloc, qty=10, idempotency_key="partial-ready-print-2"
+    )
+    prelim = tasks.get_task(db, prod.preliminary_loading_task_key(PO_ID, LINE_PRINT))
+    assert prelim is not None
+    linked = set(prelim["context"].get("linked_sj_ids") or [])
+    assert SJ_ID in linked and SJ_ID_B in linked
+    assert SJ_ID_B in (prelim["context"].get("missing_loading_sj_ids") or [])
+    assert prelim["context"]["loading_task_ready"] is False
+    assert prelim["status"] == tasks.TASK_STATUS_OPEN
+    assert is_actionable_open_task(prelim) is True
 
 
 def test_no_sj_stays_waiting_actionable(db: Database) -> None:
@@ -373,6 +436,8 @@ def test_multi_sj_keeps_loading_sj_independent(
     delivery.ingest_delivery_note(db, OWNER, _sj(SJ_ID_B, 60))
     prelim = tasks.get_task(db, prod.preliminary_loading_task_key(PO_ID, LINE_PRINT))
     assert prelim is not None
+    assert prelim["context"]["loading_task_ready"] is True
+    assert prelim["context"].get("missing_loading_sj_ids") in (None, [])
     assert prelim["status"] == tasks.TASK_STATUS_DONE
     assert is_actionable_open_task(prelim) is False
     linked = set(prelim["context"].get("linked_sj_ids") or [])

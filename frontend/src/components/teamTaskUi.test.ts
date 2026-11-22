@@ -247,42 +247,56 @@ describe("teamTaskUi labels & scheduling", () => {
     const linked = preliminaryLoadingDisplay({
       context: {
         waiting_for_sj: false,
+        loading_task_ready: true,
         linked_sj_ids: ["SJ-1"],
         linked_sj_nos: ["SJ/001"],
       },
     });
     expect(linked.waiting).toBe(false);
+    expect(linked.pendingLoading).toBe(false);
+    expect(linked.loadingReady).toBe(true);
     expect(linked.sjLabel).toBe("SJ/001");
   });
 
-  it("drops linked preliminary Loading from actionable open workload", () => {
+  it("keeps SJ-without-loading-task preliminary actionable; ready closes it", () => {
     const waiting = task({
       task_key: "p-wait",
       task_type: "loading-menunggu-sj",
       status: "belum_dikerjakan",
       context: { waiting_for_sj: true, qty_printed: 100 },
     });
-    const linked = task({
-      task_key: "p-linked",
+    const pending = task({
+      task_key: "p-pending",
+      task_type: "loading-menunggu-sj",
+      status: "belum_dikerjakan",
+      context: {
+        waiting_for_sj: false,
+        loading_task_ready: false,
+        linked_sj_ids: ["SJ-2"],
+        missing_loading_sj_ids: ["SJ-2"],
+        display_status: "SJ tersedia — tugas Loading belum siap",
+      },
+    });
+    const ready = task({
+      task_key: "p-ready",
       task_type: "loading-menunggu-sj",
       status: "selesai",
       context: {
         waiting_for_sj: false,
+        loading_task_ready: true,
         linked_sj_ids: ["SJ-1"],
         linked_sj_nos: ["SJ/001"],
       },
     });
-    const linkedStillOpen = task({
-      task_key: "p-stale",
-      task_type: "loading-menunggu-sj",
-      status: "belum_dikerjakan",
-      context: { waiting_for_sj: false, linked_sj_ids: ["SJ-2"] },
-    });
     expect(isActionableOpenTask(waiting)).toBe(true);
-    expect(isActionableOpenTask(linked)).toBe(false);
-    expect(isCancelledOrInactiveTask(linkedStillOpen)).toBe(true);
-    expect(isActionableOpenTask(linkedStillOpen)).toBe(false);
-    expect(actionableOpenCount([waiting, linked, linkedStillOpen])).toBe(1);
+    expect(isActionableOpenTask(pending)).toBe(true);
+    expect(isCancelledOrInactiveTask(pending)).toBe(false);
+    expect(isActionableOpenTask(ready)).toBe(false);
+    expect(isCancelledOrInactiveTask(ready)).toBe(true);
+    expect(actionableOpenCount([waiting, pending, ready])).toBe(2);
+    const pendingView = preliminaryLoadingDisplay(pending);
+    expect(pendingView.pendingLoading).toBe(true);
+    expect(pendingView.statusText).toContain("belum siap");
   });
 
   it("reads Screen qty_alokasi as info only", () => {

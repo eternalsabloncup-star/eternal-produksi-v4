@@ -1689,6 +1689,12 @@ export function TeamTaskApiPanel({
                             Qty Loading dinonaktifkan sampai Surat Jalan Accurate
                             tersedia. Backend menolak konfirmasi tanpa SJ.
                           </p>
+                        ) : prelim.pendingLoading ? (
+                          <p className="ep-notice" data-testid="loading-pending-notice">
+                            Surat Jalan untuk line ini sudah ada, tetapi tugas
+                            Loading Surat Jalan belum siap. Tetap informatif —
+                            konfirmasi Qty Loading tidak tersedia di sini.
+                          </p>
                         ) : (
                           <p className="ep-notice">
                             Surat Jalan terkait line ini sudah masuk. Konfirmasi

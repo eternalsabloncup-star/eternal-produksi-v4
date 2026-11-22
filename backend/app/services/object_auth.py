@@ -218,12 +218,10 @@ def is_actionable_open_task(task: dict[str, Any] | None) -> bool:
     ctx = task.get("context") if isinstance(task.get("context"), dict) else {}
     if ctx.get("loading_cancelled") is True:
         return False
-    # Preliminary menunggu-SJ: setelah tautan SJ, tujuan informatif selesai
-    # (bukan beban actionable; Loading nyata tetap di loading-sj per SJ).
+    # Preliminary: actionable sampai semua SJ terkait punya loading-sj.
+    # SJ dokumen saja (tanpa loading-sj) tetap visible/actionable informatif.
     if str(task.get("task_type") or "") == "loading-menunggu-sj":
-        if ctx.get("waiting_for_sj") is False:
-            return False
-        if ctx.get("linked_sj_ids"):
+        if ctx.get("loading_task_ready") is True:
             return False
     return True
 
