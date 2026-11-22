@@ -1367,7 +1367,7 @@ export function TeamTaskApiPanel({
                 )}
               </div>
               <div className="ep-modal-head-actions">
-                {selectedIsDesigner ? (
+                {selectedIsDesigner && !pwaOps ? (
                   <button
                     type="button"
                     className="ep-btn sm"
@@ -1381,7 +1381,7 @@ export function TeamTaskApiPanel({
                       : "Muat ulang"}
                   </button>
                 ) : null}
-                {selectedIsScheduling ? (
+                {selectedIsScheduling && !pwaOps ? (
                   <button
                     type="button"
                     className="ep-btn sm ep-btn-design"
@@ -1566,6 +1566,23 @@ export function TeamTaskApiPanel({
                 />
               )}
 
+              {selectedIsDesigner && pwaOps ? (
+                <div className="ep-ws-sched-toolbar">
+                  <button
+                    type="button"
+                    className="ep-btn sm"
+                    disabled={headerReloading || poDetailLoading}
+                    data-testid="designer-modal-reload"
+                    title="Muat ulang data desain dan PO"
+                    onClick={() => void onDesignerHeaderReload()}
+                  >
+                    {headerReloading || poDetailLoading
+                      ? "Memuat…"
+                      : "Muat ulang"}
+                  </button>
+                </div>
+              ) : null}
+
               {selectedIsDesigner && selected.ref.accurate_po_id ? (
                 <DesignWorkflowPanel
                   accuratePoId={selected.ref.accurate_po_id}
@@ -1605,6 +1622,102 @@ export function TeamTaskApiPanel({
                   <p className="ep-sectionlabel">Riwayat Sampel</p>
                   {sampleRows.length === 0 ? (
                     <p className="ep-empty">Belum ada sampel diunggah.</p>
+                  ) : pwaOps ? (
+                    <div
+                      className="ep-ws-stack-list"
+                      data-testid="sample-version-cards"
+                    >
+                      {sampleRows.map((s) => (
+                        <WorkSheetCard
+                          key={s.sample_id}
+                          testId="sample-version-card"
+                        >
+                          <WorkSheetStackRow
+                            label="Versi"
+                            value={`v${s.version}`}
+                            emphasize
+                          />
+                          <WorkSheetStackRow
+                            label="File"
+                            value={s.filename || "—"}
+                          />
+                          <WorkSheetStackRow
+                            label="Bukti"
+                            value={
+                              s.evidence_id && selected.ref.allocation_id ? (
+                                <button
+                                  type="button"
+                                  className="ep-btn sm"
+                                  data-testid="sample-preview-btn"
+                                  onClick={() =>
+                                    setEvidencePreview({
+                                      title: `Sampel v${s.version}`,
+                                      url: sampleEvidenceContentUrl(
+                                        selected.ref.allocation_id!,
+                                        s.evidence_id!,
+                                      ),
+                                      filename: s.filename,
+                                    })
+                                  }
+                                >
+                                  Preview
+                                </button>
+                              ) : (
+                                "—"
+                              )
+                            }
+                          />
+                          <WorkSheetStackRow
+                            label="Status"
+                            value={
+                              <span className={sampleStatusClass(s.status)}>
+                                {sampleStatusLabel(s.status)}
+                              </span>
+                            }
+                          />
+                          <WorkSheetStackRow
+                            label="Operator"
+                            value={s.submitted_by || "—"}
+                          />
+                          <WorkSheetStackRow
+                            label="Alasan Tolak"
+                            value={s.reject_reason || "—"}
+                            danger={Boolean(s.reject_reason)}
+                          />
+                          {selected.task_type === SAMPLE_APPROVAL_TASK ? (
+                            <div className="ep-ws-card-actions">
+                              {s.status === "menunggu_approval" &&
+                              canAct(SAMPLE_APPROVAL_TASK, "approve") ? (
+                                <>
+                                  <button
+                                    type="button"
+                                    className="ep-btn primary sm"
+                                    disabled={busy}
+                                    onClick={() =>
+                                      void onDecideSample(s.version, true)
+                                    }
+                                  >
+                                    Setujui
+                                  </button>
+                                  <button
+                                    type="button"
+                                    className="ep-btn sm"
+                                    disabled={busy}
+                                    onClick={() =>
+                                      void onDecideSample(s.version, false)
+                                    }
+                                  >
+                                    Tolak
+                                  </button>
+                                </>
+                              ) : (
+                                <span className="ep-muted">—</span>
+                              )}
+                            </div>
+                          ) : null}
+                        </WorkSheetCard>
+                      ))}
+                    </div>
                   ) : (
                     <table className="ep-table">
                       <thead>
