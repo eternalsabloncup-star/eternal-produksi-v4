@@ -112,6 +112,15 @@ DEFAULT_TASK_TYPES: Final[tuple[TaskTypeSpec, ...]] = (
         # cancel ada di spek Master tetapi tidak di-seed ke Helper (lihat seed).
         actions=["view", "confirm", "edit", "cancel"],
     ),
+    # Setelah Cetak: tugas informatif menunggu SJ Accurate (bukan konfirmasi Loading).
+    # Scope po_line — jangan memakai kunci delivery_note / SJ fiktif.
+    TaskTypeSpec(
+        task_type="loading-menunggu-sj",
+        label="Loading — Menunggu Surat Jalan",
+        scope="po_line",
+        default_role="helper",
+        actions=["view"],
+    ),
     TaskTypeSpec(
         task_type="qty-loading-sj-berbeda",
         label="Qty Loading dan SJ Berbeda",

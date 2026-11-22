@@ -24,6 +24,7 @@ from app.services.task_engine import TaskPermissionError, can_act, require_actio
 
 LOADING_TASK = "qty-loading-sj-berbeda"
 LOADING_SJ_TASK = "loading-sj"
+PRELIMINARY_LOADING_TASK = "loading-menunggu-sj"
 DRIVER_TASK = "pengiriman"
 DELIVERY_FAILURE_TASK = "pengiriman-gagal-koordinasi"
 
@@ -122,8 +123,19 @@ def ingest_delivery_note(
         note = result["delivery_note"]
         sj_id = str(note["accurate_sj_id"])
 
-        if not result["source_changed"]:
+        # True no-op: SJ lama tanpa perubahan item/ship_date — jangan ensure ulang.
+        # Insert pertama: source_changed=False (diff vs None kosong) tetapi was_insert=True
+        # → wajib evaluasi ensure_loading_sj_task.
+        if not result["source_changed"] and not result["was_insert"]:
             return {**result, "revision_status": note.get("revision_status")}
+
+        if result["was_insert"] and not result["source_changed"]:
+            loading_task = ensure_loading_sj_task(db, note, session=session)
+            return {
+                **result,
+                "revision_status": note.get("revision_status"),
+                "loading_task_key": (loading_task or {}).get("task_key"),
+            }
 
         delivered = deliveries.has_successful_delivery_event(
             db, sj_id, session=session
@@ -433,6 +445,75 @@ def _assert_loading_assignee(db: Database, user: dict[str, Any], accurate_sj_id:
         )
 
 
+def _link_preliminary_loading_for_note(
+    db: Database,
+    note: dict[str, Any],
+    *,
+    session: Any | None = None,
+) -> None:
+    """Tautkan tugas menunggu-SJ (po_line) ke SJ lewat accurate_line_id saja.
+
+    Tidak menebak asosiasi dari qty/urutan/nama. Tidak menandai Loading selesai
+    dan tidak memanggil confirm_loading.
+    """
+    po_id = str(note.get("accurate_po_id") or "").strip()
+    sj_id = str(note.get("accurate_sj_id") or "").strip()
+    if not po_id or not sj_id:
+        return
+    sj_no = str(note.get("sj_no") or "") or None
+    line_ids = sorted(
+        {
+            str(item.get("accurate_line_id") or "").strip()
+            for item in (note.get("items") or [])
+            if isinstance(item, dict) and str(item.get("accurate_line_id") or "").strip()
+        }
+    )
+    for line_id in line_ids:
+        key = build_task_key(
+            PRELIMINARY_LOADING_TASK,
+            "po_line",
+            TaskRef(accurate_po_id=po_id, accurate_line_id=line_id),
+        )
+        existing = tasks.get_task(db, key, session=session)
+        if existing is None:
+            continue
+        prev = dict((existing.get("context") or {}))
+        linked_ids = [
+            str(x) for x in (prev.get("linked_sj_ids") or []) if str(x).strip()
+        ]
+        if sj_id not in linked_ids:
+            linked_ids.append(sj_id)
+        linked_nos = [
+            str(x) for x in (prev.get("linked_sj_nos") or []) if str(x).strip()
+        ]
+        if sj_no and sj_no not in linked_nos:
+            linked_nos.append(sj_no)
+        ctx = {
+            **prev,
+            "waiting_for_sj": False,
+            "display_status": "SJ tersedia — konfirmasi pada tugas Loading Surat Jalan",
+            "association": "line_id_match",
+            "linked_sj_ids": linked_ids,
+            "linked_sj_nos": linked_nos,
+        }
+        tasks.upsert_task(
+            db,
+            task_type=PRELIMINARY_LOADING_TASK,
+            scope="po_line",
+            assigned_role=str(existing.get("assigned_role") or "helper"),
+            ref=TaskRef(
+                accurate_po_id=po_id,
+                accurate_line_id=line_id,
+                po_no=str((existing.get("ref") or {}).get("po_no") or note.get("po_no") or ""),
+                item_code=str((existing.get("ref") or {}).get("item_code") or ""),
+            ),
+            label=str(existing.get("label") or "Loading — Menunggu Surat Jalan"),
+            qty_target=existing.get("qty_target"),
+            context=ctx,
+            session=session,
+        )
+
+
 def ensure_loading_sj_task(
     db: Database,
     note: dict[str, Any],
@@ -451,7 +532,7 @@ def ensure_loading_sj_task(
         return None
     try:
         role = master.require_task_type_assigned_role(db, LOADING_SJ_TASK)
-    except LookupError:
+    except (LookupError, master.MissingMasterConfigError):
         return None
     ref = _sj_ref(note)
     key = build_task_key(LOADING_SJ_TASK, "delivery_note", ref)
@@ -469,7 +550,7 @@ def ensure_loading_sj_task(
             ctx["assigned_user_email"] = email
         else:
             ctx.pop("assigned_user_email", None)
-    return tasks.upsert_task(
+    task = tasks.upsert_task(
         db,
         task_type=LOADING_SJ_TASK,
         scope="delivery_note",
@@ -479,6 +560,8 @@ def ensure_loading_sj_task(
         context=ctx,
         session=session,
     )
+    _link_preliminary_loading_for_note(db, note, session=session)
+    return task
 
 
 def assign_loading_sj_task(

@@ -9,8 +9,10 @@ import {
   filterTasksByStatus,
   filterTasksForActor,
   formatCountBadge,
+  isPreliminaryLoadingTask,
   isSchedulingTask,
   latestDraftSample,
+  preliminaryLoadingDisplay,
   remainingQty,
   sampleStatusClass,
   sampleStatusLabel,
@@ -208,6 +210,46 @@ describe("teamTaskUi labels & scheduling", () => {
         qty_target: 100,
       }),
     ).toBe(true);
+  });
+
+  it("hides qty confirm for preliminary Loading menunggu SJ", () => {
+    expect(isPreliminaryLoadingTask("loading-menunggu-sj")).toBe(true);
+    expect(
+      canShowQtyConfirmForm({
+        task_type: "loading-menunggu-sj",
+        qty_target: 500,
+      }),
+    ).toBe(false);
+    expect(
+      taskDisplayLabel(
+        task({
+          task_key: "p1",
+          task_type: "loading-menunggu-sj",
+          status: "belum_dikerjakan",
+          label: "Loading — Menunggu Surat Jalan",
+        }),
+      ),
+    ).toBe("Loading — Menunggu Surat Jalan");
+    const waiting = preliminaryLoadingDisplay({
+      context: {
+        waiting_for_sj: true,
+        qty_printed: 200,
+        display_status: "Menunggu Surat Jalan",
+      },
+    });
+    expect(waiting.waiting).toBe(true);
+    expect(waiting.statusText).toBe("Menunggu Surat Jalan");
+    expect(waiting.sjLabel).toBe("Belum tersedia");
+    expect(waiting.qtyPrinted).toBe(200);
+    const linked = preliminaryLoadingDisplay({
+      context: {
+        waiting_for_sj: false,
+        linked_sj_ids: ["SJ-1"],
+        linked_sj_nos: ["SJ/001"],
+      },
+    });
+    expect(linked.waiting).toBe(false);
+    expect(linked.sjLabel).toBe("SJ/001");
   });
 
   it("reads Screen qty_alokasi as info only", () => {

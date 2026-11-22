@@ -26,6 +26,9 @@ export function taskDisplayLabel(
   if (task.task_type === "loading-sj") {
     return task.label || "Loading Surat Jalan";
   }
+  if (task.task_type === "loading-menunggu-sj") {
+    return task.label || "Loading — Menunggu Surat Jalan";
+  }
   if (task.task_type === "qty-loading-sj-berbeda") {
     return task.label || "Koordinasi Loading–SJ";
   }
@@ -160,6 +163,48 @@ export function isLoadingSjTask(taskType: string): boolean {
   return taskType === "loading-sj";
 }
 
+/** Tugas informatif setelah Cetak — bukan konfirmasi Loading SJ. */
+export function isPreliminaryLoadingTask(taskType: string): boolean {
+  return taskType === "loading-menunggu-sj";
+}
+
+export function preliminaryLoadingDisplay(task: {
+  context?: Record<string, unknown> | null;
+}): {
+  waiting: boolean;
+  statusText: string;
+  qtyPrinted: number | null;
+  sjLabel: string;
+} {
+  const ctx = task.context || {};
+  const linked = Array.isArray(ctx.linked_sj_ids) ? ctx.linked_sj_ids : [];
+  const waiting =
+    ctx.waiting_for_sj === true ||
+    (ctx.waiting_for_sj !== false && linked.length === 0);
+  const qtyRaw = ctx.qty_printed;
+  const qtyPrinted =
+    typeof qtyRaw === "number"
+      ? qtyRaw
+      : qtyRaw != null && Number.isFinite(Number(qtyRaw))
+        ? Number(qtyRaw)
+        : null;
+  const nos = Array.isArray(ctx.linked_sj_nos)
+    ? ctx.linked_sj_nos.map((x) => String(x || "").trim()).filter(Boolean)
+    : [];
+  const ids = linked.map((x) => String(x || "").trim()).filter(Boolean);
+  const sjLabel = waiting
+    ? "Belum tersedia"
+    : nos.length
+      ? nos.join(", ")
+      : ids.length
+        ? ids.join(", ")
+        : "Tersedia";
+  const statusText = waiting
+    ? "Menunggu Surat Jalan"
+    : String(ctx.display_status || "SJ tersedia — konfirmasi pada tugas Loading Surat Jalan");
+  return { waiting, statusText, qtyPrinted, sjLabel };
+}
+
 export function remainingQty(task: OperationalTask): number | null {
   if (task.qty_target === undefined) return null;
   return Math.max(task.qty_target - task.qty_confirmed, 0);
@@ -261,6 +306,7 @@ export function taskItemSecondaryMeta(
 export function canShowQtyConfirmForm(
   task: Pick<OperationalTask, "task_type" | "qty_target">,
 ): boolean {
+  if (isPreliminaryLoadingTask(task.task_type)) return false;
   if (task.task_type === "screen") return true;
   return task.qty_target !== undefined;
 }
