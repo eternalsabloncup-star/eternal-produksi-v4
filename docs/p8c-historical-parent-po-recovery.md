@@ -67,6 +67,8 @@ Batch label usulan (belum sealed):
 4. APPLY parent PO saja (bukan SJ).  
 5. Baru kemudian controlled multi-PO SJ ingest (6 SJ; exclude 120851).  
 
+**Update P10:** tooling multi-batch + sealed P8C manifest + controlled multi-PO SJ replay diimplementasikan di `docs/p10-sealed-p8c-parent-and-multi-po-sj.md`. Production APPLY tetap butuh otorisasi Owner terpisah.
+
 ## Di luar scope P8C
 
 - Production APPLY  
