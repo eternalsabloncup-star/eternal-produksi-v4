@@ -4,7 +4,7 @@
  */
 
 import type { ReactNode } from "react";
-import { WorkSheetStackRow } from "./compactTaskSheet";
+import { WorkSheetKvGroup, WorkSheetStackRow } from "./compactTaskSheet";
 import {
   ITEM_NAME_FALLBACK,
   type TaskItemLineView,
@@ -58,56 +58,59 @@ export function TaskItemProgress({
         {rows.map((line, idx) => (
           <div key={line.accurateLineId || `${line.itemName}-${idx}`}>
             {idx > 0 ? <hr className="ep-item-progress-divider" /> : null}
-            <WorkSheetStackRow
-              label="Nama Barang"
-              value={
-                <span
-                  data-testid={
-                    idx === 0 ? "task-popup-item-name" : undefined
-                  }
-                >
-                  {line.itemName || ITEM_NAME_FALLBACK}
-                </span>
-              }
-              emphasize
-            />
-            {showItemQty && line.qty != null ? (
+            <WorkSheetKvGroup>
               <WorkSheetStackRow
-                label="Qty"
+                label="Nama Barang"
                 value={
-                  <span className="ep-num">
-                    {formatQty(line.qty)} {line.unit.toLowerCase()}
+                  <span
+                    data-testid={
+                      idx === 0 ? "task-popup-item-name" : undefined
+                    }
+                  >
+                    {line.itemName || ITEM_NAME_FALLBACK}
                   </span>
                 }
-                kpi
               />
-            ) : null}
+              {showItemQty && line.qty != null ? (
+                <WorkSheetStackRow
+                  label="Qty"
+                  value={
+                    <span className="ep-num">
+                      {formatQty(line.qty)} {line.unit.toLowerCase()}
+                    </span>
+                  }
+                />
+              ) : null}
+            </WorkSheetKvGroup>
           </div>
         ))}
-        {fields.map((f) => (
-          <WorkSheetStackRow
-            key={f.label}
-            label={f.label}
-            value={
-              f.testId ? (
-                <span
-                  className={f.numeric ? "ep-num" : undefined}
-                  data-testid={f.testId}
-                  title={f.title}
-                >
-                  {f.value}
-                </span>
-              ) : f.numeric ? (
-                <span className="ep-num" title={f.title}>
-                  {f.value}
-                </span>
-              ) : (
-                f.value
-              )
-            }
-            kpi={f.kpi ?? f.numeric}
-          />
-        ))}
+        {fields.length > 0 ? (
+          <WorkSheetKvGroup>
+            {fields.map((f) => (
+              <WorkSheetStackRow
+                key={f.label}
+                label={f.label}
+                value={
+                  f.testId ? (
+                    <span
+                      className={f.numeric ? "ep-num" : undefined}
+                      data-testid={f.testId}
+                      title={f.title}
+                    >
+                      {f.value}
+                    </span>
+                  ) : f.numeric ? (
+                    <span className="ep-num" title={f.title}>
+                      {f.value}
+                    </span>
+                  ) : (
+                    f.value
+                  )
+                }
+              />
+            ))}
+          </WorkSheetKvGroup>
+        ) : null}
       </div>
     </div>
   );

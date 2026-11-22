@@ -107,12 +107,17 @@ type StackRowProps = {
   value: ReactNode;
   emphasize?: boolean;
   danger?: boolean;
-  /** Primary KPI figure (larger tabular value). */
+  /**
+   * Tabular emphasis inside ordinary rows — same 14px size as text values.
+   * Dedicated KPI strips use `.ep-ws-kpi-strip`, not this flag.
+   */
   kpi?: boolean;
 };
 
 /**
  * Label / colon / value — 3-column grid for worksheet info rows.
+ * Place consecutive rows inside {@link WorkSheetKvGroup} so columns share
+ * one grid and colon/value X origins stay aligned.
  * Not for buttons, pills, or form field labels.
  */
 export function WorkSheetStackRow({
@@ -127,12 +132,35 @@ export function WorkSheetStackRow({
       className={`ep-ws-stack-row${emphasize ? " is-emphasize" : ""}${
         danger ? " is-danger" : ""
       }${kpi ? " is-kpi" : ""}`}
+      data-testid="ws-stack-row"
     >
       <span className="ep-ws-stack-lbl">{label}</span>
       <span className="ep-ws-stack-colon" aria-hidden="true">
         :
       </span>
       <span className="ep-ws-stack-val">{value}</span>
+    </div>
+  );
+}
+
+type KvGroupProps = {
+  children: ReactNode;
+  className?: string;
+  testId?: string;
+};
+
+/** Shared LABEL | : | VALUE column tracks for sibling stack rows. */
+export function WorkSheetKvGroup({
+  children,
+  className = "",
+  testId,
+}: KvGroupProps) {
+  return (
+    <div
+      className={`ep-ws-kv-group ${className}`.trim()}
+      data-testid={testId ?? "ws-kv-group"}
+    >
+      {children}
     </div>
   );
 }

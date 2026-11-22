@@ -17,7 +17,11 @@ import {
 import { newIdempotencyKey, type OperationalTask } from "../api/operational";
 import { formatDateDisplay } from "../lib/formatDate";
 import { useMobileOpsActive } from "../mobile/MobileOpsContext";
-import { WorkSheetCard, WorkSheetStackRow } from "./compactTaskSheet";
+import {
+  WorkSheetCard,
+  WorkSheetKvGroup,
+  WorkSheetStackRow,
+} from "./compactTaskSheet";
 import {
   operatorCandidateLabel,
   operatorsBlockerMessage,
@@ -483,30 +487,32 @@ export function TeamTaskSchedulingForm({
                       {l.accurate_line_id}
                     </span>
                   </button>
-                  <WorkSheetStackRow
-                    label="Qty PO"
-                    value={<span className="ep-num">{qty(l.qty_target)}</span>}
-                  />
-                  <WorkSheetStackRow
-                    label="Qty Alokasi Aktif"
-                    value={
-                      <span className="ep-num">{qty(l.qty_allocated)}</span>
-                    }
-                  />
-                  <WorkSheetStackRow
-                    label="Qty Belum Dialokasikan"
-                    value={
-                      <span className="ep-num">{qty(l.qty_unallocated)}</span>
-                    }
-                    kpi
-                  />
-                  <WorkSheetStackRow
-                    label="Qty Cetak Terkonfirmasi"
-                    value={
-                      <span className="ep-num">{qty(l.qty_printed)}</span>
-                    }
-                    kpi
-                  />
+                  <WorkSheetKvGroup>
+                    <WorkSheetStackRow
+                      label="Qty PO"
+                      value={
+                        <span className="ep-num">{qty(l.qty_target)}</span>
+                      }
+                    />
+                    <WorkSheetStackRow
+                      label="Qty Alokasi Aktif"
+                      value={
+                        <span className="ep-num">{qty(l.qty_allocated)}</span>
+                      }
+                    />
+                    <WorkSheetStackRow
+                      label="Qty Belum Dialokasikan"
+                      value={
+                        <span className="ep-num">{qty(l.qty_unallocated)}</span>
+                      }
+                    />
+                    <WorkSheetStackRow
+                      label="Qty Cetak Terkonfirmasi"
+                      value={
+                        <span className="ep-num">{qty(l.qty_printed)}</span>
+                      }
+                    />
+                  </WorkSheetKvGroup>
                 </WorkSheetCard>
               ))}
             </div>
@@ -596,67 +602,68 @@ export function TeamTaskSchedulingForm({
                     key={a.allocation_id}
                     testId="sched-alloc-card"
                   >
-                    <WorkSheetStackRow
-                      label="Operator"
-                      value={
-                        <span
-                          title={
-                            (a.operator_display_name || "").trim() ||
-                            "Nama belum tersedia"
-                          }
-                        >
-                          {operatorLabel(a)}
-                        </span>
-                      }
-                      emphasize
-                    />
-                    {allocCardNeedsItemIdentity(lines.length) ? (
+                    <WorkSheetKvGroup>
                       <WorkSheetStackRow
-                        label="Item"
+                        label="Operator"
                         value={
-                          <>
-                            <span className="ep-sched-item-name">
-                              {itemNameForLine(l)}
-                            </span>
-                            <span className="ep-sched-item-code">
-                              {a.accurate_line_id}
-                            </span>
-                          </>
+                          <span
+                            title={
+                              (a.operator_display_name || "").trim() ||
+                              "Nama belum tersedia"
+                            }
+                          >
+                            {operatorLabel(a)}
+                          </span>
                         }
                       />
-                    ) : null}
-                    <WorkSheetStackRow
-                      label="Qty Alokasi"
-                      value={<span className="ep-num">{qty(a.qty)}</span>}
-                      kpi
-                    />
-                    <WorkSheetStackRow
-                      label="Tanggal Pengerjaan"
-                      value={formatDateDisplay(a.schedule_date) || "—"}
-                    />
-                    <WorkSheetStackRow
-                      label="Warna Cetak"
-                      value={a.print_color?.trim() || "—"}
-                    />
-                    <WorkSheetStackRow
-                      label="Jenis Screen"
-                      value={a.screen_kind?.trim() || "—"}
-                    />
-                    <WorkSheetStackRow
-                      label="Qty Cetak"
-                      value={
-                        <span className="ep-num">{qty(a.qty_printed || 0)}</span>
-                      }
-                      kpi
-                    />
-                    <WorkSheetStackRow
-                      label="Status"
-                      value={
-                        <span className={allocStatusClass(a.status)}>
-                          {allocStatusLabel(a.status)}
-                        </span>
-                      }
-                    />
+                      {allocCardNeedsItemIdentity(lines.length) ? (
+                        <WorkSheetStackRow
+                          label="Item"
+                          value={
+                            <>
+                              <span className="ep-sched-item-name">
+                                {itemNameForLine(l)}
+                              </span>
+                              <span className="ep-sched-item-code">
+                                {a.accurate_line_id}
+                              </span>
+                            </>
+                          }
+                        />
+                      ) : null}
+                      <WorkSheetStackRow
+                        label="Qty Alokasi"
+                        value={<span className="ep-num">{qty(a.qty)}</span>}
+                      />
+                      <WorkSheetStackRow
+                        label="Tanggal Pengerjaan"
+                        value={formatDateDisplay(a.schedule_date) || "—"}
+                      />
+                      <WorkSheetStackRow
+                        label="Warna Cetak"
+                        value={a.print_color?.trim() || "—"}
+                      />
+                      <WorkSheetStackRow
+                        label="Jenis Screen"
+                        value={a.screen_kind?.trim() || "—"}
+                      />
+                      <WorkSheetStackRow
+                        label="Qty Cetak"
+                        value={
+                          <span className="ep-num">
+                            {qty(a.qty_printed || 0)}
+                          </span>
+                        }
+                      />
+                      <WorkSheetStackRow
+                        label="Status"
+                        value={
+                          <span className={allocStatusClass(a.status)}>
+                            {allocStatusLabel(a.status)}
+                          </span>
+                        }
+                      />
+                    </WorkSheetKvGroup>
                     <div className="ep-ws-card-actions">
                       {canRevise && allocationCanReviseQty(a) ? (
                         <button

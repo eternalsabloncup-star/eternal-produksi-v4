@@ -3,6 +3,7 @@ import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import {
   CollapsibleTaskSection,
+  WorkSheetKvGroup,
   WorkSheetSegment,
   WorkSheetStackRow,
 } from "./compactTaskSheet";
@@ -57,12 +58,25 @@ describe("WorkSheetStackRow", () => {
       createElement(WorkSheetStackRow, {
         label: "Qty SJ",
         value: "2.000",
-        kpi: true,
       }),
     );
     expect(html).toContain("Qty SJ");
     expect(html).toContain("ep-ws-stack-colon");
     expect(html).toContain("2.000");
-    expect(html).toContain("is-kpi");
+  });
+});
+
+describe("WorkSheetKvGroup", () => {
+  it("wraps stack rows for shared column tracks", () => {
+    const html = renderToStaticMarkup(
+      createElement(WorkSheetKvGroup, {
+        children: createElement(WorkSheetStackRow, {
+          label: "Nama Barang",
+          value: "Cup",
+        }),
+      }),
+    );
+    expect(html).toContain("ep-ws-kv-group");
+    expect(html).toContain("Nama Barang");
   });
 });

@@ -48,6 +48,7 @@ import { EvidenceContentPreview } from "./EvidenceContentPreview";
 import {
   CollapsibleTaskSection,
   WorkSheetCard,
+  WorkSheetKvGroup,
   WorkSheetSegment,
   WorkSheetStackRow,
 } from "./compactTaskSheet";
@@ -1874,27 +1875,26 @@ export function TeamTaskApiPanel({
                         {pwaOps ? (
                           <div className="ep-ws-stack-list">
                             <WorkSheetCard testId="loading-menunggu-summary">
-                              <WorkSheetStackRow
-                                label="Nama Barang"
-                                value={taskItemDisplayName(selected)}
-                                emphasize
-                              />
-                              <WorkSheetStackRow
-                                label="Qty Cetak"
-                                value={
-                                  <span className="ep-num">{qtyCetak}</span>
-                                }
-                                kpi
-                              />
-                              <WorkSheetStackRow
-                                label="Surat Jalan"
-                                value={prelim.sjLabel}
-                              />
-                              <WorkSheetStackRow
-                                label="Status SJ"
-                                value={prelim.statusText}
-                                emphasize
-                              />
+                              <WorkSheetKvGroup>
+                                <WorkSheetStackRow
+                                  label="Nama Barang"
+                                  value={taskItemDisplayName(selected)}
+                                />
+                                <WorkSheetStackRow
+                                  label="Qty Cetak"
+                                  value={
+                                    <span className="ep-num">{qtyCetak}</span>
+                                  }
+                                />
+                                <WorkSheetStackRow
+                                  label="Surat Jalan"
+                                  value={prelim.sjLabel}
+                                />
+                                <WorkSheetStackRow
+                                  label="Status SJ"
+                                  value={prelim.statusText}
+                                />
+                              </WorkSheetKvGroup>
                             </WorkSheetCard>
                           </div>
                         ) : (
@@ -1925,7 +1925,7 @@ export function TeamTaskApiPanel({
                             data-testid="loading-pending-notice"
                           >
                             Surat Jalan sudah ada, tetapi tugas Loading Surat
-                            Jalan belum siap — konfirmasi tidak tersedia di sini.
+                            Jalan belum siap: konfirmasi tidak tersedia di sini.
                           </p>
                         ) : (
                           <p className="ep-notice">
@@ -1970,39 +1970,37 @@ export function TeamTaskApiPanel({
                               key={String(it.accurate_line_id)}
                               className={it.matched ? "" : "is-danger"}
                             >
-                              <WorkSheetStackRow
-                                label="Nama Barang"
-                                value={name}
-                                emphasize
-                              />
-                              <WorkSheetStackRow
-                                label="Qty SJ"
-                                value={
-                                  <span className="ep-num">
-                                    {formatQty(Number(it.qty))}
-                                  </span>
-                                }
-                                kpi
-                              />
-                              <WorkSheetStackRow
-                                label="Qty Packing tersedia"
-                                value={
-                                  <span className="ep-num">
-                                    {formatQty(Number(it.qty_available))}
-                                  </span>
-                                }
-                                kpi
-                              />
-                              <WorkSheetStackRow
-                                label="Status"
-                                value={
-                                  it.matched
-                                    ? "Cocok"
-                                    : it.reason || "Tidak cocok"
-                                }
-                                danger={!it.matched}
-                                emphasize
-                              />
+                              <WorkSheetKvGroup>
+                                <WorkSheetStackRow
+                                  label="Nama Barang"
+                                  value={name}
+                                />
+                                <WorkSheetStackRow
+                                  label="Qty SJ"
+                                  value={
+                                    <span className="ep-num">
+                                      {formatQty(Number(it.qty))}
+                                    </span>
+                                  }
+                                />
+                                <WorkSheetStackRow
+                                  label="Qty Packing tersedia"
+                                  value={
+                                    <span className="ep-num">
+                                      {formatQty(Number(it.qty_available))}
+                                    </span>
+                                  }
+                                />
+                                <WorkSheetStackRow
+                                  label="Status"
+                                  value={
+                                    it.matched
+                                      ? "Cocok"
+                                      : it.reason || "Tidak cocok"
+                                  }
+                                  danger={!it.matched}
+                                />
+                              </WorkSheetKvGroup>
                             </WorkSheetCard>
                           );
                         })}
