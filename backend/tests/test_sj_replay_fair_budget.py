@@ -19,7 +19,6 @@ from app.services.accurate_auto_sync import sj_job
 from app.services.accurate_auto_sync.checkpoint import load_job_checkpoint
 from app.services.accurate_auto_sync.sj_sync_review import (
     COLLECTION,
-    REASON_MULTI_SO,
     REASON_PO_NOT_REGISTERED,
     allocate_sj_cycle_budgets,
     get_sj_sync_review,
@@ -177,16 +176,17 @@ def test_starvation_1000_deferred_discovery_still_advances(sdb: Database) -> Non
     assert second["counters"]["failed"] == 0
 
 
-def test_multi_so_not_eligible_every_cycle(sdb: Database) -> None:
+def test_multi_so_missing_parent_uses_local_po_gate(sdb: Database) -> None:
+    """Native multi-PO + parent hilang → po_not_registered (eligible lokal, gate PO)."""
     detail = _sj(119068, so_ids=[1, 2])
     delivery_sync.sync_delivery_order_payload(sdb, OWNER, detail, mongo_guard="test")
     rev = get_sj_sync_review(sdb, "119068")
     assert rev is not None
-    assert rev["reason"] == REASON_MULTI_SO
-    # Baru di-quarantine → cooldown panjang → tidak eligible
-    assert review_is_eligible(rev) is False
-    eligible = list_open_retryable_reviews(sdb, limit=50)
-    assert all(str(r.get("accurate_sj_id")) != "119068" for r in eligible)
+    assert rev["reason"] == REASON_PO_NOT_REGISTERED
+    # Kontrak historis: po_not_registered sengaja eligible agar gate PO lokal
+    # menahan Accurate detail (bukan cooldown MULTI_SO 6 jam).
+    assert review_is_eligible(rev) is True
+    assert deliveries.get_delivery_note(sdb, "119068") is None
 
 
 def test_po_not_registered_local_gate_then_ingest(sdb: Database) -> None:

@@ -148,15 +148,16 @@ def test_list_sync_reports_po_not_registered_skip_reason(db: Database) -> None:
     assert result["created"] == 0
 
 
-def test_multi_so_still_fail_closed_on_targeted_sync(db: Database) -> None:
+def test_multi_so_missing_parent_deferred_on_targeted_sync(db: Database) -> None:
     upsert_sales_order(db, normalize_sales_order(SAMPLE_SALES_ORDER_STRUCTURE))
     details = {9: _multi_so_detail(9)}
     client = _client({1: [{"id": 9}]}, details)
     result = delivery_sync.sync_selected_delivery_orders_from_accurate(
         db, OWNER, ["9"], client=client, scope="multi"
     )
-    # Fail-closed ingest: tidak create DN; durable quarantine sebagai review.
-    assert result.get("review_required", 0) == 1
+    # Native multi-PO: parent 99999 belum lokal → deferred, bukan ingest.
+    assert result.get("skipped", 0) == 1
+    assert result.get("skip_reasons", {}).get("po_not_registered") == 1
     assert result["failed"] == 0
     assert result["created"] == 0
     assert deliveries.get_delivery_note(db, "9") is None

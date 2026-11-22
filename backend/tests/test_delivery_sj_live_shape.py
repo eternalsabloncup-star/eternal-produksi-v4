@@ -64,7 +64,7 @@ def test_sales_order_id_conflict_rejected() -> None:
     assert exc.value.code == "SO_ID_CONFLICT"
 
 
-def test_multi_so_rejected_with_specific_code() -> None:
+def test_multi_so_normalized_native_without_singular_parent() -> None:
     payload = _payload()
     payload["detailItem"][1]["salesOrder"] = {
         "id": 95999,
@@ -72,11 +72,12 @@ def test_multi_so_rejected_with_specific_code() -> None:
         "poNumber": "X",
     }
     payload["detailItem"][1]["salesOrderId"] = 95999
-    with pytest.raises(deliveries.DeliveryNoteIdentityError) as exc:
-        deliveries.normalize_delivery_note(payload)
-    assert exc.value.code == "MULTI_SO_NOT_SUPPORTED"
-    # Diagnostik aman: tanpa nama pelanggan.
-    assert "PELANGGAN" not in str(exc.value)
+    note = deliveries.normalize_delivery_note(payload)
+    assert note["is_multi_po"] is True
+    assert set(note["accurate_po_ids"]) == {"95106", "95999"}
+    assert not note.get("accurate_po_id")
+    # Diagnostik aman: tanpa nama pelanggan di meta/ids.
+    assert "PELANGGAN" not in str(note["accurate_po_ids"])
 
 
 def test_missing_item_identity_rejected() -> None:

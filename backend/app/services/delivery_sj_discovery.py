@@ -1,7 +1,7 @@
 """Read-only discovery relasi Surat Jalan ↔ Sales Order (Accurate GET saja).
 
 Tidak menulis Accurate. Tidak menebak relasi: hanya dari detail SJ yang
-lolos ``normalize_delivery_note``. MULTI_SO tetap fail-closed (dihitung, tidak
+lolos ``normalize_delivery_note``. Multi-PO dihitung terpisah (bukan seed single-SO);
 dipilih sebagai kandidat uji).
 """
 
@@ -77,20 +77,22 @@ def discover_sj_so_links(
             try:
                 detail = client.fetch_delivery_order_detail(sj_id)
                 note = deliveries.normalize_delivery_note(detail)
-            except deliveries.DeliveryNoteIdentityError as exc:
-                if getattr(exc, "code", "") == "MULTI_SO_NOT_SUPPORTED":
-                    multi_so += 1
-                else:
-                    identity_failed += 1
+            except deliveries.DeliveryNoteIdentityError:
+                identity_failed += 1
                 continue
             except Exception:  # noqa: BLE001 — discovery partial OK
                 detail_failed += 1
                 continue
 
-            po_id = as_text(note.get("accurate_po_id"))
-            if not po_id:
+            parents = deliveries.note_parent_po_ids(note)
+            if not parents:
                 identity_failed += 1
                 continue
+            if deliveries.note_is_multi_po(note):
+                # Discovery seed tetap single-SO; multi-PO dicatat, tidak dipilih.
+                multi_so += 1
+                continue
+            po_id = parents[0]
             single_so += 1
             if sj_id not in by_po[po_id]:
                 by_po[po_id].append(sj_id)

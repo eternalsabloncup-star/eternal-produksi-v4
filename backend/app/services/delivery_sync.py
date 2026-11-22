@@ -284,28 +284,58 @@ def _sync_delivery_order_payload_under_writer_lease(
             "last_error_code": exc_code,
         }
 
-    po_id = str(note["accurate_po_id"])
-    if require_registered_po and get_by_accurate_id(db, po_id) is None:
+    parent_po_ids = deliveries.note_parent_po_ids(note)
+    if not parent_po_ids:
+        sj_id = str(note["accurate_sj_id"])
         upsert_sj_sync_review(
             db,
-            accurate_sj_id=str(note["accurate_sj_id"]),
-            reason=REASON_PO_NOT_REGISTERED,
-            source_so_ids=[po_id],
-            accurate_po_id=po_id,
+            accurate_sj_id=sj_id,
+            reason=REASON_DELIVERY_NOTE_IDENTITY,
+            source_so_ids=[],
             sj_no=as_text(note.get("sj_no")) or None,
             retryable=True,
-            last_error_code=REASON_PO_NOT_REGISTERED,
+            last_error_code=REASON_DELIVERY_NOTE_IDENTITY,
+            last_error_detail="Surat Jalan tanpa parent PO terverifikasi.",
         )
-        # Tetap ``skipped`` agar kompatibel counter manual sync; discovery
-        # mengenali keduanya. Deferred record menjamin replay setelah PO ada.
         return {
-            "outcome": "skipped",
-            "reason": REASON_PO_NOT_REGISTERED,
-            "accurate_sj_id": note["accurate_sj_id"],
-            "accurate_po_id": po_id,
-            "deferred": True,
+            "outcome": "review_required",
+            "reason": REASON_DELIVERY_NOTE_IDENTITY,
+            "accurate_sj_id": sj_id,
+            "source_so_ids": [],
             "writes": 0,
+            "quarantined": True,
         }
+
+    if require_registered_po:
+        missing = [pid for pid in parent_po_ids if get_by_accurate_id(db, pid) is None]
+        if missing:
+            upsert_sj_sync_review(
+                db,
+                accurate_sj_id=str(note["accurate_sj_id"]),
+                reason=REASON_PO_NOT_REGISTERED,
+                source_so_ids=parent_po_ids,
+                accurate_po_id=missing[0] if len(missing) == 1 else None,
+                sj_no=as_text(note.get("sj_no")) or None,
+                retryable=True,
+                last_error_code=REASON_PO_NOT_REGISTERED,
+                last_error_detail=(
+                    f"Parent PO belum terdaftar lokal: {len(missing)}/{len(parent_po_ids)}."
+                ),
+            )
+            # Tetap ``skipped`` agar kompatibel counter manual sync; discovery
+            # mengenali keduanya. Deferred record menjamin replay setelah PO ada.
+            result_skip: dict[str, Any] = {
+                "outcome": "skipped",
+                "reason": REASON_PO_NOT_REGISTERED,
+                "accurate_sj_id": note["accurate_sj_id"],
+                "accurate_po_ids": parent_po_ids,
+                "missing_po_ids": missing,
+                "deferred": True,
+                "writes": 0,
+            }
+            if not note.get("is_multi_po"):
+                result_skip["accurate_po_id"] = parent_po_ids[0]
+            return result_skip
 
     before = deliveries.get_delivery_note(db, note["accurate_sj_id"])
     result = delivery_service.ingest_delivery_note(db, user, payload)
@@ -320,15 +350,19 @@ def _sync_delivery_order_payload_under_writer_lease(
         accurate_sj_id=str(note["accurate_sj_id"]),
         disposition=f"ingested_{outcome}",
     )
-    return {
+    out: dict[str, Any] = {
         "outcome": outcome,
         "accurate_sj_id": note["accurate_sj_id"],
-        "accurate_po_id": po_id,
+        "accurate_po_ids": parent_po_ids,
+        "is_multi_po": bool(note.get("is_multi_po")),
         "sj_version": result.get("sj_version"),
         "revision_status": result.get("revision_status"),
         "source_changed": bool(result.get("source_changed")),
         "was_insert": bool(result.get("was_insert")),
     }
+    if not note.get("is_multi_po"):
+        out["accurate_po_id"] = parent_po_ids[0]
+    return out
 
 
 def sync_delivery_orders_from_accurate(
