@@ -10,6 +10,11 @@ import {
   WorkflowApiError,
 } from "../api/workflow";
 import { ConfirmationSuccessOverlay } from "./ConfirmationSuccessOverlay";
+import {
+  WorkSheetCard,
+  WorkSheetKvGroup,
+  WorkSheetStackRow,
+} from "./compactTaskSheet";
 import { EvidenceContentPreview } from "./EvidenceContentPreview";
 
 type Props = {
@@ -162,7 +167,7 @@ export function DesignWorkflowPanel({
       const path = customerApprovalPath(res.token);
       setApprovalUrl(path);
       showOk(
-        `Link approval dibuat untuk desain v${res.link.design_version}. Salin URL sekarang — token hanya ditampilkan sekali.`,
+        `Link approval dibuat untuk desain v${res.link.design_version}. Salin URL sekarang: token hanya ditampilkan sekali.`,
       );
       await load();
       onChanged?.();
@@ -214,31 +219,38 @@ export function DesignWorkflowPanel({
       {!loading && state ? (
         <>
           {compact ? (
-            <div className="ep-design-status-strip" data-testid="design-status-strip">
-              <div className="ep-design-status-item">
-                <span className="ep-design-status-lbl">Gate Design</span>
-                <strong>{gateLabel(designGate, designGateReason)}</strong>
-              </div>
-              <div className="ep-design-status-item">
-                <span className="ep-design-status-lbl">Versi terbaru</span>
-                <strong>
-                  {latest
-                    ? `v${latest.version} · ${latest.filename || "file"}${
-                        latest.confirmed_at
-                          ? " · dikonfirmasi"
-                          : " · menunggu konfirmasi"
-                      }`
-                    : "Belum ada submission"}
-                </strong>
-              </div>
-              <div className="ep-design-status-item is-wide">
-                <span className="ep-design-status-lbl">Approval customer</span>
-                <strong>
-                  {state.approval
-                    ? `Disetujui ${state.approval.signer_name || ""} (${state.approval.approved_at || ""})`
-                    : "Belum ada"}
-                </strong>
-              </div>
+            <div
+              className="ep-ws-stack-list"
+              data-testid="design-status-strip"
+            >
+              <WorkSheetCard testId="design-status-card">
+                <WorkSheetKvGroup>
+                  <WorkSheetStackRow
+                    label="Gate Design"
+                    value={gateLabel(designGate, designGateReason)}
+                  />
+                  <WorkSheetStackRow
+                    label="Versi terbaru"
+                    value={
+                      latest
+                        ? `v${latest.version} · ${latest.filename || "file"}${
+                            latest.confirmed_at
+                              ? " · dikonfirmasi"
+                              : " · menunggu konfirmasi"
+                          }`
+                        : "Belum ada submission"
+                    }
+                  />
+                  <WorkSheetStackRow
+                    label="Approval customer"
+                    value={
+                      state.approval
+                        ? `Disetujui ${state.approval.signer_name || ""} (${state.approval.approved_at || ""})`
+                        : "Belum ada"
+                    }
+                  />
+                </WorkSheetKvGroup>
+              </WorkSheetCard>
             </div>
           ) : (
             <dl className="ep-kv">

@@ -107,15 +107,10 @@ type StackRowProps = {
   value: ReactNode;
   emphasize?: boolean;
   danger?: boolean;
-  /**
-   * Tabular emphasis inside ordinary rows — same 14px size as text values.
-   * Dedicated KPI strips use `.ep-ws-kpi-strip`, not this flag.
-   */
-  kpi?: boolean;
 };
 
 /**
- * Label / colon / value — 3-column grid for worksheet info rows.
+ * Label / colon / value 3-column grid for worksheet info rows.
  * Place consecutive rows inside {@link WorkSheetKvGroup} so columns share
  * one grid and colon/value X origins stay aligned.
  * Not for buttons, pills, or form field labels.
@@ -125,13 +120,12 @@ export function WorkSheetStackRow({
   value,
   emphasize,
   danger,
-  kpi,
 }: StackRowProps) {
   return (
     <div
       className={`ep-ws-stack-row${emphasize ? " is-emphasize" : ""}${
         danger ? " is-danger" : ""
-      }${kpi ? " is-kpi" : ""}`}
+      }`}
       data-testid="ws-stack-row"
     >
       <span className="ep-ws-stack-lbl">{label}</span>

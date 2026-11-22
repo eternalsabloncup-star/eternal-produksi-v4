@@ -747,7 +747,8 @@
 }
 
 .ep-ws-stack-lbl {
-  color: #6b7c8a;
+  /* WCAG AA ≥4.5:1 on #fff / card #fff8f6 / modal tint (measured #5a6b78) */
+  color: #5a6b78;
   font-weight: 600;
   font-size: 12px;
   line-height: 1.35;
@@ -756,7 +757,7 @@
 }
 
 .ep-ws-stack-colon {
-  color: #6b7c8a;
+  color: #5a6b78;
   font-weight: 600;
   font-size: 12px;
   line-height: 1.35;
@@ -774,12 +775,11 @@
   text-align: left;
 }
 
-/* Text + numeric share the same value column start (no right-float) */
-.ep-m-app .ep-task-modal.is-worksheet .ep-ws-stack-val,
-.ep-m-app .ep-task-modal.is-worksheet .ep-ws-stack-val .ep-num,
-.ep-ws-stack-val .ep-num {
+/* Beat shell `.ep-num { text-align:right }` via higher specificity (no !important) */
+.ep-m-app .ep-task-modal.is-worksheet .ep-ws-stack-val .ep-num {
   display: inline;
-  text-align: left !important;
+  min-width: 0;
+  text-align: left;
   font-size: 14px;
   font-weight: 600;
   line-height: 1.35;
@@ -789,17 +789,6 @@
 .ep-ws-stack-row.is-emphasize .ep-ws-stack-val {
   font-weight: 600;
   font-size: 14px;
-}
-
-.ep-ws-stack-row.is-kpi .ep-ws-stack-val {
-  font-size: 14px;
-  font-variant-numeric: tabular-nums;
-  font-weight: 600;
-}
-
-.ep-ws-stack-row.is-kpi .ep-ws-stack-lbl {
-  font-weight: 600;
-  color: #6b7c8a;
 }
 
 .ep-ws-stack-row.is-danger .ep-ws-stack-val {

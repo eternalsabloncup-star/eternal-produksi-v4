@@ -279,7 +279,7 @@ export function TeamTaskApiPanel({
         setGrantsError(
           err instanceof Error
             ? err.message
-            : "Izin Master tidak dimuat — aksi mutasi dinonaktifkan sampai izin tersedia.",
+            : "Izin Master tidak dimuat: aksi mutasi dinonaktifkan sampai izin tersedia.",
         );
       }
     })();
@@ -569,7 +569,7 @@ export function TeamTaskApiPanel({
             return (
               <span
                 className="ep-num"
-                title="Qty Alokasi (info) — Screen tidak dibatasi jadwal"
+                title="Qty Alokasi (info): Screen tidak dibatasi jadwal"
                 data-testid="screen-qty-alokasi"
               >
                 {formatQty(alloc)}
@@ -715,7 +715,7 @@ export function TeamTaskApiPanel({
     setActionNotice(null);
     try {
       const res = await uploadSample(selected.ref.allocation_id, file);
-      const msg = `Draft sampel v${res.sample.version} tersimpan — belum diajukan.`;
+      const msg = `Draft sampel v${res.sample.version} tersimpan, belum diajukan.`;
       setActionNotice(msg);
       showSuccess(msg);
       if (fileRef.current) fileRef.current.value = "";
@@ -737,7 +737,7 @@ export function TeamTaskApiPanel({
     }
     const draft = latestDraftSample(sampleRows);
     if (!draft) {
-      setActionError("Belum ada draft aktif — unggah file terlebih dahulu.");
+      setActionError("Belum ada draft aktif: unggah file terlebih dahulu.");
       return;
     }
     setBusy(true);
@@ -747,7 +747,7 @@ export function TeamTaskApiPanel({
       const res = await confirmSampleSubmission(selected.ref.allocation_id);
       const msg = res.duplicate
         ? `Sampel v${res.sample.version} sudah menunggu approval.`
-        : `Sampel v${res.sample.version} diajukan — menunggu Approval Kepala Produksi.`;
+        : `Sampel v${res.sample.version} diajukan, menunggu Approval Kepala Produksi.`;
       setActionNotice(msg);
       showSuccess(msg);
       await reloadAfterAction(selected);
@@ -890,7 +890,7 @@ export function TeamTaskApiPanel({
       );
       const msg = res.duplicate
         ? "Loading sudah tercatat sebelumnya."
-        : "Loading Sesuai — Qty Packing dikunci untuk SJ ini.";
+        : "Loading Sesuai: Qty Packing dikunci untuk SJ ini.";
       showSuccess(msg);
       await reloadAfterAction(selected);
     } catch (err) {
@@ -915,7 +915,7 @@ export function TeamTaskApiPanel({
         selected.ref.accurate_delivery_note_id,
         "Petugas menandai Tidak Sesuai dari Tugas Tim.",
       );
-      showSuccess("Tidak Sesuai — tugas koordinasi Kepala Produksi dibuat.");
+      showSuccess("Tidak Sesuai: tugas koordinasi Kepala Produksi dibuat.");
       await reloadAfterAction(selected);
     } catch (err) {
       showActionFailure(
@@ -974,7 +974,7 @@ export function TeamTaskApiPanel({
         approved ? undefined : rejectReason.trim(),
       );
       const msg = approved
-        ? `Sampel versi ${version} disetujui — cetak massal terbuka.`
+        ? `Sampel versi ${version} disetujui: cetak massal terbuka.`
         : `Sampel versi ${version} ditolak.`;
       setActionNotice(msg);
       showSuccess(msg);
@@ -1023,7 +1023,7 @@ export function TeamTaskApiPanel({
         newIdempotencyKey(`${role}:${selected.task_key}`),
       );
       const msg = res.duplicate
-        ? "Konfirmasi sama sudah tercatat — Qty tidak digandakan."
+        ? "Konfirmasi sama sudah tercatat: Qty tidak digandakan."
         : `Qty ${formatQty(qty)} tersimpan.`;
       setActionNotice(msg);
       showSuccess(msg);
@@ -1113,7 +1113,7 @@ export function TeamTaskApiPanel({
       {truncated ? (
         <p className="ep-notice" data-testid="tasks-truncated-notice" role="status">
           Daftar tugas mencapai batas baca API ({TASK_LIST_FETCH_LIMIT}). Angka
-          filter adalah batas bawah — bukan total lengkap.
+          filter adalah batas bawah, bukan total lengkap.
         </p>
       ) : null}
       {grantsError ? (
@@ -2053,7 +2053,7 @@ export function TeamTaskApiPanel({
                     )
                   ) : null}
                   <p className="ep-notice">
-                    Pilih Sesuai atau Tidak Sesuai — tanpa menginput ulang Qty SJ.
+                    Pilih Sesuai atau Tidak Sesuai, tanpa menginput ulang Qty SJ.
                   </p>
                   {(canAct("loading-sj", "confirm") ||
                     canAct(DRIVER_TASK, "confirm")) &&
@@ -2113,10 +2113,22 @@ export function TeamTaskApiPanel({
                     )}
                   </p>
                   {selected.context?.failure_reason ? (
-                    <p>
-                      Alasan gagal:{" "}
-                      <strong>{String(selected.context.failure_reason)}</strong>
-                    </p>
+                    pwaOps ? (
+                      <WorkSheetKvGroup>
+                        <WorkSheetStackRow
+                          label="Alasan gagal"
+                          value={String(selected.context.failure_reason)}
+                          danger
+                        />
+                      </WorkSheetKvGroup>
+                    ) : (
+                      <p>
+                        Alasan gagal:{" "}
+                        <strong>
+                          {String(selected.context.failure_reason)}
+                        </strong>
+                      </p>
+                    )
                   ) : null}
                   {Array.isArray(selected.context?.mismatched_items) ? (
                     <table className="ep-table">
@@ -2163,7 +2175,7 @@ export function TeamTaskApiPanel({
                     </table>
                   ) : null}
                   <p className="ep-notice">
-                    Konfirmasi hanya menandai koordinasi selesai — tidak mengubah
+                    Konfirmasi hanya menandai koordinasi selesai, tidak mengubah
                     SJ atau Qty pengiriman.
                   </p>
                   {canAct(selected.task_type, "confirm") && !pwaOps ? (
@@ -2182,13 +2194,14 @@ export function TeamTaskApiPanel({
               {selected.task_type === DRIVER_TASK ? (
                 <div data-testid="driver-block">
                   {pwaOps ? (
-                    <WorkSheetStackRow
-                      label="Driver"
-                      value={actorDisplayLabel({
-                        display_name: user?.display_name,
-                      })}
-                      emphasize
-                    />
+                    <WorkSheetKvGroup>
+                      <WorkSheetStackRow
+                        label="Driver"
+                        value={actorDisplayLabel({
+                          display_name: user?.display_name,
+                        })}
+                      />
+                    </WorkSheetKvGroup>
                   ) : (
                     <dl className="ep-kv ep-kv-compact">
                       <dt>Driver</dt>
@@ -2376,7 +2389,7 @@ export function TeamTaskApiPanel({
                       )}
                     </>
                   ) : (
-                    <p className="ep-notice">Mode lihat — tanpa aksi mutasi.</p>
+                    <p className="ep-notice">Mode lihat: tanpa aksi mutasi.</p>
                   )}
                 </div>
               ) : null}

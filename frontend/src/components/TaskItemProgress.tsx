@@ -21,7 +21,6 @@ export type TaskItemProgressField = {
   testId?: string;
   numeric?: boolean;
   title?: string;
-  kpi?: boolean;
 };
 
 type Props = {

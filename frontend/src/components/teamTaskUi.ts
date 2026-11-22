@@ -216,12 +216,12 @@ export function preliminaryLoadingDisplay(task: {
     statusText = "Menunggu Surat Jalan";
   } else if (pendingLoading) {
     statusText = String(
-      ctx.display_status || "SJ tersedia — tugas Loading belum siap",
+      ctx.display_status || "SJ tersedia: tugas Loading belum siap",
     );
   } else {
     statusText = String(
       ctx.display_status ||
-        "SJ tersedia — konfirmasi pada tugas Loading Surat Jalan",
+        "SJ tersedia: konfirmasi pada tugas Loading Surat Jalan",
     );
   }
   return { waiting, loadingReady, pendingLoading, statusText, qtyPrinted, sjLabel };

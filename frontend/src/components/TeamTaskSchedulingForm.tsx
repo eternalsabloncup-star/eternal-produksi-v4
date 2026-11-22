@@ -258,7 +258,7 @@ export function TeamTaskSchedulingForm({
         scheduleDate.trim(),
       );
       const msg = res.duplicate
-        ? "Perintah sama sudah tercatat — jadwal tidak digandakan."
+        ? "Perintah sama sudah tercatat: jadwal tidak digandakan."
         : `Alokasi ${res.allocations[0]?.allocation_id || ""} tersimpan.`;
       onNotice(msg);
       onSuccess(msg);
