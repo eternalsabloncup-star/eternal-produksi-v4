@@ -961,6 +961,64 @@ export function handleSimRequest(
 
   // Analytics
   if (path === "/api/buffer-stock" && method === "GET") return json(SIM_BUFFER);
+  if (path.startsWith("/api/production-flow/stage-counts") && method === "GET") {
+    const accuratePoId = url.searchParams.get("accurate_po_id") || "";
+    const q = (url.searchParams.get("q") || "").trim().toLowerCase();
+    const urgentRaw = url.searchParams.get("urgent");
+    const acceptedDocs = SIM_PO_DOCS.filter((d) => {
+      const acc = d.acceptance as { status?: string } | undefined;
+      if (acc?.status !== "accepted") return false;
+      if (accuratePoId && String(d.accurate_id) !== accuratePoId) return false;
+      const header = (d.header || {}) as Record<string, unknown>;
+      if (urgentRaw === "true" && header.urgent !== true) return false;
+      if (urgentRaw === "false" && header.urgent === true) return false;
+      if (q) {
+        const hay = [
+          String(d.po_no || ""),
+          String(header.po_no || ""),
+          String(header.customer || ""),
+          String(d.accurate_id || ""),
+        ]
+          .join(" ")
+          .toLowerCase();
+        if (!hay.includes(q)) return false;
+      }
+      return true;
+    });
+    const flowItem = SIM_FLOW.items[0];
+    const active = flowItem?.active_stages || ["flow-order-masuk"];
+    const counts: Record<string, number> = {
+      "flow-all": acceptedDocs.length,
+      "flow-order-masuk": 0,
+      "flow-design": 0,
+      "flow-approval-design": 0,
+      "flow-payment": 0,
+      "flow-approval-payment": 0,
+      "flow-penjadwalan": 0,
+      "flow-screener": 0,
+      "flow-persiapan": 0,
+      "flow-operator": 0,
+      "flow-konfirmasi-sample": 0,
+      "flow-cetak": 0,
+      "flow-packing": 0,
+      "flow-surat-jalan": 0,
+      "flow-loading": 0,
+      "flow-pengiriman": 0,
+      "flow-selesai": 0,
+    };
+    for (const nid of active) {
+      if (nid in counts && nid !== "flow-all") {
+        counts[nid] = acceptedDocs.length;
+      }
+    }
+    return json({
+      counts,
+      scanned: acceptedDocs.length,
+      accepted_only: true,
+      source: "api-simulation",
+      supportedFilters: ["q", "urgent"],
+    });
+  }
   if (path.startsWith("/api/production-flow/by-stage") && method === "GET") {
     const nodeId = url.searchParams.get("node_id") || "flow-order-masuk";
     const page = Math.max(1, Number(url.searchParams.get("page") || 1));
@@ -969,36 +1027,63 @@ export function handleSimRequest(
       Math.max(1, Number(url.searchParams.get("pageSize") || 50)),
     );
     const accuratePoId = url.searchParams.get("accurate_po_id") || "";
+    const q = (url.searchParams.get("q") || "").trim().toLowerCase();
+    const urgentRaw = url.searchParams.get("urgent");
     const acceptedDocs = SIM_PO_DOCS.filter((d) => {
       const acc = d.acceptance as { status?: string } | undefined;
-      return acc?.status === "accepted";
+      if (acc?.status !== "accepted") return false;
+      if (accuratePoId && String(d.accurate_id) !== accuratePoId) return false;
+      const header = (d.header || {}) as Record<string, unknown>;
+      if (urgentRaw === "true" && header.urgent !== true) return false;
+      if (urgentRaw === "false" && header.urgent === true) return false;
+      if (q) {
+        const hay = [
+          String(d.po_no || ""),
+          String(header.po_no || ""),
+          String(header.customer || ""),
+          String(d.accurate_id || ""),
+        ]
+          .join(" ")
+          .toLowerCase();
+        if (!hay.includes(q)) return false;
+      }
+      return true;
     });
     const flowItem = SIM_FLOW.items[0];
     const active = new Set(flowItem?.active_stages || ["flow-order-masuk"]);
     const inStage =
-      nodeId === "flow-selesai"
-        ? []
-        : active.has(nodeId)
-          ? acceptedDocs.filter(
-              (d) => !accuratePoId || String(d.accurate_id) === accuratePoId,
-            )
-          : [];
+      nodeId === "flow-all"
+        ? acceptedDocs
+        : nodeId === "flow-selesai"
+          ? []
+          : active.has(nodeId)
+            ? acceptedDocs
+            : [];
     const node =
-      flowItem?.nodes.find((n) => n.id === nodeId) ||
-      ({
-        id: nodeId,
-        label: nodeId,
-        status: "menunggu" as const,
-        detail: "",
-      });
+      nodeId === "flow-all"
+        ? {
+            id: "flow-all",
+            label: "Semua",
+            status: "menunggu" as const,
+            detail: "",
+          }
+        : flowItem?.nodes.find((n) => n.id === nodeId) ||
+          ({
+            id: nodeId,
+            label: nodeId,
+            status: "menunggu" as const,
+            detail: "",
+          });
     const start = (page - 1) * pageSize;
     const slice = inStage.slice(start, start + pageSize);
     const monLabel =
       nodeId === "flow-selesai"
         ? "Selesai"
-        : String(node.status) === "berjalan"
-          ? "Dalam Proses"
-          : "Aktif";
+        : nodeId === "flow-all"
+          ? "Aktif"
+          : String(node.status) === "berjalan"
+            ? "Dalam Proses"
+            : "Aktif";
     return json({
       node_id: nodeId,
       stage_label: node.label,
