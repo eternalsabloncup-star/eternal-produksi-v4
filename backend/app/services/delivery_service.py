@@ -51,9 +51,13 @@ class DeliveryEvidenceError(ValueError):
 
 
 def _sj_ref(note: dict[str, Any]) -> TaskRef:
+    """TaskRef Loading SJ keyed by SJ id — singular PO hanya bila legacy single-SO."""
+    singular = str(note.get("accurate_po_id") or "").strip()
+    if deliveries.note_is_multi_po(note):
+        singular = ""
     return TaskRef(
-        accurate_po_id=str(note["accurate_po_id"]),
-        po_no=str(note.get("po_no") or ""),
+        accurate_po_id=singular or None,
+        po_no=str(note.get("po_no") or "") if singular else "",
         accurate_delivery_note_id=str(note["accurate_sj_id"]),
         sj_no=str(note.get("sj_no") or ""),
     )
@@ -79,21 +83,27 @@ def has_successful_delivery(
 
 
 def _require_accepted_po_for_note(db: Database, note: dict[str, Any]) -> dict[str, Any]:
-    """Fail-closed: Loading/pengiriman hanya setelah PO Accepted (kanonis).
+    """Fail-closed: Loading/pengiriman hanya setelah SEMUA parent PO Accepted.
 
     Sumber otoritatif: ``operational.acceptance.status == accepted``.
     Tidak mengubah Gate Payment dan tidak auto-accept PO.
+    Multi-PO: tidak memilih satu parent sembarang — semua harus accepted.
     """
     from app.services.po_acceptance import require_po_accepted
 
-    po_id = str(note.get("accurate_po_id") or "").strip()
-    if not po_id:
+    parent_ids = deliveries.note_parent_po_ids(note)
+    if not parent_ids:
         raise LookupError("Surat Jalan tanpa referensi PO — operasi ditolak.")
-    po_doc = get_by_accurate_id(db, po_id)
-    if po_doc is None:
-        raise LookupError(f"PO Accurate tidak ditemukan: {po_id}")
-    require_po_accepted(po_doc)
-    return po_doc
+    first: dict[str, Any] | None = None
+    for po_id in parent_ids:
+        po_doc = get_by_accurate_id(db, po_id)
+        if po_doc is None:
+            raise LookupError(f"PO Accurate tidak ditemukan: {po_id}")
+        require_po_accepted(po_doc)
+        if first is None:
+            first = po_doc
+    assert first is not None
+    return first
 
 
 def ingest_delivery_note(
@@ -293,17 +303,23 @@ def validate_loading(
             f"{note['superseded_by']} — tidak berlaku untuk Loading."
         )
 
-    po_doc = get_by_accurate_id(db, str(note["accurate_po_id"]))
-    if po_doc is None:
-        raise LookupError(f"PO Accurate tidak ditemukan: {note['accurate_po_id']}")
-    lines = _po_line_index(po_doc)
-    accurate_po_id = str(note["accurate_po_id"])
+    parent_ids = deliveries.note_parent_po_ids(note)
+    if not parent_ids:
+        raise LookupError("Surat Jalan tanpa referensi PO — operasi ditolak.")
+    po_by_id: dict[str, dict[str, Any]] = {}
+    lines_by_po: dict[str, dict[str, dict[str, Any]]] = {}
+    for po_id in parent_ids:
+        po_doc = get_by_accurate_id(db, po_id)
+        if po_doc is None:
+            raise LookupError(f"PO Accurate tidak ditemukan: {po_id}")
+        po_by_id[po_id] = po_doc
+        lines_by_po[po_id] = _po_line_index(po_doc)
 
     checks: list[dict[str, Any]] = []
     for item in note["items"]:
         line_id = str(item["accurate_line_id"])
-        po_line = lines.get(line_id)
-        if po_line is None:
+        accurate_po_id = deliveries.item_source_po_id(item, note)
+        if not accurate_po_id or accurate_po_id not in lines_by_po:
             checks.append(
                 {
                     **item,
@@ -311,7 +327,24 @@ def validate_loading(
                     "qty_available": 0.0,
                     "matched": False,
                     "reason": (
-                        f"Item line {line_id} tidak ditemukan pada PO — identitas ambigu."
+                        f"Item line {line_id} tanpa parent PO terverifikasi — fail-closed."
+                    ),
+                }
+            )
+            continue
+        lines = lines_by_po[accurate_po_id]
+        po_line = lines.get(line_id)
+        if po_line is None:
+            checks.append(
+                {
+                    **item,
+                    "accurate_po_id": accurate_po_id,
+                    "process_kind": None,
+                    "qty_available": 0.0,
+                    "matched": False,
+                    "reason": (
+                        f"Item line {line_id} tidak ditemukan pada PO {accurate_po_id} "
+                        "— identitas ambigu."
                     ),
                 }
             )
@@ -335,6 +368,7 @@ def validate_loading(
             checks.append(
                 {
                     **item,
+                    "accurate_po_id": accurate_po_id,
                     "process_kind": process_kind,
                     "qty_available": available,
                     "matched": matched,
@@ -343,19 +377,20 @@ def validate_loading(
                 }
             )
         elif process_kind == "Non-Cetak":
-            checks.append(
-                _non_cetak_loading_check(
-                    db,
-                    accurate_po_id=accurate_po_id,
-                    line_id=line_id,
-                    sj_qty=sj_qty,
-                    item=item,
-                )
+            check = _non_cetak_loading_check(
+                db,
+                accurate_po_id=accurate_po_id,
+                line_id=line_id,
+                sj_qty=sj_qty,
+                item=item,
             )
+            check["accurate_po_id"] = accurate_po_id
+            checks.append(check)
         else:
             checks.append(
                 {
                     **item,
+                    "accurate_po_id": accurate_po_id,
                     "process_kind": process_kind or None,
                     "qty_available": 0.0,
                     "matched": False,
@@ -367,12 +402,13 @@ def validate_loading(
 
     active_loading = deliveries.get_loading_event(db, accurate_sj_id)
     revision_status = note.get("revision_status") or deliveries.REVISION_ACTIVE
-    return {
+    result: dict[str, Any] = {
         "accurate_sj_id": accurate_sj_id,
         "sj_no": note["sj_no"],
         "sj_version": note.get("sj_version", 1),
         "revision_status": revision_status,
-        "accurate_po_id": note["accurate_po_id"],
+        "accurate_po_ids": parent_ids,
+        "is_multi_po": deliveries.note_is_multi_po(note),
         "items": checks,
         "all_matched": all(c["matched"] for c in checks),
         "already_loaded": active_loading is not None,
@@ -380,6 +416,9 @@ def validate_loading(
         "needs_reloading": revision_status == deliveries.REVISION_NEEDS_RELOADING,
         "delivered": has_successful_delivery(db, accurate_sj_id),
     }
+    if not deliveries.note_is_multi_po(note):
+        result["accurate_po_id"] = parent_ids[0]
+    return result
 
 
 def _prepare_delivery_txn(db: Database) -> str:
@@ -592,18 +631,8 @@ def _link_preliminary_loading_for_note(
     """Tautkan tugas menunggu-SJ (po_line) ke SJ lewat accurate_line_id saja.
 
     Tidak menebak asosiasi dari qty/urutan/nama. Tidak menandai Loading SJ selesai
-    dan tidak memanggil confirm_loading.
+    dan tidak memanggil confirm_loading. Multi-PO: tautkan per parent PO item.
     """
-    po_id = str(note.get("accurate_po_id") or "").strip()
-    if not po_id:
-        return
-    line_ids = sorted(
-        {
-            str(item.get("accurate_line_id") or "").strip()
-            for item in (note.get("items") or [])
-            if isinstance(item, dict) and str(item.get("accurate_line_id") or "").strip()
-        }
-    )
     sj_id = str(note.get("accurate_sj_id") or "").strip()
     sj_no = str(note.get("sj_no") or "").strip()
     extra = (
@@ -613,7 +642,13 @@ def _link_preliminary_loading_for_note(
     )
     # loading-sj baru dalam txn yang sama → anggap ready untuk SJ ini.
     extra_ready = [sj_id] if sj_id else []
-    for line_id in line_ids:
+    for item in note.get("items") or []:
+        if not isinstance(item, dict):
+            continue
+        line_id = str(item.get("accurate_line_id") or "").strip()
+        po_id = deliveries.item_source_po_id(item, note)
+        if not line_id or not po_id:
+            continue
         key = build_task_key(
             PRELIMINARY_LOADING_TASK,
             "po_line",
@@ -622,6 +657,15 @@ def _link_preliminary_loading_for_note(
         existing = tasks.get_task(db, key, session=session)
         if existing is None:
             continue
+        po_no = ""
+        for assoc in note.get("parent_associations") or []:
+            if isinstance(assoc, dict) and str(assoc.get("accurate_po_id")) == po_id:
+                po_no = str(assoc.get("po_no") or "")
+                break
+        if not po_no:
+            po_no = str(
+                (existing.get("ref") or {}).get("po_no") or note.get("po_no") or ""
+            )
         upsert_preliminary_loading_for_line(
             db,
             accurate_po_id=po_id,
@@ -630,9 +674,7 @@ def _link_preliminary_loading_for_note(
             ref=TaskRef(
                 accurate_po_id=po_id,
                 accurate_line_id=line_id,
-                po_no=str(
-                    (existing.get("ref") or {}).get("po_no") or note.get("po_no") or ""
-                ),
+                po_no=po_no,
                 item_code=str((existing.get("ref") or {}).get("item_code") or ""),
             ),
             qty_printed=float(
@@ -672,11 +714,14 @@ def ensure_loading_sj_task(
     key = build_task_key(LOADING_SJ_TASK, "delivery_note", ref)
     existing = tasks.get_task(db, key, session=session)
     prev_ctx = dict((existing or {}).get("context") or {})
+    parent_ids = deliveries.note_parent_po_ids(note)
     ctx: dict[str, Any] = {
         **prev_ctx,
         "sj_no": note.get("sj_no"),
         "sj_version": note.get("sj_version"),
         "item_count": len(note.get("items") or []),
+        "accurate_po_ids": parent_ids,
+        "is_multi_po": deliveries.note_is_multi_po(note),
     }
     if assigned_user_email is not None:
         email = assigned_user_email.strip().lower()
@@ -894,7 +939,7 @@ def confirm_loading(
         if raced is not None:
             return {"loading": raced, "driver_task": None, "duplicate": True}
 
-        consumed_lines: set[str] = set()
+        consumed_keys: set[tuple[str, str]] = set()
         for check in validation["items"]:
             ledger_mode = str(check.get("ledger_mode") or "")
             uses_packing = check["process_kind"] == "Cetak" or ledger_mode.startswith(
@@ -903,11 +948,18 @@ def confirm_loading(
             if not uses_packing:
                 continue
             line_id = str(check["accurate_line_id"])
+            item_po = str(
+                check.get("accurate_po_id")
+                or deliveries.item_source_po_id(check, note)
+                or ""
+            )
+            if not item_po:
+                raise LoadingValidationError(
+                    f"Item line {line_id} tanpa parent PO — Loading ditolak."
+                )
             reserved = tasks.reserve_quota(
                 db,
-                task_key=production.qc_task_key(
-                    str(note["accurate_po_id"]), line_id
-                ),
+                task_key=production.qc_task_key(item_po, line_id),
                 qty=float(check["qty"]),
                 session=session,
             )
@@ -916,21 +968,37 @@ def confirm_loading(
                     f"Qty Packing untuk item line {line_id} "
                     "tidak lagi mencukupi."
                 )
-            consumed_lines.add(line_id)
+            consumed_keys.add((item_po, line_id))
+        parent_ids = deliveries.note_parent_po_ids(note)
+        loading_po_id = (
+            ""
+            if deliveries.note_is_multi_po(note)
+            else str(note.get("accurate_po_id") or (parent_ids[0] if parent_ids else ""))
+        )
         loading = deliveries.insert_loading_event(
             db,
             accurate_sj_id=str(note["accurate_sj_id"]),
-            accurate_po_id=str(note["accurate_po_id"]),
+            accurate_po_id=loading_po_id,
+            accurate_po_ids=parent_ids,
             sj_no=str(note["sj_no"]),
             items=[
                 {
                     "sj_line_id": c["sj_line_id"],
                     "accurate_line_id": c["accurate_line_id"],
+                    "accurate_po_id": str(
+                        c.get("accurate_po_id")
+                        or deliveries.item_source_po_id(c, note)
+                        or ""
+                    ),
                     "item_code": c["item_code"],
                     "qty": c["qty"],
                     "unit": c["unit"],
                     "process_kind": c["process_kind"],
-                    "packing_consumed": str(c["accurate_line_id"]) in consumed_lines,
+                    "packing_consumed": (
+                        str(c.get("accurate_po_id") or deliveries.item_source_po_id(c, note) or ""),
+                        str(c["accurate_line_id"]),
+                    )
+                    in consumed_keys,
                 }
                 for c in validation["items"]
             ],
@@ -1158,10 +1226,18 @@ def cancel_loading(
             if not packing_consumed:
                 continue
             qty = float(item["qty"])
+            item_po = str(
+                item.get("accurate_po_id") or cancelled.get("accurate_po_id") or ""
+            )
+            if not item_po:
+                raise LoadingCancelError(
+                    "Loading historis tanpa parent PO per item — "
+                    "reversal Packing fail-closed."
+                )
             tasks.tasks_collection(db).update_one(
                 {
                     "task_key": production.qc_task_key(
-                        str(cancelled["accurate_po_id"]), str(item["accurate_line_id"])
+                        item_po, str(item["accurate_line_id"])
                     )
                 },
                 {"$inc": {"qty_consumed": -qty}},
@@ -1417,7 +1493,8 @@ def confirm_delivery_success(
                 uploaded_by=courier,
                 kind="delivery-photo",
                 context={
-                    "accurate_po_id": note["accurate_po_id"],
+                    "accurate_po_id": note.get("accurate_po_id"),
+                    "accurate_po_ids": deliveries.note_parent_po_ids(note),
                     "accurate_sj_id": str(accurate_sj_id),
                     "delivery_commit": "pending",
                 },
@@ -1487,10 +1564,17 @@ def confirm_delivery_success(
                 "Loading aktif mengacu versi SJ lama — Loading ulang diperlukan."
             )
 
+        parent_ids = deliveries.note_parent_po_ids(note)
+        event_po_id = (
+            ""
+            if deliveries.note_is_multi_po(note)
+            else str(note.get("accurate_po_id") or (parent_ids[0] if parent_ids else ""))
+        )
         event = deliveries.insert_delivery_event(
             db,
             accurate_sj_id=str(accurate_sj_id),
-            accurate_po_id=str(note["accurate_po_id"]),
+            accurate_po_id=event_po_id,
+            accurate_po_ids=parent_ids,
             attempt=deliveries.next_delivery_attempt(
                 db, accurate_sj_id, session=session
             ),
@@ -1598,10 +1682,17 @@ def confirm_delivery_failure(
     fail_reason = reason.strip()
 
     def _operation(session: Any) -> dict[str, Any]:
+        parent_ids = deliveries.note_parent_po_ids(note)
+        event_po_id = (
+            ""
+            if deliveries.note_is_multi_po(note)
+            else str(note.get("accurate_po_id") or (parent_ids[0] if parent_ids else ""))
+        )
         event = deliveries.insert_delivery_event(
             db,
             accurate_sj_id=str(accurate_sj_id),
-            accurate_po_id=str(note["accurate_po_id"]),
+            accurate_po_id=event_po_id,
+            accurate_po_ids=parent_ids,
             attempt=deliveries.next_delivery_attempt(
                 db, accurate_sj_id, session=session
             ),

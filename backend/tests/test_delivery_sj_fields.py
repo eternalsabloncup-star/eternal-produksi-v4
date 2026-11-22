@@ -138,13 +138,15 @@ def test_sales_order_relation_read_from_item_when_header_has_none() -> None:
     assert note["accurate_po_id"] == "95106"
 
 
-def test_two_sales_orders_in_one_delivery_note_is_rejected() -> None:
+def test_two_sales_orders_in_one_delivery_note_is_native_multi_po() -> None:
     payload = _payload()
     payload["detailItem"][2]["salesOrder"] = {"id": 95999, "number": "TEST-PO/LAIN"}
-    with pytest.raises(deliveries.DeliveryNoteIdentityError) as exc:
-        deliveries.normalize_delivery_note(payload)
-    assert exc.value.code == "MULTI_SO_NOT_SUPPORTED"
-    assert "MULTI_SO_NOT_SUPPORTED" in str(exc.value)
+    payload["detailItem"][2]["salesOrderId"] = 95999
+    note = deliveries.normalize_delivery_note(payload)
+    assert note["is_multi_po"] is True
+    assert "accurate_po_id" not in note or not note.get("accurate_po_id")
+    assert set(note["accurate_po_ids"]) == {"95106", "95999"}
+    assert note["items"][2]["accurate_po_id"] == "95999"
 
 
 def test_lookup_objects_never_leak_into_labels() -> None:

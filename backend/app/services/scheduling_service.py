@@ -241,19 +241,29 @@ def _attach_ship_dates_to_light_rows(
         return
     notes = list(
         delivery_notes_collection(db).find(
-            {"accurate_po_id": {"$in": po_ids}}, {"_id": 0}
+            {
+                "$or": [
+                    {"accurate_po_id": {"$in": po_ids}},
+                    {"accurate_po_ids": {"$in": po_ids}},
+                    {"items.accurate_po_id": {"$in": po_ids}},
+                ]
+            },
+            {"_id": 0},
         )
     )
     by_po: dict[str, list[dict[str, Any]]] = {}
+    po_id_set = set(po_ids)
     for note in notes:
         if not is_active_delivery_note(note):
             continue
-        po_id = str(note.get("accurate_po_id") or "")
-        if not po_id:
-            continue
-        by_po.setdefault(po_id, []).append(note)
+        from app.repositories.delivery_repository import note_parent_po_ids
+
+        for po_id in note_parent_po_ids(note):
+            if po_id in po_id_set:
+                by_po.setdefault(po_id, []).append(note)
     dates_by_po = {
-        po_id: ship_dates_by_line_id(po_notes) for po_id, po_notes in by_po.items()
+        po_id: ship_dates_by_line_id(po_notes, accurate_po_id=po_id)
+        for po_id, po_notes in by_po.items()
     }
     for row in rows:
         po_id = str(row["accurate_po_id"])

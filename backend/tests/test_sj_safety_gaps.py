@@ -469,7 +469,7 @@ def test_sj_ingest_does_not_open_payment_gate_or_auto_accept(db: Database) -> No
     assert not deliveries.has_successful_delivery_event(db, "880304")
 
 
-def test_multi_so_sj_fail_closed_on_normalize() -> None:
+def test_multi_so_sj_normalizes_without_singular_parent() -> None:
     payload = _sj_detail(880305)
     payload["detailItem"][0]["salesOrderId"] = 95106
     if len(payload["detailItem"]) < 2:
@@ -478,7 +478,7 @@ def test_multi_so_sj_fail_closed_on_normalize() -> None:
     payload["detailItem"][1]["salesOrderId"] = 99999
     if isinstance(payload["detailItem"][1].get("salesOrder"), dict):
         payload["detailItem"][1]["salesOrder"]["id"] = 99999
-    with pytest.raises(deliveries.DeliveryNoteIdentityError) as exc:
-        deliveries.normalize_delivery_note(payload)
-    assert exc.value.code == "MULTI_SO_NOT_SUPPORTED"
-    assert "multi_so_not_supported" in str(exc.value).lower()
+    note = deliveries.normalize_delivery_note(payload)
+    assert note["is_multi_po"] is True
+    assert set(note["accurate_po_ids"]) == {"95106", "99999"}
+    assert not note.get("accurate_po_id")

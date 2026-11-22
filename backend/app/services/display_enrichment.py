@@ -97,8 +97,13 @@ def list_active_delivery_notes_for_po(
     return [n for n in notes if is_active_delivery_note(n)]
 
 
-def ship_dates_by_line_id(notes: list[dict[str, Any]]) -> dict[str, list[str]]:
+def ship_dates_by_line_id(
+    notes: list[dict[str, Any]],
+    *,
+    accurate_po_id: str | None = None,
+) -> dict[str, list[str]]:
     """Map accurate_line_id → ship_dates unik dari SJ aktif yang memuat line."""
+    po_filter = str(accurate_po_id or "").strip()
     buckets: dict[str, list[str]] = {}
     for note in notes:
         if not is_active_delivery_note(note):
@@ -108,6 +113,10 @@ def ship_dates_by_line_id(notes: list[dict[str, Any]]) -> dict[str, list[str]]:
             continue
         for item in note.get("items") or []:
             if not isinstance(item, dict):
+                continue
+            if po_filter and not deliveries.item_belongs_to_po(
+                item, accurate_po_id=po_filter, note=note
+            ):
                 continue
             line_id = str(item.get("accurate_line_id") or "").strip()
             if not line_id:

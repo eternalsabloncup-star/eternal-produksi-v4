@@ -75,6 +75,13 @@ REQUIRED_DELIVERY_INDEX_SPECS: list[dict[str, Any]] = [
         "unique": False,
     },
     {
+        # Multi-PO parent lookup. Production createIndex tetap butuh bootstrap terpisah.
+        "collection": DELIVERY_NOTES_COLLECTION,
+        "keys": [("accurate_po_ids", ASCENDING)],
+        "name": "idx_sj_po_ids",
+        "unique": False,
+    },
+    {
         "collection": DELIVERY_NOTES_COLLECTION,
         "keys": [("ship_date", ASCENDING)],
         "name": "idx_sj_ship_date",
@@ -207,7 +214,77 @@ _HEADER_SOURCE_KEYS = (
 )
 
 
-def _normalize_item(raw: dict[str, Any], seen: set[str]) -> dict[str, Any]:
+def note_parent_po_ids(note: dict[str, Any] | None) -> list[str]:
+    """Parent PO kanonis: ``accurate_po_ids`` bila ada, else legacy singular."""
+    if not isinstance(note, dict):
+        return []
+    ids = note.get("accurate_po_ids")
+    if isinstance(ids, list):
+        out = [str(x).strip() for x in ids if str(x).strip()]
+        if out:
+            return list(dict.fromkeys(out))
+    single = as_text(note.get("accurate_po_id"))
+    return [single] if single else []
+
+
+def note_is_multi_po(note: dict[str, Any] | None) -> bool:
+    if not isinstance(note, dict):
+        return False
+    if note.get("is_multi_po") is True:
+        return True
+    return len(note_parent_po_ids(note)) > 1
+
+
+def item_source_po_id(item: dict[str, Any] | None, note: dict[str, Any] | None = None) -> str:
+    """SO/PO sumber satu baris SJ — item dulu, lalu singular note (legacy)."""
+    if isinstance(item, dict):
+        from_item = as_text(item.get("accurate_po_id"))
+        if from_item:
+            return from_item
+    if isinstance(note, dict):
+        return as_text(note.get("accurate_po_id"))
+    return ""
+
+
+def item_belongs_to_po(
+    item: dict[str, Any] | None,
+    *,
+    accurate_po_id: str,
+    note: dict[str, Any] | None = None,
+) -> bool:
+    po_id = str(accurate_po_id or "").strip()
+    if not po_id:
+        return False
+    source = item_source_po_id(item, note)
+    if source:
+        return source == po_id
+    # Legacy multi-doc tanpa per-item attribution: hanya cocok jika note singular.
+    parents = note_parent_po_ids(note)
+    return len(parents) == 1 and parents[0] == po_id
+
+
+def _line_sales_order_pair(raw: dict[str, Any]) -> tuple[str, str]:
+    so = raw.get("salesOrder")
+    so_id_from_obj = as_text(so.get("id")) if isinstance(so, dict) else ""
+    so_id_flat = as_text(raw.get("salesOrderId"))
+    if so_id_from_obj and so_id_flat and so_id_from_obj != so_id_flat:
+        raise DeliveryNoteIdentityError(
+            "salesOrderId item bertentangan dengan salesOrder.id — "
+            "identitas SO tidak boleh ditebak.",
+            code="SO_ID_CONFLICT",
+        )
+    so_id = so_id_from_obj or so_id_flat
+    so_no = as_text(so.get("number")) if isinstance(so, dict) else ""
+    return so_id, so_no
+
+
+def _normalize_item(
+    raw: dict[str, Any],
+    seen: set[str],
+    *,
+    accurate_po_id: str,
+    seen_detail_keys: set[tuple[str, str]],
+) -> dict[str, Any]:
     sj_line_id = as_text(raw.get("id") or raw.get("sj_line_id"))
     if not sj_line_id:
         raise DeliveryNoteIdentityError("Setiap item SJ wajib memiliki ID baris.")
@@ -221,16 +298,37 @@ def _normalize_item(raw: dict[str, Any], seen: set[str]) -> dict[str, Any]:
             f"Item SJ {sj_line_id} tidak memiliki referensi item line PO "
             "(accurate_line_id) — relasi tidak boleh ditebak dari nama barang."
         )
+    if not accurate_po_id:
+        raise DeliveryNoteIdentityError(
+            f"Item SJ {sj_line_id} tidak memiliki referensi Sales Order — "
+            "atribusi parent tidak boleh ditebak.",
+            code="DELIVERY_NOTE_IDENTITY",
+        )
+    detail_key = (accurate_po_id, po_line_id)
+    if detail_key in seen_detail_keys:
+        raise DeliveryNoteIdentityError(
+            f"salesOrderDetailId duplikat untuk SO {accurate_po_id}: {po_line_id}",
+            code="SO_DETAIL_DUPLICATE",
+        )
+    seen_detail_keys.add(detail_key)
+
+    qty = _as_float(raw.get("quantity", raw.get("qty")))
+    if float(qty) <= 0:
+        raise DeliveryNoteIdentityError(
+            f"Item SJ {sj_line_id} qty tidak valid.",
+            code="QTY_INVALID",
+        )
 
     item_obj = raw.get("item") if isinstance(raw.get("item"), dict) else {}
     return {
         "sj_line_id": sj_line_id,
         "accurate_line_id": po_line_id,
+        "accurate_po_id": accurate_po_id,
         "item_code": nested_label(item_obj, "no", "itemNo", "code")
         or as_text(raw.get("itemNo") or raw.get("item_code")),
         "item_name": as_text(raw.get("detailName") or raw.get("item_name"))
         or nested_label(item_obj, "name"),
-        "qty": _as_float(raw.get("quantity", raw.get("qty"))),
+        "qty": qty,
         "unit": _first_label(raw, "itemUnit", "unit")
         or as_text(raw.get("itemUnitName")),
         "warehouse_name": _first_label(raw, "warehouse")
@@ -255,76 +353,94 @@ def _customer_po_from_items(raw_items: list[Any]) -> str:
     return ""
 
 
-def _resolve_sales_order(
-    raw_items: list[Any], payload: dict[str, Any]
-) -> tuple[str, str]:
-    """Identitas SO: utamakan ``detailItem[].salesOrder.id``.
-
-    - ``salesOrderId`` item dicek konsisten terhadap ``salesOrder.id``.
-    - Header ``salesOrder`` boolean Accurate diabaikan (bukan objek SO).
-    - Multi-SO dalam satu SJ → ``MULTI_SO_NOT_SUPPORTED`` (fail-closed).
-    """
-    pairs: dict[str, str] = {}
-    for raw in raw_items:
-        if not isinstance(raw, dict):
-            continue
-        so = raw.get("salesOrder")
-        so_id_from_obj = as_text(so.get("id")) if isinstance(so, dict) else ""
-        so_id_flat = as_text(raw.get("salesOrderId"))
-        if so_id_from_obj and so_id_flat and so_id_from_obj != so_id_flat:
-            raise DeliveryNoteIdentityError(
-                "salesOrderId item bertentangan dengan salesOrder.id — "
-                "identitas SO tidak boleh ditebak.",
-                code="SO_ID_CONFLICT",
-            )
-        so_id = so_id_from_obj or so_id_flat
-        if not so_id:
-            continue
-        so_no = as_text(so.get("number")) if isinstance(so, dict) else ""
-        if so_id in pairs and pairs[so_id] and so_no and pairs[so_id] != so_no:
-            raise DeliveryNoteIdentityError(
-                "Nomor Sales Order tidak konsisten antar item SJ.",
-                code="SO_NUMBER_CONFLICT",
-            )
-        pairs[so_id] = so_no or pairs.get(so_id, "")
-
-    if len(pairs) > 1:
-        # Hanya jumlah SO — jangan paparkan nomor pelanggan/ID mentah di pesan.
-        raise DeliveryNoteIdentityError(
-            f"MULTI_SO_NOT_SUPPORTED: satu Surat Jalan merujuk {len(pairs)} "
-            "Sales Order berbeda — sinkron otomatis ditolak.",
-            code="MULTI_SO_NOT_SUPPORTED",
-        )
-
-    line_po_id, line_po_no = ("", "")
-    if pairs:
-        line_po_id, line_po_no = next(iter(pairs.items()))
-
-    # Header salesOrderId legacy (bila ada) harus cocok; header salesOrder boolean diabaikan.
+def _header_sales_order(payload: dict[str, Any]) -> tuple[str, str]:
+    """Header SO legacy — objek dict saja; boolean Accurate diabaikan."""
     header_so = payload.get("salesOrder")
     header_po_id = ""
+    header_po_no = ""
     if isinstance(header_so, dict):
         header_po_id = as_text(header_so.get("id"))
-        if not line_po_no:
-            line_po_no = as_text(header_so.get("number"))
+        header_po_no = as_text(header_so.get("number"))
     header_po_id = (
         header_po_id
         or as_text(payload.get("salesOrderId") or payload.get("accurate_po_id"))
     )
-    if header_po_id and line_po_id and header_po_id != line_po_id:
-        raise DeliveryNoteIdentityError(
-            "salesOrderId header bertentangan dengan salesOrder item — "
-            "identitas SO tidak boleh ditebak.",
-            code="SO_ID_CONFLICT",
+    if not header_po_no:
+        header_po_no = as_text(
+            payload.get("salesOrderNumber") or payload.get("po_no")
         )
+    return header_po_id, header_po_no
 
-    accurate_po_id = line_po_id or header_po_id
-    if not accurate_po_id:
+
+def _resolve_parent_associations(
+    raw_items: list[Any], payload: dict[str, Any]
+) -> tuple[list[dict[str, str]], list[str]]:
+    """Kumpulkan parent SO per baris — native multi-PO (P8C).
+
+    - Setiap baris wajib punya SO terverifikasi (atau fallback singular header
+      hanya jika seluruh dokumen single-SO).
+    - Tidak memilih parent sembarang untuk multi-SO.
+    - Tidak me-raise MULTI_SO_NOT_SUPPORTED lagi (Owner: native multi-PO).
+    """
+    pairs: dict[str, str] = {}
+    per_line: list[str | None] = []
+    dict_items = [raw for raw in raw_items if isinstance(raw, dict)]
+    for raw in dict_items:
+        so_id, so_no = _line_sales_order_pair(raw)
+        if so_id:
+            if so_id in pairs and pairs[so_id] and so_no and pairs[so_id] != so_no:
+                raise DeliveryNoteIdentityError(
+                    "Nomor Sales Order tidak konsisten antar item SJ.",
+                    code="SO_NUMBER_CONFLICT",
+                )
+            pairs[so_id] = so_no or pairs.get(so_id, "")
+        per_line.append(so_id or None)
+
+    header_po_id, header_po_no = _header_sales_order(payload)
+    if header_po_id:
+        if header_po_id in pairs:
+            if header_po_no and pairs[header_po_id] and pairs[header_po_id] != header_po_no:
+                raise DeliveryNoteIdentityError(
+                    "Nomor Sales Order header bertentangan dengan item.",
+                    code="SO_NUMBER_CONFLICT",
+                )
+            pairs[header_po_id] = pairs[header_po_id] or header_po_no
+        elif pairs:
+            # Header SO asing saat item sudah punya SO → konflik (jangan tebak).
+            raise DeliveryNoteIdentityError(
+                "salesOrderId header bertentangan dengan salesOrder item — "
+                "identitas SO tidak boleh ditebak.",
+                code="SO_ID_CONFLICT",
+            )
+        else:
+            pairs[header_po_id] = header_po_no
+
+    if not pairs:
         raise DeliveryNoteIdentityError("Surat Jalan wajib merujuk Accurate PO ID.")
-    po_no = (
-        as_text(payload.get("salesOrderNumber") or payload.get("po_no")) or line_po_no
-    )
-    return accurate_po_id, po_no
+
+    is_multi = len(pairs) > 1
+    line_po_ids: list[str] = []
+    for so_id in per_line:
+        if so_id:
+            line_po_ids.append(so_id)
+            continue
+        if is_multi:
+            raise DeliveryNoteIdentityError(
+                "Item multi-PO tanpa salesOrderId — atribusi parent tidak boleh ditebak.",
+                code="DELIVERY_NOTE_IDENTITY",
+            )
+        # Single-SO legacy: baris tanpa SO mewarisi satu-satunya parent dokumen.
+        only_id = next(iter(pairs))
+        line_po_ids.append(only_id)
+
+    if len(line_po_ids) != len(dict_items):
+        raise DeliveryNoteIdentityError("Surat Jalan wajib memiliki item.")
+
+    associations = [
+        {"accurate_po_id": po_id, "po_no": pairs.get(po_id, "")}
+        for po_id in sorted(pairs)
+    ]
+    return associations, line_po_ids
 
 
 def normalize_delivery_note(payload: dict[str, Any]) -> dict[str, Any]:
@@ -334,6 +450,11 @@ def normalize_delivery_note(payload: dict[str, Any]) -> dict[str, Any]:
     bersifat opsional: yang tidak dikirim Accurate disimpan kosong dan dicatat
     pada ``source_meta.absent_fields`` agar UI menampilkannya sebagai kosong,
     bukan nilai karangan.
+
+    Native multi-PO (P8C): satu ``accurate_sj_id`` → N parent di
+    ``accurate_po_ids`` / ``parent_associations``; tiap item menyimpan
+    ``accurate_po_id`` sumber. Field singular ``accurate_po_id`` / ``po_no``
+    hanya diisi untuk single-SO (kompatibilitas legacy).
     """
     accurate_sj_id = as_text(payload.get("id") or payload.get("accurate_sj_id"))
     if not accurate_sj_id:
@@ -345,12 +466,45 @@ def normalize_delivery_note(payload: dict[str, Any]) -> dict[str, Any]:
     if not isinstance(raw_items, list) or not raw_items:
         raise DeliveryNoteIdentityError("Surat Jalan wajib memiliki item.")
 
+    dict_items = [raw for raw in raw_items if isinstance(raw, dict)]
+    if not dict_items:
+        raise DeliveryNoteIdentityError("Surat Jalan wajib memiliki item.")
+    # Identitas baris (sj_line_id + salesOrderDetailId) dulu — shape 120851
+    # harus gagal di line ref, bukan baru di parent SO.
+    for raw in dict_items:
+        sj_line_id = as_text(raw.get("id") or raw.get("sj_line_id"))
+        if not sj_line_id:
+            raise DeliveryNoteIdentityError("Setiap item SJ wajib memiliki ID baris.")
+        po_line_id = as_text(raw.get("salesOrderDetailId") or raw.get("accurate_line_id"))
+        if not po_line_id:
+            raise DeliveryNoteIdentityError(
+                f"Item SJ {sj_line_id} tidak memiliki referensi item line PO "
+                "(accurate_line_id) — relasi tidak boleh ditebak dari nama barang."
+            )
+
+    associations, line_po_ids = _resolve_parent_associations(raw_items, payload)
     seen: set[str] = set()
-    items = [_normalize_item(raw, seen) for raw in raw_items if isinstance(raw, dict)]
+    seen_detail_keys: set[tuple[str, str]] = set()
+    items = [
+        _normalize_item(
+            raw,
+            seen,
+            accurate_po_id=line_po_ids[idx],
+            seen_detail_keys=seen_detail_keys,
+        )
+        for idx, raw in enumerate(dict_items)
+    ]
     if not items:
         raise DeliveryNoteIdentityError("Surat Jalan wajib memiliki item.")
 
-    accurate_po_id, po_no = _resolve_sales_order(raw_items, payload)
+    accurate_po_ids = [a["accurate_po_id"] for a in associations]
+    is_multi_po = len(accurate_po_ids) > 1
+    singular_po_id = "" if is_multi_po else accurate_po_ids[0]
+    singular_po_no = ""
+    if not is_multi_po:
+        singular_po_no = associations[0].get("po_no", "") or as_text(
+            payload.get("salesOrderNumber") or payload.get("po_no")
+        )
 
     sj_date = as_text(payload.get("transDate") or payload.get("sj_date"))
     # Accurate DO tidak punya tanggal kirim terpisah; tanggal transaksi dipakai
@@ -377,6 +531,9 @@ def normalize_delivery_note(payload: dict[str, Any]) -> dict[str, Any]:
         source_meta["ship_date_source"] = "shipDate"
     elif sj_date:
         source_meta["ship_date_source"] = "transDate"
+    source_meta["parent_po_count"] = len(accurate_po_ids)
+    if is_multi_po:
+        source_meta["native_multi_po"] = True
 
     master_salesman_id = as_text(
         payload.get("masterSalesmanId") or payload.get("master_salesman_id")
@@ -392,12 +549,12 @@ def normalize_delivery_note(payload: dict[str, Any]) -> dict[str, Any]:
         payload.get("poNumber") or payload.get("customer_po_no")
     ) or _customer_po_from_items(raw_items)
 
-    return {
+    doc: dict[str, Any] = {
         "accurate_sj_id": accurate_sj_id,
         "sj_no": sj_no,
-        "accurate_po_id": accurate_po_id,
-        # Identitas PO V4 = nomor Sales Order Accurate, bukan DO.poNumber.
-        "po_no": po_no,
+        "accurate_po_ids": accurate_po_ids,
+        "parent_associations": associations,
+        "is_multi_po": is_multi_po,
         # DO.poNumber / salesOrderPoNumber = nomor PO pelanggan, terpisah.
         "customer_po_no": customer_po_no,
         "sj_date": sj_date,
@@ -449,10 +606,16 @@ def normalize_delivery_note(payload: dict[str, Any]) -> dict[str, Any]:
         "source_meta": source_meta,
         "superseded_by": as_text(payload.get("superseded_by")) or None,
     }
+    if not is_multi_po:
+        # Legacy singular identity — jangan diisi untuk multi-PO (misleading).
+        doc["accurate_po_id"] = singular_po_id
+        doc["po_no"] = singular_po_no
+    return doc
 
 
 _ITEM_SIGNATURE_FIELDS = (
     "accurate_line_id",
+    "accurate_po_id",
     "item_code",
     "item_name",
     "qty",
@@ -465,6 +628,9 @@ _ITEM_SIGNATURE_FIELDS = (
 # saja tidak menaikkan versi SJ: aturan Opsi B hanya berlaku untuk item line.
 _HEADER_DIFF_FIELDS = (
     "po_no",
+    "accurate_po_id",
+    "accurate_po_ids",
+    "is_multi_po",
     "customer_po_no",
     "customer_name",
     "customer_no",
@@ -564,9 +730,19 @@ def apply_upsert_delivery_note(
     if before is None:
         update["revision_status"] = REVISION_ACTIVE
 
+    mongo_update: dict[str, Any] = {
+        "$set": update,
+        "$setOnInsert": {"created_at": now},
+    }
+    # Multi-PO: hapus singular legacy agar tidak menyesatkan pembaca lama.
+    if doc.get("is_multi_po"):
+        update.pop("accurate_po_id", None)
+        update.pop("po_no", None)
+        mongo_update["$unset"] = {"accurate_po_id": "", "po_no": ""}
+
     delivery_notes_collection(db).update_one(
         {"accurate_sj_id": doc["accurate_sj_id"]},
-        {"$set": update, "$setOnInsert": {"created_at": now}},
+        mongo_update,
         upsert=True,
         session=session,
     )
@@ -704,7 +880,13 @@ def list_delivery_notes(
     _ensure_once(db)
     query: dict[str, Any] = {}
     if accurate_po_id:
-        query["accurate_po_id"] = str(accurate_po_id)
+        pid = str(accurate_po_id)
+        # Legacy singular + native multi-PO parents + per-item attribution.
+        query["$or"] = [
+            {"accurate_po_id": pid},
+            {"accurate_po_ids": pid},
+            {"items.accurate_po_id": pid},
+        ]
     if ship_date_from or ship_date_to:
         window: dict[str, Any] = {}
         if ship_date_from:
@@ -741,6 +923,8 @@ def list_sj_links_for_po_line(
             if not isinstance(item, dict):
                 continue
             if str(item.get("accurate_line_id") or "").strip() != line_id:
+                continue
+            if not item_belongs_to_po(item, accurate_po_id=po_id, note=note):
                 continue
             seen.add(sj_id)
             links.append(
@@ -789,14 +973,20 @@ def insert_loading_event(
     idempotency_key: str,
     sj_version: int = 1,
     sequence: int = 1,
+    accurate_po_ids: list[str] | None = None,
     session: Any | None = None,
 ) -> dict[str, Any]:
     """Satu Loading aktif per SJ; versi batal tetap tersimpan sebagai histori."""
     _ensure_once(db, session=session)
+    parents = [str(x).strip() for x in (accurate_po_ids or []) if str(x).strip()]
+    if not parents and accurate_po_id:
+        parents = [str(accurate_po_id)]
     doc = {
         "loading_id": f"loading:{accurate_sj_id}:v{sequence}",
         "accurate_sj_id": str(accurate_sj_id),
-        "accurate_po_id": str(accurate_po_id),
+        # Singular kosong untuk multi-PO — jangan isi parent pertama.
+        "accurate_po_id": str(accurate_po_id or ""),
+        "accurate_po_ids": parents,
         "sj_no": sj_no,
         "sj_version": sj_version,
         "sequence": sequence,
@@ -884,13 +1074,18 @@ def insert_delivery_event(
     photo_evidence_ids: list[str],
     signature_evidence_id: str | None,
     failure_reason: str | None,
+    accurate_po_ids: list[str] | None = None,
     session: Any | None = None,
 ) -> dict[str, Any]:
     _ensure_once(db, session=session)
+    parents = [str(x).strip() for x in (accurate_po_ids or []) if str(x).strip()]
+    if not parents and accurate_po_id:
+        parents = [str(accurate_po_id)]
     doc = {
         "delivery_event_id": f"delivery:{accurate_sj_id}:attempt-{attempt}",
         "accurate_sj_id": str(accurate_sj_id),
-        "accurate_po_id": str(accurate_po_id),
+        "accurate_po_id": str(accurate_po_id or ""),
+        "accurate_po_ids": parents,
         "attempt": attempt,
         "status": status,
         "courier_email": courier_email,

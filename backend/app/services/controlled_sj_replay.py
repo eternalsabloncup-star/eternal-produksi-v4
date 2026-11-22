@@ -420,20 +420,22 @@ def evaluate_sj_candidate(
         note = deliveries.normalize_delivery_note(dict(payload))
     except deliveries.DeliveryNoteIdentityError as exc:
         code = as_text(getattr(exc, "code", None)) or "DELIVERY_NOTE_IDENTITY"
-        if code == "MULTI_SO_NOT_SUPPORTED":
-            return {
-                **base,
-                "ok": False,
-                "outcome": "conflict",
-                "reason": "multi_so",
-                "stop_batch": True,
-            }
         return {
             **base,
             "ok": False,
             "outcome": "conflict",
             "reason": "identity_mismatch",
             "error_code": code,
+            "stop_batch": True,
+        }
+
+    # P7D sealed allowlist = single-SO per entry. Multi-PO SJ di luar kontrak replay.
+    if deliveries.note_is_multi_po(note):
+        return {
+            **base,
+            "ok": False,
+            "outcome": "conflict",
+            "reason": "multi_so",
             "stop_batch": True,
         }
 
@@ -481,7 +483,16 @@ def evaluate_sj_candidate(
 
     existing = deliveries.get_delivery_note(db, entry.accurate_sj_id)
     if existing is not None:
-        existing_po = as_text(existing.get("accurate_po_id"))
+        existing_parents = deliveries.note_parent_po_ids(existing)
+        if deliveries.note_is_multi_po(existing):
+            return {
+                **base,
+                "ok": False,
+                "outcome": "conflict",
+                "reason": "existing_sj_so_conflict",
+                "stop_batch": True,
+            }
+        existing_po = existing_parents[0] if existing_parents else ""
         if existing_po and existing_po != entry.accurate_so_id:
             return {
                 **base,

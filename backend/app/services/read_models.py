@@ -231,8 +231,15 @@ def _delivered_qty_for_line(
             continue
         seen_sj.add(sj_id)
         for item in note.get("items") or []:
-            if str(item.get("accurate_line_id") or "") == accurate_line_id:
-                total += float(item.get("qty") or 0)
+            if not isinstance(item, dict):
+                continue
+            if str(item.get("accurate_line_id") or "") != accurate_line_id:
+                continue
+            if not deliveries.item_belongs_to_po(
+                item, accurate_po_id=accurate_po_id, note=note
+            ):
+                continue
+            total += float(item.get("qty") or 0)
     return total
 
 

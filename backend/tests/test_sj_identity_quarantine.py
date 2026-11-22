@@ -21,7 +21,6 @@ from app.services.accurate_auto_sync import sj_job
 from app.services.accurate_auto_sync.checkpoint import load_job_checkpoint
 from app.services.accurate_auto_sync.sj_sync_review import (
     REASON_DELIVERY_NOTE_IDENTITY,
-    REASON_MULTI_SO,
     REASON_PO_NOT_REGISTERED,
     get_sj_sync_review,
     review_is_eligible,
@@ -264,17 +263,17 @@ def test_identity_retry_cooldown_idempotent(sdb: Database) -> None:
     assert review_is_eligible(review) is False
 
 
-def test_multi_so_still_quarantines(sdb: Database) -> None:
+def test_multi_so_without_parents_defers_not_identity_quarantine(sdb: Database) -> None:
     detail = _sj_multi(119068)
     result = delivery_sync.sync_delivery_order_payload(
         sdb, OWNER, detail, mongo_guard="test"
     )
-    assert result["outcome"] == "review_required"
-    assert result["reason"] == REASON_MULTI_SO
+    assert result["outcome"] == "skipped"
+    assert result["reason"] == REASON_PO_NOT_REGISTERED
     assert result.get("writes") == 0
     assert deliveries.get_delivery_note(sdb, "119068") is None
     review = get_sj_sync_review(sdb, "119068")
-    assert review["reason"] == REASON_MULTI_SO
+    assert review["reason"] == REASON_PO_NOT_REGISTERED
 
 
 def test_po_not_registered_still_deferred(sdb: Database) -> None:
