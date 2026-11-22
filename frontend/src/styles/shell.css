@@ -4314,6 +4314,116 @@
   }
 }
 
+/* Mobile Users identity cards (≤480px) — desktop table unchanged above breakpoint */
+.ep-settings-users-mobile {
+  display: none;
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.ep-settings-user-card {
+  border: 1px solid var(--ep-line);
+  border-radius: 8px;
+  background: #fff;
+  padding: 10px 12px;
+  display: grid;
+  gap: 8px;
+}
+
+.ep-settings-user-card + .ep-settings-user-card {
+  margin-top: 8px;
+}
+
+.ep-settings-user-card-top {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 10px;
+  min-width: 0;
+}
+
+.ep-settings-user-card-identity {
+  min-width: 0;
+  flex: 1;
+}
+
+.ep-settings-user-card-name {
+  margin: 0;
+  font-size: 14px;
+  font-weight: 700;
+  color: var(--ep-ink);
+  line-height: 1.3;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+
+.ep-settings-user-card-email {
+  margin: 2px 0 0;
+  font-size: 12px;
+  color: var(--ep-muted);
+  line-height: 1.35;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+
+.ep-settings-user-card-actions {
+  flex: none;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 6px;
+}
+
+.ep-settings-user-card-actions .ep-settings-kelola-trigger {
+  min-height: 36px;
+  min-width: 72px;
+}
+
+.ep-settings-user-card-meta {
+  margin: 0;
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 6px 10px;
+}
+
+.ep-settings-user-card-meta > div {
+  min-width: 0;
+}
+
+.ep-settings-user-card-meta dt {
+  margin: 0;
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  color: var(--ep-muted);
+}
+
+.ep-settings-user-card-meta dd {
+  margin: 2px 0 0;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--ep-ink);
+  line-height: 1.35;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+
+.ep-settings-user-card-branches {
+  grid-column: 1 / -1;
+}
+
+@media (max-width: 480px) {
+  .ep-settings-users-desktop {
+    display: none;
+  }
+
+  .ep-settings-users-mobile {
+    display: block;
+  }
+}
+
 
 /* --- Tugas Tim / modal API panels (aliases + utilities) --- */
 .ep-modalhead {

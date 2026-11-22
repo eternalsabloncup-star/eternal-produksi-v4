@@ -107,6 +107,54 @@ export function UsersPanel({
     });
   }, [users, q, roleFilter, statusFilter]);
 
+  function kelolaItemsFor(u: SettingsUser) {
+    return [
+      {
+        id: "edit",
+        label: "Edit",
+        onSelect: () => {
+          setEditingUser(u);
+          setEditUserForm({
+            display_name: u.display_name,
+            role: u.role,
+            operational_role: u.operational_role || "",
+            branch_ids: [...(u.branch_ids || [])],
+          });
+        },
+      },
+      u.is_active
+        ? {
+            id: "deactivate",
+            label: "Nonaktifkan",
+            tone: "danger" as const,
+            onSelect: () => onDeactivate(u),
+          }
+        : {
+            id: "activate",
+            label: "Aktifkan kembali",
+            onSelect: () => onActivate(u),
+          },
+      {
+        id: "reset-password",
+        label: "Reset kata sandi",
+        onSelect: () => onResetPassword(u),
+      },
+      {
+        id: "sessions",
+        label: "Sesi login",
+        onSelect: () => onManageSessions(u),
+      },
+    ];
+  }
+
+  function userRoleSystemLabel(u: SettingsUser) {
+    return roles.find((r) => r.role_key === u.role)?.label || u.role;
+  }
+
+  function userRoleWorkLabel(u: SettingsUser) {
+    return u.operational_role ? roleWorkLabel(u.operational_role) : "—";
+  }
+
   function branchChecks(
     ids: string[],
     options: Array<{ code: string; name: string; is_active: boolean }>,
@@ -194,7 +242,7 @@ export function UsersPanel({
             </select>
           </label>
         </div>
-        <div className="ep-settings-table-wrap">
+        <div className="ep-settings-table-wrap ep-settings-users-desktop">
           <table className="ep-settings-data-table is-users">
             <thead>
               <tr>
@@ -220,19 +268,13 @@ export function UsersPanel({
                 </tr>
               ) : (
                 filtered.map((u) => (
-                  <tr key={u.id}>
+                  <tr key={u.id} data-user-id={u.id}>
                     <td className="is-email" title={u.email}>
                       {u.email}
                     </td>
                     <td className="is-name">{u.display_name}</td>
-                    <td className="is-role">
-                      {roles.find((r) => r.role_key === u.role)?.label || u.role}
-                    </td>
-                    <td className="is-role">
-                      {u.operational_role
-                        ? roleWorkLabel(u.operational_role)
-                        : "—"}
-                    </td>
+                    <td className="is-role">{userRoleSystemLabel(u)}</td>
+                    <td className="is-role">{userRoleWorkLabel(u)}</td>
                     <td
                       className="is-branch"
                       title={formatUserBranches(u.branch_ids, branches)}
@@ -247,43 +289,7 @@ export function UsersPanel({
                     <td className="is-actions">
                       <SettingsKelolaMenu
                         ariaLabel={`Kelola pengguna ${u.display_name || u.email}`}
-                        items={[
-                          {
-                            id: "edit",
-                            label: "Edit",
-                            onSelect: () => {
-                              setEditingUser(u);
-                              setEditUserForm({
-                                display_name: u.display_name,
-                                role: u.role,
-                                operational_role: u.operational_role || "",
-                                branch_ids: [...(u.branch_ids || [])],
-                              });
-                            },
-                          },
-                          u.is_active
-                            ? {
-                                id: "deactivate",
-                                label: "Nonaktifkan",
-                                tone: "danger",
-                                onSelect: () => onDeactivate(u),
-                              }
-                            : {
-                                id: "activate",
-                                label: "Aktifkan kembali",
-                                onSelect: () => onActivate(u),
-                              },
-                          {
-                            id: "reset-password",
-                            label: "Reset kata sandi",
-                            onSelect: () => onResetPassword(u),
-                          },
-                          {
-                            id: "sessions",
-                            label: "Sesi login",
-                            onSelect: () => onManageSessions(u),
-                          },
-                        ]}
+                        items={kelolaItemsFor(u)}
                       />
                     </td>
                   </tr>
@@ -292,6 +298,64 @@ export function UsersPanel({
             </tbody>
           </table>
         </div>
+
+        <ul
+          className="ep-settings-users-mobile"
+          aria-label="Daftar pengguna"
+          data-testid="settings-users-mobile"
+        >
+          {filtered.length === 0 ? (
+            <li className="ep-settings-empty">
+              {users.length === 0
+                ? "Belum ada pengguna, atau Anda tidak punya hak mengelola pengguna."
+                : "Tidak ada pengguna yang cocok dengan filter."}
+            </li>
+          ) : (
+            filtered.map((u) => {
+              const branchText = formatUserBranches(u.branch_ids, branches);
+              return (
+                <li
+                  key={u.id}
+                  className="ep-settings-user-card"
+                  data-user-id={u.id}
+                  data-testid={`settings-user-card-${u.id}`}
+                >
+                  <div className="ep-settings-user-card-top">
+                    <div className="ep-settings-user-card-identity">
+                      <p className="ep-settings-user-card-name">{u.display_name}</p>
+                      <p className="ep-settings-user-card-email" title={u.email}>
+                        {u.email}
+                      </p>
+                    </div>
+                    <div className="ep-settings-user-card-actions">
+                      <span className={`ep-settings-pill${u.is_active ? "" : " is-off"}`}>
+                        {u.is_active ? "Aktif" : "Nonaktif"}
+                      </span>
+                      <SettingsKelolaMenu
+                        ariaLabel={`Kelola pengguna ${u.display_name || u.email}`}
+                        items={kelolaItemsFor(u)}
+                      />
+                    </div>
+                  </div>
+                  <dl className="ep-settings-user-card-meta">
+                    <div>
+                      <dt>Peran sistem</dt>
+                      <dd>{userRoleSystemLabel(u)}</dd>
+                    </div>
+                    <div>
+                      <dt>Peran kerja</dt>
+                      <dd>{userRoleWorkLabel(u)}</dd>
+                    </div>
+                    <div className="ep-settings-user-card-branches">
+                      <dt>Cabang</dt>
+                      <dd title={branchText}>{branchText || "—"}</dd>
+                    </div>
+                  </dl>
+                </li>
+              );
+            })
+          )}
+        </ul>
       </section>
 
       <DetailDrawer
