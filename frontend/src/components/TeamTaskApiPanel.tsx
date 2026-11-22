@@ -45,6 +45,11 @@ import { DEFAULT_TABLE_PAGE_SIZE } from "./DataTable/Pagination";
 import type { ColumnDef } from "./DataTable/types";
 import { DesignWorkflowPanel } from "./DesignWorkflowPanel";
 import { EvidenceContentPreview } from "./EvidenceContentPreview";
+import {
+  SIGNATURE_CANVAS_HEIGHT,
+  canvasPointerPos,
+  syncSignatureCanvasSize,
+} from "./signatureCanvas";
 import { TaskItemProgress } from "./TaskItemProgress";
 import { TeamTaskSchedulingForm } from "./TeamTaskSchedulingForm";
 import {
@@ -134,6 +139,7 @@ export function TeamTaskApiPanel({
   const fileRef = useRef<HTMLInputElement | null>(null);
   const photosRef = useRef<HTMLInputElement | null>(null);
   const signatureRef = useRef<HTMLCanvasElement | null>(null);
+  const signatureWrapRef = useRef<HTMLDivElement | null>(null);
   const drawingRef = useRef(false);
   const [recipientName, setRecipientName] = useState("");
   const [failureReason, setFailureReason] = useState("");
@@ -213,6 +219,27 @@ export function TeamTaskApiPanel({
   useEffect(() => {
     void load();
   }, [load]);
+
+  /** Samakan lebar bitmap tanda tangan dengan wrapper (hindari overflow 320px). */
+  useEffect(() => {
+    if (!selected || selected.task_type !== DRIVER_TASK) return;
+    const wrap = signatureWrapRef.current;
+    const canvas = signatureRef.current;
+    if (!wrap || !canvas) return;
+
+    const sync = () => {
+      syncSignatureCanvasSize(
+        canvas,
+        wrap.clientWidth,
+        SIGNATURE_CANVAS_HEIGHT,
+      );
+    };
+    sync();
+    const ro = new ResizeObserver(sync);
+    ro.observe(wrap);
+    return () => ro.disconnect();
+    // grants/readOnly: canvas baru muncul setelah izin confirm tersedia.
+  }, [selected, grantsByTaskType, readOnly, elevated]);
 
   useEffect(() => {
     let cancelled = false;
@@ -716,15 +743,17 @@ export function TeamTaskApiPanel({
   }
 
   function signaturePos(e: React.PointerEvent<HTMLCanvasElement>) {
-    const rect = signatureRef.current?.getBoundingClientRect();
-    if (!rect) return { x: 0, y: 0 };
-    return { x: e.clientX - rect.left, y: e.clientY - rect.top };
+    const canvas = signatureRef.current;
+    if (!canvas) return { x: 0, y: 0 };
+    return canvasPointerPos(canvas, e.clientX, e.clientY);
   }
 
   function startSignature(e: React.PointerEvent<HTMLCanvasElement>) {
-    const ctx = signatureRef.current?.getContext("2d");
-    if (!ctx) return;
+    const canvas = signatureRef.current;
+    const ctx = canvas?.getContext("2d");
+    if (!canvas || !ctx) return;
     drawingRef.current = true;
+    canvas.setPointerCapture(e.pointerId);
     const { x, y } = signaturePos(e);
     ctx.beginPath();
     ctx.moveTo(x, y);
@@ -742,8 +771,12 @@ export function TeamTaskApiPanel({
     ctx.stroke();
   }
 
-  function endSignature() {
+  function endSignature(e?: React.PointerEvent<HTMLCanvasElement>) {
     drawingRef.current = false;
+    const canvas = signatureRef.current;
+    if (canvas && e && canvas.hasPointerCapture(e.pointerId)) {
+      canvas.releasePointerCapture(e.pointerId);
+    }
   }
 
   async function onDeliverySuccess() {
@@ -1775,7 +1808,10 @@ export function TeamTaskApiPanel({
                   {(canAct("loading-sj", "confirm") ||
                     canAct(DRIVER_TASK, "confirm")) &&
                   selected.status !== "selesai" ? (
-                    <div className="ep-btnrow">
+                    <div
+                      className="ep-btnrow ep-task-action-row"
+                      data-testid="loading-sj-actions"
+                    >
                       <button
                         type="button"
                         className="ep-btn primary"
@@ -1980,18 +2016,29 @@ export function TeamTaskApiPanel({
                           accept="image/png,image/jpeg,image/webp"
                         />
                       </div>
-                      <canvas
-                        ref={signatureRef}
-                        width={360}
-                        height={140}
-                        className="ep-signature"
-                        data-testid="delivery-signature"
-                        onPointerDown={startSignature}
-                        onPointerMove={moveSignature}
-                        onPointerUp={endSignature}
-                        onPointerLeave={endSignature}
-                      />
-                      <div className="ep-filterbar">
+                      <div
+                        className="ep-signature-wrap"
+                        ref={signatureWrapRef}
+                        data-testid="delivery-signature-wrap"
+                      >
+                        <p className="ep-signature-label" id="delivery-signature-label">
+                          Tanda tangan
+                        </p>
+                        <canvas
+                          ref={signatureRef}
+                          width={300}
+                          height={SIGNATURE_CANVAS_HEIGHT}
+                          className="ep-signature"
+                          data-testid="delivery-signature"
+                          aria-labelledby="delivery-signature-label"
+                          onPointerDown={startSignature}
+                          onPointerMove={moveSignature}
+                          onPointerUp={endSignature}
+                          onPointerCancel={endSignature}
+                          onPointerLeave={endSignature}
+                        />
+                      </div>
+                      <div className="ep-filterbar ep-task-action-row">
                         <button
                           type="button"
                           className="ep-btn primary"
@@ -2005,7 +2052,7 @@ export function TeamTaskApiPanel({
                       </div>
 
                       <p className="ep-sectionlabel">Pengiriman Gagal</p>
-                      <div className="ep-filterbar">
+                      <div className="ep-filterbar ep-task-action-row">
                         <label htmlFor="failure-reason">Alasan</label>
                         <input
                           id="failure-reason"

@@ -290,6 +290,146 @@
   transform: none !important;
 }
 
+/*
+ * P0.1 — Popup Tugas Tim di atas bottom nav (nav z-index: 50).
+ * Hanya scoped .ep-m-app agar desktop tidak berubah.
+ */
+.ep-m-app .ep-modalshade {
+  z-index: 60;
+}
+
+.ep-m-app .ep-modalshade.ep-sched-design-shade,
+.ep-m-app .ep-modalshade.ep-sched-revise-shade,
+.ep-m-app .ep-modalshade.ep-evidence-preview-shade {
+  z-index: 70;
+}
+
+.ep-m-app .ep-confirm-success.is-global {
+  z-index: 80;
+}
+
+/* Nav tidak menerima tap selama overlay modal terbuka */
+.ep-m-app:has(.ep-modalshade) .ep-m-bottomnav {
+  pointer-events: none;
+}
+
+/*
+ * P0.4 — Modal card tidak bersembunyi di belakang zona nav:
+ * padding shade + max-height di atas nav (tanpa sticky-footer redesign).
+ */
+.ep-m-app .ep-modalshade-center {
+  padding: 8px 8px calc(var(--ep-m-nav-h) + 8px + env(safe-area-inset-bottom, 0px));
+  align-items: flex-end;
+  box-sizing: border-box;
+}
+
+.ep-m-app .ep-task-modal {
+  width: 100%;
+  max-width: 100%;
+  max-height: calc(
+    100dvh - var(--ep-m-nav-h) - 16px - env(safe-area-inset-bottom, 0px)
+  );
+  margin-bottom: 0;
+}
+
+.ep-m-app .ep-task-modal .ep-modal-foot {
+  padding-bottom: max(12px, env(safe-area-inset-bottom, 0px));
+}
+
+.ep-m-app .ep-task-modal .ep-task-action-row,
+.ep-m-app .ep-task-modal .ep-sched-form-actions,
+.ep-m-app .ep-task-modal .ep-btnrow {
+  padding-bottom: 4px;
+  gap: 8px;
+  flex-wrap: wrap;
+  align-items: stretch;
+}
+
+/*
+ * P0.2 — Touch target ≥44px + input ≥16px di dalam popup tugas PWA saja.
+ * Tidak mengubah tabel/nav global.
+ */
+.ep-m-app .ep-task-modal input:not([type="checkbox"]):not([type="radio"]):not([type="file"]):not([type="hidden"]),
+.ep-m-app .ep-task-modal select,
+.ep-m-app .ep-task-modal textarea {
+  min-height: 44px;
+  font-size: 16px;
+  line-height: 1.25;
+  box-sizing: border-box;
+}
+
+.ep-m-app .ep-task-modal input[type="file"] {
+  min-height: 44px;
+  font-size: 16px;
+  max-width: 100%;
+}
+
+.ep-m-app .ep-task-modal .ep-btn {
+  min-height: 44px;
+  min-width: 44px;
+  padding: 10px 14px;
+  font-size: 14px;
+  line-height: 1.2;
+  white-space: normal;
+  text-align: center;
+  justify-content: center;
+  box-sizing: border-box;
+}
+
+.ep-m-app .ep-task-modal .ep-btn.sm {
+  min-height: 44px;
+  min-width: 44px;
+  padding: 10px 12px;
+  font-size: 13px;
+}
+
+.ep-m-app .ep-task-modal .ep-filterbar {
+  gap: 8px;
+  align-items: stretch;
+}
+
+.ep-m-app .ep-task-modal .ep-modal-head-actions {
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.ep-m-app .ep-task-modal .ep-modal-foot-actions {
+  gap: 8px;
+}
+
+.ep-m-app .ep-task-modal .ep-sched-field select,
+.ep-m-app .ep-task-modal .ep-sched-field input {
+  min-height: 44px;
+  font-size: 16px;
+}
+
+/* P0.3 — Canvas tanda tangan responsif, tanpa overflow horizontal */
+.ep-m-app .ep-task-modal .ep-signature-wrap {
+  width: 100%;
+  max-width: 100%;
+  min-width: 0;
+  box-sizing: border-box;
+}
+
+.ep-m-app .ep-task-modal .ep-signature-label {
+  margin: 0 0 6px;
+  font-size: 14px;
+  font-weight: 650;
+  color: var(--ep-m-ink, #1a2e28);
+}
+
+.ep-m-app .ep-task-modal .ep-signature {
+  width: 100% !important;
+  max-width: 100%;
+  height: 140px;
+  box-sizing: border-box;
+  margin: 0 0 12px;
+}
+
+.ep-m-app .ep-task-modal .ep-modal-body {
+  overflow-x: hidden;
+}
+
 .sr-only {
   position: absolute;
   width: 1px;
