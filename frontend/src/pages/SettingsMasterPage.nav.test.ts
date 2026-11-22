@@ -9,37 +9,41 @@ import {
 } from "./SettingsMasterPage";
 import type { MasterTaskType, RoleActionGrant } from "../api/operational";
 
-describe("Settings Center navigation", () => {
-  it("exposes exactly 11 submenu items with required icons", () => {
-    expect(SETTINGS_NAV_ITEMS).toHaveLength(11);
-    expect(SETTINGS_NAV_SECTIONS).toHaveLength(3);
+describe("Settings Center V2 navigation", () => {
+  it("exposes five groups and separate operational leaves", () => {
+    expect(SETTINGS_NAV_SECTIONS).toHaveLength(5);
+    expect(SETTINGS_NAV_ITEMS.length).toBeGreaterThanOrEqual(14);
 
-    const expected: Array<{ id: string; icon: string }> = [
-      { id: "overview", icon: "layout-dashboard" },
-      { id: "users", icon: "users" },
-      { id: "roles", icon: "shield-check" },
-      { id: "task-types", icon: "clipboard-list" },
-      { id: "branches", icon: "building-2" },
-      { id: "machines", icon: "cog" },
-      { id: "shifts", icon: "clock-3" },
-      { id: "products", icon: "package" },
-      { id: "workflow", icon: "workflow" },
-      { id: "accurate", icon: "plug-zap" },
-      { id: "audit", icon: "history" },
-    ];
-
-    for (const row of expected) {
-      const item = SETTINGS_NAV_ITEMS.find((x) => x.id === row.id);
-      expect(item, row.id).toBeTruthy();
-      expect(item?.icon).toBe(row.icon);
-    }
-
-    // Cabang / Mesin / Shift must be separate (no combined org tab).
     const ids = SETTINGS_NAV_ITEMS.map((x) => x.id);
+    expect(ids).toContain("overview");
+    expect(ids).toContain("users");
+    expect(ids).toContain("roles-catalog");
+    expect(ids).toContain("module-perms");
+    expect(ids).toContain("ops-grants");
+    expect(ids).toContain("task-types");
+    expect(ids).toContain("task-assign");
+    expect(ids).toContain("branches");
+    expect(ids).toContain("machines");
+    expect(ids).toContain("shifts");
+    expect(ids).toContain("products");
+    expect(ids).toContain("product-screen");
+    expect(ids).toContain("accurate");
+    expect(ids).toContain("workflow");
+    expect(ids).toContain("audit");
+
+    // Cabang / Mesin / Shift remain separate (no combined org tab).
     expect(ids).not.toContain("org");
-    expect(SETTINGS_NAV_ITEMS.filter((x) => x.id === "branches")).toHaveLength(1);
-    expect(SETTINGS_NAV_ITEMS.filter((x) => x.id === "machines")).toHaveLength(1);
-    expect(SETTINGS_NAV_ITEMS.filter((x) => x.id === "shifts")).toHaveLength(1);
+    expect(ids).not.toContain("roles"); // legacy combined tab removed
+  });
+
+  it("uses Indonesian operational labels for key menus", () => {
+    const byId = Object.fromEntries(SETTINGS_NAV_ITEMS.map((i) => [i.id, i.label]));
+    expect(byId["module-perms"]).toBe("Hak Akses Menu");
+    expect(byId["ops-grants"]).toBe("Izin Pekerjaan");
+    expect(byId["task-assign"]).toBe("Pembagian Tugas");
+    expect(byId["shifts"]).toBe("Jam Kerja");
+    expect(byId["audit"]).toBe("Catatan Perubahan");
+    expect(byId["workflow"]).toBe("Aturan Alur Kerja");
   });
 
   it("detects draft permission and grant diffs without calling APIs", () => {
