@@ -1,0 +1,776 @@
+{
+  "label": "controlled_sj_replay_20261122",
+  "version": "1",
+  "batch_id": "controlled_sj_replay_20261122",
+  "audit_date": "2026-11-22",
+  "audit_source": "p7-sj-readiness-20261122T054857Z",
+  "sj_count": 150,
+  "id_list_sha256": "9ff5c3c4f9c08d32038c106e26f59e1b23692d8f76da054c8f95c8877097d77d",
+  "excluded_quarantine_ids": [
+    "119068",
+    "119155",
+    "119721",
+    "119950",
+    "119979",
+    "120806",
+    "120851"
+  ],
+  "branch_counts": {
+    "50": 141,
+    "150": 9
+  },
+  "unique_so_count": 80,
+  "entries": [
+    {
+      "accurate_sj_id": "119065",
+      "accurate_so_id": "91902",
+      "branch_id": "50"
+    },
+    {
+      "accurate_sj_id": "119066",
+      "accurate_so_id": "92821",
+      "branch_id": "50"
+    },
+    {
+      "accurate_sj_id": "119067",
+      "accurate_so_id": "93854",
+      "branch_id": "50"
+    },
+    {
+      "accurate_sj_id": "119070",
+      "accurate_so_id": "93514",
+      "branch_id": "50"
+    },
+    {
+      "accurate_sj_id": "119071",
+      "accurate_so_id": "93746",
+      "branch_id": "50"
+    },
+    {
+      "accurate_sj_id": "119072",
+      "accurate_so_id": "93698",
+      "branch_id": "50"
+    },
+    {
+      "accurate_sj_id": "119073",
+      "accurate_so_id": "93900",
+      "branch_id": "50"
+    },
+    {
+      "accurate_sj_id": "119074",
+      "accurate_so_id": "93903",
+      "branch_id": "50"
+    },
+    {
+      "accurate_sj_id": "119075",
+      "accurate_so_id": "93870",
+      "branch_id": "50"
+    },
+    {
+      "accurate_sj_id": "119076",
+      "accurate_so_id": "91902",
+      "branch_id": "50"
+    },
+    {
+      "accurate_sj_id": "119077",
+      "accurate_so_id": "91902",
+      "branch_id": "50"
+    },
+    {
+      "accurate_sj_id": "119078",
+      "accurate_so_id": "91902",
+      "branch_id": "50"
+    },
+    {
+      "accurate_sj_id": "119079",
+      "accurate_so_id": "91902",
+      "branch_id": "50"
+    },
+    {
+      "accurate_sj_id": "119080",
+      "accurate_so_id": "92375",
+      "branch_id": "50"
+    },
+    {
+      "accurate_sj_id": "119081",
+      "accurate_so_id": "92962",
+      "branch_id": "50"
+    },
+    {
+      "accurate_sj_id": "119082",
+      "accurate_so_id": "93477",
+      "branch_id": "50"
+    },
+    {
+      "accurate_sj_id": "119083",
+      "accurate_so_id": "93856",
+      "branch_id": "50"
+    },
+    {
+      "accurate_sj_id": "119085",
+      "accurate_so_id": "93713",
+      "branch_id": "150"
+    },
+    {
+      "accurate_sj_id": "119086",
+      "accurate_so_id": "91902",
+      "branch_id": "50"
+    },
+    {
+      "accurate_sj_id": "119089",
+      "accurate_so_id": "93763",
+      "branch_id": "50"
+    },
+    {
+      "accurate_sj_id": "119090",
+      "accurate_so_id": "93861",
+      "branch_id": "50"
+    },
+    {
+      "accurate_sj_id": "119091",
+      "accurate_so_id": "93865",
+      "branch_id": "50"
+    },
+    {
+      "accurate_sj_id": "119092",
+      "accurate_so_id": "93872",
+      "branch_id": "50"
+    },
+    {
+      "accurate_sj_id": "119093",
+      "accurate_so_id": "93858",
+      "branch_id": "50"
+    },
+    {
+      "accurate_sj_id": "119094",
+      "accurate_so_id": "93869",
+      "branch_id": "50"
+    },
+    {
+      "accurate_sj_id": "119095",
+      "accurate_so_id": "93710",
+      "branch_id": "50"
+    },
+    {
+      "accurate_sj_id": "119096",
+      "accurate_so_id": "93354",
+      "branch_id": "50"
+    },
+    {
+      "accurate_sj_id": "119097",
+      "accurate_so_id": "93083",
+      "branch_id": "50"
+    },
+    {
+      "accurate_sj_id": "119101",
+      "accurate_so_id": "93795",
+      "branch_id": "150"
+    },
+    {
+      "accurate_sj_id": "119104",
+      "accurate_so_id": "93107",
+      "branch_id": "50"
+    },
+    {
+      "accurate_sj_id": "119107",
+      "accurate_so_id": "93796",
+      "branch_id": "50"
+    },
+    {
+      "accurate_sj_id": "119108",
+      "accurate_so_id": "93699",
+      "branch_id": "50"
+    },
+    {
+      "accurate_sj_id": "119109",
+      "accurate_so_id": "93800",
+      "branch_id": "50"
+    },
+    {
+      "accurate_sj_id": "119110",
+      "accurate_so_id": "93204",
+      "branch_id": "50"
+    },
+    {
+      "accurate_sj_id": "119118",
+      "accurate_so_id": "94001",
+      "branch_id": "150"
+    },
+    {
+      "accurate_sj_id": "119119",
+      "accurate_so_id": "93789",
+      "branch_id": "50"
+    },
+    {
+      "accurate_sj_id": "119120",
+      "accurate_so_id": "93817",
+      "branch_id": "50"
+    },
+    {
+      "accurate_sj_id": "119121",
+      "accurate_so_id": "93951",
+      "branch_id": "50"
+    },
+    {
+      "accurate_sj_id": "119122",
+      "accurate_so_id": "94032",
+      "branch_id": "50"
+    },
+    {
+      "accurate_sj_id": "119123",
+      "accurate_so_id": "93976",
+      "branch_id": "50"
+    },
+    {
+      "accurate_sj_id": "119124",
+      "accurate_so_id": "93818",
+      "branch_id": "50"
+    },
+    {
+      "accurate_sj_id": "119125",
+      "accurate_so_id": "94006",
+      "branch_id": "50"
+    },
+    {
+      "accurate_sj_id": "119126",
+      "accurate_so_id": "94054",
+      "branch_id": "50"
+    },
+    {
+      "accurate_sj_id": "119127",
+      "accurate_so_id": "93961",
+      "branch_id": "50"
+    },
+    {
+      "accurate_sj_id": "119130",
+      "accurate_so_id": "93517",
+      "branch_id": "50"
+    },
+    {
+      "accurate_sj_id": "119131",
+      "accurate_so_id": "94009",
+      "branch_id": "50"
+    },
+    {
+      "accurate_sj_id": "119132",
+      "accurate_so_id": "94062",
+      "branch_id": "50"
+    },
+    {
+      "accurate_sj_id": "119135",
+      "accurate_so_id": "91902",
+      "branch_id": "50"
+    },
+    {
+      "accurate_sj_id": "119136",
+      "accurate_so_id": "91902",
+      "branch_id": "50"
+    },
+    {
+      "accurate_sj_id": "119137",
+      "accurate_so_id": "93694",
+      "branch_id": "150"
+    },
+    {
+      "accurate_sj_id": "119150",
+      "accurate_so_id": "93862",
+      "branch_id": "50"
+    },
+    {
+      "accurate_sj_id": "119151",
+      "accurate_so_id": "93955",
+      "branch_id": "50"
+    },
+    {
+      "accurate_sj_id": "119152",
+      "accurate_so_id": "91478",
+      "branch_id": "150"
+    },
+    {
+      "accurate_sj_id": "119153",
+      "accurate_so_id": "91902",
+      "branch_id": "50"
+    },
+    {
+      "accurate_sj_id": "119156",
+      "accurate_so_id": "91902",
+      "branch_id": "50"
+    },
+    {
+      "accurate_sj_id": "119157",
+      "accurate_so_id": "93863",
+      "branch_id": "50"
+    },
+    {
+      "accurate_sj_id": "119158",
+      "accurate_so_id": "93917",
+      "branch_id": "50"
+    },
+    {
+      "accurate_sj_id": "119159",
+      "accurate_so_id": "93802",
+      "branch_id": "50"
+    },
+    {
+      "accurate_sj_id": "119160",
+      "accurate_so_id": "93811",
+      "branch_id": "50"
+    },
+    {
+      "accurate_sj_id": "119161",
+      "accurate_so_id": "93918",
+      "branch_id": "50"
+    },
+    {
+      "accurate_sj_id": "119162",
+      "accurate_so_id": "94052",
+      "branch_id": "50"
+    },
+    {
+      "accurate_sj_id": "119164",
+      "accurate_so_id": "94050",
+      "branch_id": "50"
+    },
+    {
+      "accurate_sj_id": "119165",
+      "accurate_so_id": "93960",
+      "branch_id": "50"
+    },
+    {
+      "accurate_sj_id": "119166",
+      "accurate_so_id": "94051",
+      "branch_id": "50"
+    },
+    {
+      "accurate_sj_id": "119168",
+      "accurate_so_id": "91294",
+      "branch_id": "50"
+    },
+    {
+      "accurate_sj_id": "119169",
+      "accurate_so_id": "93181",
+      "branch_id": "50"
+    },
+    {
+      "accurate_sj_id": "119170",
+      "accurate_so_id": "93364",
+      "branch_id": "50"
+    },
+    {
+      "accurate_sj_id": "119171",
+      "accurate_so_id": "93372",
+      "branch_id": "50"
+    },
+    {
+      "accurate_sj_id": "119183",
+      "accurate_so_id": "93958",
+      "branch_id": "50"
+    },
+    {
+      "accurate_sj_id": "119200",
+      "accurate_so_id": "94052",
+      "branch_id": "50"
+    },
+    {
+      "accurate_sj_id": "119202",
+      "accurate_so_id": "93919",
+      "branch_id": "50"
+    },
+    {
+      "accurate_sj_id": "119203",
+      "accurate_so_id": "91902",
+      "branch_id": "50"
+    },
+    {
+      "accurate_sj_id": "119204",
+      "accurate_so_id": "89087",
+      "branch_id": "50"
+    },
+    {
+      "accurate_sj_id": "119205",
+      "accurate_so_id": "91902",
+      "branch_id": "50"
+    },
+    {
+      "accurate_sj_id": "119211",
+      "accurate_so_id": "91902",
+      "branch_id": "50"
+    },
+    {
+      "accurate_sj_id": "119251",
+      "accurate_so_id": "93781",
+      "branch_id": "50"
+    },
+    {
+      "accurate_sj_id": "119301",
+      "accurate_so_id": "91902",
+      "branch_id": "50"
+    },
+    {
+      "accurate_sj_id": "119404",
+      "accurate_so_id": "93919",
+      "branch_id": "50"
+    },
+    {
+      "accurate_sj_id": "119452",
+      "accurate_so_id": "93799",
+      "branch_id": "150"
+    },
+    {
+      "accurate_sj_id": "119453",
+      "accurate_so_id": "91902",
+      "branch_id": "50"
+    },
+    {
+      "accurate_sj_id": "119454",
+      "accurate_so_id": "70957",
+      "branch_id": "50"
+    },
+    {
+      "accurate_sj_id": "119455",
+      "accurate_so_id": "91902",
+      "branch_id": "50"
+    },
+    {
+      "accurate_sj_id": "119500",
+      "accurate_so_id": "92464",
+      "branch_id": "150"
+    },
+    {
+      "accurate_sj_id": "119504",
+      "accurate_so_id": "91902",
+      "branch_id": "50"
+    },
+    {
+      "accurate_sj_id": "119505",
+      "accurate_so_id": "91902",
+      "branch_id": "50"
+    },
+    {
+      "accurate_sj_id": "119550",
+      "accurate_so_id": "89087",
+      "branch_id": "50"
+    },
+    {
+      "accurate_sj_id": "119551",
+      "accurate_so_id": "91902",
+      "branch_id": "50"
+    },
+    {
+      "accurate_sj_id": "119552",
+      "accurate_so_id": "91902",
+      "branch_id": "50"
+    },
+    {
+      "accurate_sj_id": "119553",
+      "accurate_so_id": "79353",
+      "branch_id": "50"
+    },
+    {
+      "accurate_sj_id": "119554",
+      "accurate_so_id": "91902",
+      "branch_id": "50"
+    },
+    {
+      "accurate_sj_id": "119600",
+      "accurate_so_id": "93517",
+      "branch_id": "50"
+    },
+    {
+      "accurate_sj_id": "119603",
+      "accurate_so_id": "93733",
+      "branch_id": "50"
+    },
+    {
+      "accurate_sj_id": "119630",
+      "accurate_so_id": "89087",
+      "branch_id": "50"
+    },
+    {
+      "accurate_sj_id": "119631",
+      "accurate_so_id": "91902",
+      "branch_id": "50"
+    },
+    {
+      "accurate_sj_id": "119633",
+      "accurate_so_id": "93517",
+      "branch_id": "50"
+    },
+    {
+      "accurate_sj_id": "119658",
+      "accurate_so_id": "93952",
+      "branch_id": "50"
+    },
+    {
+      "accurate_sj_id": "119661",
+      "accurate_so_id": "91902",
+      "branch_id": "50"
+    },
+    {
+      "accurate_sj_id": "119662",
+      "accurate_so_id": "94061",
+      "branch_id": "50"
+    },
+    {
+      "accurate_sj_id": "119663",
+      "accurate_so_id": "91902",
+      "branch_id": "50"
+    },
+    {
+      "accurate_sj_id": "119681",
+      "accurate_so_id": "89087",
+      "branch_id": "50"
+    },
+    {
+      "accurate_sj_id": "119687",
+      "accurate_so_id": "92869",
+      "branch_id": "50"
+    },
+    {
+      "accurate_sj_id": "119688",
+      "accurate_so_id": "89087",
+      "branch_id": "50"
+    },
+    {
+      "accurate_sj_id": "119689",
+      "accurate_so_id": "91902",
+      "branch_id": "50"
+    },
+    {
+      "accurate_sj_id": "119692",
+      "accurate_so_id": "92670",
+      "branch_id": "50"
+    },
+    {
+      "accurate_sj_id": "119731",
+      "accurate_so_id": "92962",
+      "branch_id": "50"
+    },
+    {
+      "accurate_sj_id": "119732",
+      "accurate_so_id": "93786",
+      "branch_id": "50"
+    },
+    {
+      "accurate_sj_id": "119744",
+      "accurate_so_id": "93204",
+      "branch_id": "50"
+    },
+    {
+      "accurate_sj_id": "119751",
+      "accurate_so_id": "91902",
+      "branch_id": "50"
+    },
+    {
+      "accurate_sj_id": "119752",
+      "accurate_so_id": "91902",
+      "branch_id": "50"
+    },
+    {
+      "accurate_sj_id": "119764",
+      "accurate_so_id": "91902",
+      "branch_id": "50"
+    },
+    {
+      "accurate_sj_id": "119765",
+      "accurate_so_id": "91902",
+      "branch_id": "50"
+    },
+    {
+      "accurate_sj_id": "119813",
+      "accurate_so_id": "91902",
+      "branch_id": "50"
+    },
+    {
+      "accurate_sj_id": "119814",
+      "accurate_so_id": "91902",
+      "branch_id": "50"
+    },
+    {
+      "accurate_sj_id": "119856",
+      "accurate_so_id": "91902",
+      "branch_id": "50"
+    },
+    {
+      "accurate_sj_id": "119900",
+      "accurate_so_id": "93372",
+      "branch_id": "50"
+    },
+    {
+      "accurate_sj_id": "119916",
+      "accurate_so_id": "91902",
+      "branch_id": "50"
+    },
+    {
+      "accurate_sj_id": "119917",
+      "accurate_so_id": "91294",
+      "branch_id": "50"
+    },
+    {
+      "accurate_sj_id": "119920",
+      "accurate_so_id": "91902",
+      "branch_id": "50"
+    },
+    {
+      "accurate_sj_id": "119921",
+      "accurate_so_id": "89087",
+      "branch_id": "50"
+    },
+    {
+      "accurate_sj_id": "119922",
+      "accurate_so_id": "91902",
+      "branch_id": "50"
+    },
+    {
+      "accurate_sj_id": "119924",
+      "accurate_so_id": "79353",
+      "branch_id": "50"
+    },
+    {
+      "accurate_sj_id": "119927",
+      "accurate_so_id": "93085",
+      "branch_id": "50"
+    },
+    {
+      "accurate_sj_id": "119967",
+      "accurate_so_id": "89087",
+      "branch_id": "50"
+    },
+    {
+      "accurate_sj_id": "119968",
+      "accurate_so_id": "87769",
+      "branch_id": "50"
+    },
+    {
+      "accurate_sj_id": "119969",
+      "accurate_so_id": "91902",
+      "branch_id": "50"
+    },
+    {
+      "accurate_sj_id": "119970",
+      "accurate_so_id": "92375",
+      "branch_id": "50"
+    },
+    {
+      "accurate_sj_id": "119971",
+      "accurate_so_id": "91902",
+      "branch_id": "50"
+    },
+    {
+      "accurate_sj_id": "119972",
+      "accurate_so_id": "91902",
+      "branch_id": "50"
+    },
+    {
+      "accurate_sj_id": "119975",
+      "accurate_so_id": "91902",
+      "branch_id": "50"
+    },
+    {
+      "accurate_sj_id": "119978",
+      "accurate_so_id": "93107",
+      "branch_id": "50"
+    },
+    {
+      "accurate_sj_id": "119989",
+      "accurate_so_id": "93809",
+      "branch_id": "50"
+    },
+    {
+      "accurate_sj_id": "120057",
+      "accurate_so_id": "91902",
+      "branch_id": "50"
+    },
+    {
+      "accurate_sj_id": "120100",
+      "accurate_so_id": "93517",
+      "branch_id": "50"
+    },
+    {
+      "accurate_sj_id": "120108",
+      "accurate_so_id": "91902",
+      "branch_id": "50"
+    },
+    {
+      "accurate_sj_id": "120109",
+      "accurate_so_id": "71151",
+      "branch_id": "50"
+    },
+    {
+      "accurate_sj_id": "120110",
+      "accurate_so_id": "91902",
+      "branch_id": "50"
+    },
+    {
+      "accurate_sj_id": "120161",
+      "accurate_so_id": "91902",
+      "branch_id": "50"
+    },
+    {
+      "accurate_sj_id": "120208",
+      "accurate_so_id": "91902",
+      "branch_id": "50"
+    },
+    {
+      "accurate_sj_id": "120250",
+      "accurate_so_id": "93711",
+      "branch_id": "50"
+    },
+    {
+      "accurate_sj_id": "120402",
+      "accurate_so_id": "91902",
+      "branch_id": "50"
+    },
+    {
+      "accurate_sj_id": "120450",
+      "accurate_so_id": "94061",
+      "branch_id": "50"
+    },
+    {
+      "accurate_sj_id": "120501",
+      "accurate_so_id": "91902",
+      "branch_id": "50"
+    },
+    {
+      "accurate_sj_id": "120550",
+      "accurate_so_id": "91902",
+      "branch_id": "50"
+    },
+    {
+      "accurate_sj_id": "120600",
+      "accurate_so_id": "91902",
+      "branch_id": "50"
+    },
+    {
+      "accurate_sj_id": "120660",
+      "accurate_so_id": "94061",
+      "branch_id": "50"
+    },
+    {
+      "accurate_sj_id": "120705",
+      "accurate_so_id": "91902",
+      "branch_id": "50"
+    },
+    {
+      "accurate_sj_id": "120755",
+      "accurate_so_id": "89087",
+      "branch_id": "50"
+    },
+    {
+      "accurate_sj_id": "120757",
+      "accurate_so_id": "91902",
+      "branch_id": "50"
+    },
+    {
+      "accurate_sj_id": "120801",
+      "accurate_so_id": "93868",
+      "branch_id": "150"
+    },
+    {
+      "accurate_sj_id": "120805",
+      "accurate_so_id": "93867",
+      "branch_id": "150"
+    }
+  ],
+  "manifest_sha256": "ff713ac15701dc9b525bbf09517bf44835ad0ac8c15c18ff890e49c8a5daccf9"
+}
