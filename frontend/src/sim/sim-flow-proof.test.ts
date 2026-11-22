@@ -54,4 +54,33 @@ describe("sim production-flow by-stage", () => {
     );
     expect(res?.status).toBe(404);
   });
+
+  it("stage-counts returns flow-all and active stage PO counts", async () => {
+    const res = handleSimRequest(
+      "/api/production-flow/stage-counts",
+      { method: "GET" },
+      session,
+    );
+    expect(res?.status).toBe(200);
+    const body = (await res!.json()) as {
+      counts: Record<string, number>;
+      accepted_only?: boolean;
+    };
+    expect(body.accepted_only).toBe(true);
+    expect(body.counts["flow-all"]).toBe(1);
+    expect(body.counts["flow-order-masuk"]).toBe(1);
+    expect(body.counts["flow-design"]).toBe(0);
+  });
+
+  it("flow-all by-stage lists accepted unique POs", async () => {
+    const res = handleSimRequest(
+      "/api/production-flow/by-stage?node_id=flow-all",
+      { method: "GET" },
+      session,
+    );
+    expect(res?.status).toBe(200);
+    const body = (await res!.json()) as { total: number; node_id: string };
+    expect(body.node_id).toBe("flow-all");
+    expect(body.total).toBe(1);
+  });
 });

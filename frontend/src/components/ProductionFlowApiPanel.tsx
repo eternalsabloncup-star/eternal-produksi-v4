@@ -34,6 +34,7 @@ function monitoringDisplay(row: ProductionFlowStageRow): string {
   const fromApi = (row.monitoring_label || "").trim();
   if (fromApi) return fromApi;
   if (row.node_id === "flow-selesai") return "Selesai";
+  if (row.node_id === "flow-all") return "Aktif";
   if (row.stage_status === "berjalan") return "Dalam Proses";
   return "Aktif";
 }
@@ -48,6 +49,12 @@ type Props = {
   selectedStageId: string;
   selectedStageLabel: string;
   onStageFocus?: (step: ProductionFlowStep) => void;
+  /** Filter server-side — sinkron badge counts di parent. */
+  filters: PoFilters;
+  onFiltersChange: (next: PoFilters) => void;
+  poFilterId: string;
+  onPoFilterIdChange: (id: string) => void;
+  onDataChanged?: () => void;
 };
 
 /** Alur Produksi — klik tahap → tabel PO aktif (accepted only). */
@@ -55,10 +62,13 @@ export function ProductionFlowApiPanel({
   selectedStageId,
   selectedStageLabel,
   onStageFocus,
+  filters,
+  onFiltersChange,
+  poFilterId,
+  onPoFilterIdChange,
+  onDataChanged,
 }: Props) {
   const [flows, setFlows] = useState<ProductionFlow[]>([]);
-  const [poFilterId, setPoFilterId] = useState<string>("");
-  const [filters, setFilters] = useState<PoFilters>({});
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState(DEFAULT_TABLE_PAGE_SIZE);
   const [rows, setRows] = useState<StageTableRow[]>([]);
@@ -125,6 +135,10 @@ export function ProductionFlowApiPanel({
   useEffect(() => {
     void loadStage();
   }, [loadStage]);
+
+  function notifyChanged() {
+    onDataChanged?.();
+  }
 
   const columns: ColumnDef<StageTableRow>[] = useMemo(
     () => [
@@ -341,18 +355,20 @@ export function ProductionFlowApiPanel({
   );
 
   function resetFilters() {
-    setFilters({});
-    setPoFilterId("");
+    onFiltersChange({});
+    onPoFilterIdChange("");
     setPage(1);
   }
 
   const detailNodeId = detail?.stage.node_id || selectedStageId;
 
   return (
-    <div data-testid="production-flow-api-panel">
+    <div data-testid="production-flow-api-panel" className="ep-flow-stage-table">
       <div className="ep-flow-stage-title">
-        {selectedStageLabel}
-        <span className="ep-flow-meta-sep">·</span>
+        <span>{selectedStageLabel}</span>
+        <span className="ep-flow-meta-sep" aria-hidden>
+          ·
+        </span>
         <span className="ep-muted">{total} PO aktif</span>
         {scanCapped ? (
           <>
@@ -391,7 +407,7 @@ export function ProductionFlowApiPanel({
           <ColumnFilter
             value={filters}
             onChange={(next) => {
-              setFilters({
+              onFiltersChange({
                 q: next.q?.trim() ? next.q : undefined,
                 urgent: next.urgent || undefined,
               });
@@ -412,7 +428,7 @@ export function ProductionFlowApiPanel({
                   aria-label="PO (opsional)"
                   title="PO (opsional)"
                   onChange={(e) => {
-                    setPoFilterId(e.target.value);
+                    onPoFilterIdChange(e.target.value);
                     setPage(1);
                   }}
                 >
@@ -425,10 +441,11 @@ export function ProductionFlowApiPanel({
                 </select>
                 <button
                   type="button"
-                  className="ep-btn sm"
+                  className="ep-btn sm ep-flow-reload"
                   onClick={() => {
                     void loadFlows();
                     void loadStage();
+                    notifyChanged();
                   }}
                 >
                   Muat ulang
@@ -519,6 +536,7 @@ export function ProductionFlowApiPanel({
                   onChanged={() => {
                     void loadFlows();
                     void loadStage();
+                    notifyChanged();
                   }}
                 />
               ) : null}
@@ -531,6 +549,7 @@ export function ProductionFlowApiPanel({
                   onChanged={() => {
                     void loadFlows();
                     void loadStage();
+                    notifyChanged();
                   }}
                 />
               ) : null}

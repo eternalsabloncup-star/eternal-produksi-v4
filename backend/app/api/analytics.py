@@ -78,19 +78,30 @@ def get_production_flow(
     )
     return {
         "items": [read_models.production_flow_state(db, doc) for doc in docs],
-        "nodes": [
-            {"id": node_id, "label": label}
-            for node_id, label in read_models.PRODUCTION_FLOW_NODES
-        ]
-        + [
-            {
-                "id": read_models.FLOW_SELESAI_ID,
-                "label": read_models.FLOW_SELESAI_LABEL,
-            }
-        ],
+        "nodes": read_models.production_flow_stage_nodes(),
         "source": "mongodb",
         "accepted_only": True,
     }
+
+
+@router.get("/production-flow/stage-counts")
+def get_production_flow_stage_counts(
+    q: str | None = Query(default=None),
+    urgent: bool | None = Query(default=None),
+    accurate_po_id: str | None = Query(default=None),
+    auth: AuthContext = Depends(require_session),
+) -> dict[str, Any]:
+    """Badge Alur Produksi — PO unik per tahap aktif (satu scan accepted)."""
+    db = get_db()
+    branch_ids, branch_scope = _branch_scope(auth)
+    return read_models.list_production_flow_stage_counts(
+        db,
+        q=q,
+        urgent=urgent,
+        accurate_po_id=accurate_po_id,
+        branch_ids=branch_ids,
+        branch_scope=branch_scope,
+    )
 
 
 @router.get("/production-flow/by-stage")
@@ -103,7 +114,10 @@ def get_production_flow_by_stage(
     accurate_po_id: str | None = Query(default=None),
     auth: AuthContext = Depends(require_session),
 ) -> dict[str, Any]:
-    """Monitoring PO per tahap aktif — accepted only, pagination server-side."""
+    """Monitoring PO per tahap aktif — accepted only, pagination server-side.
+
+    ``node_id=flow-all`` = seluruh PO accepted unik (bukan membership tahap).
+    """
     from app.api.po import _serialize_po_doc
 
     db = get_db()

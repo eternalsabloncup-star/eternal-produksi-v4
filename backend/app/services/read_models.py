@@ -260,6 +260,10 @@ PRODUCTION_FLOW_NODES: tuple[tuple[str, str], ...] = (
 FLOW_SELESAI_ID = "flow-selesai"
 FLOW_SELESAI_LABEL = "Selesai"
 
+# Filter agregat UI — bukan workflow node; PO accepted unik (tanpa duplikasi paralel).
+FLOW_ALL_ID = "flow-all"
+FLOW_ALL_LABEL = "Semua"
+
 # Membership frontier — terpisah dari status node (production_flow_state).
 _TRACK_DESIGN = ("flow-design", "flow-approval-design")
 _TRACK_PAYMENT = ("flow-payment", "flow-approval-payment")
@@ -878,12 +882,90 @@ def production_flow_state(db: Database, po_doc: dict[str, Any]) -> dict[str, Any
 
 
 def node_label(node_id: str) -> str:
+    if node_id == FLOW_ALL_ID:
+        return FLOW_ALL_LABEL
     if node_id == FLOW_SELESAI_ID:
         return FLOW_SELESAI_LABEL
     for nid, label in PRODUCTION_FLOW_NODES:
         if nid == node_id:
             return label
     return node_id
+
+
+def production_flow_stage_ids() -> list[str]:
+    """Urutan card UI: Semua + 15 node + Selesai."""
+    return (
+        [FLOW_ALL_ID]
+        + [nid for nid, _ in PRODUCTION_FLOW_NODES]
+        + [FLOW_SELESAI_ID]
+    )
+
+
+def production_flow_stage_nodes() -> list[dict[str, str]]:
+    return (
+        [{"id": FLOW_ALL_ID, "label": FLOW_ALL_LABEL}]
+        + [{"id": nid, "label": label} for nid, label in PRODUCTION_FLOW_NODES]
+        + [{"id": FLOW_SELESAI_ID, "label": FLOW_SELESAI_LABEL}]
+    )
+
+
+def empty_stage_counts() -> dict[str, int]:
+    return {nid: 0 for nid in production_flow_stage_ids()}
+
+
+def list_production_flow_stage_counts(
+    db: Database,
+    *,
+    q: str | None = None,
+    urgent: bool | None = None,
+    accurate_po_id: str | None = None,
+    branch_ids: list[str] | set[str] | None = None,
+    branch_scope: bool = False,
+) -> dict[str, Any]:
+    """Hitung PO unik per tahap aktif — satu scan accepted (bukan N× by-stage).
+
+    - ``flow-all``: setiap PO accepted unik +1 (tanpa duplikasi paralel).
+    - node workflow / ``flow-selesai``: +1 bila ``node_id`` ∈ ``active_stages``.
+    Filter ``q`` / ``urgent`` / branch sama dengan by-stage.
+    """
+    query = accepted_po_query(
+        branch_ids=branch_ids,
+        branch_scope=branch_scope,
+        q=q,
+        urgent=urgent,
+    )
+    po_filter = str(accurate_po_id or "").strip()
+    if po_filter:
+        query = {"$and": [query, {"accurate_id": po_filter}]}
+
+    counts = empty_stage_counts()
+    known = set(counts)
+    scanned = 0
+    cursor = po_collection(db).find(query, {"_id": 0}).sort(
+        [("updated_at", -1), ("accurate_id", -1)]
+    )
+    for doc in cursor:
+        scanned += 1
+        flow = production_flow_state(db, doc)
+        membership = list(flow.get("active_stages") or [])
+        counts[FLOW_ALL_ID] += 1
+        seen_stage: set[str] = set()
+        for nid in membership:
+            if nid not in known or nid == FLOW_ALL_ID:
+                continue
+            if nid in seen_stage:
+                continue
+            seen_stage.add(nid)
+            counts[nid] += 1
+
+    return {
+        "counts": counts,
+        "nodes": production_flow_stage_nodes(),
+        "scanned": scanned,
+        "accepted_only": True,
+        "source": "mongodb",
+        "supportedFilters": ["q", "urgent"],
+    }
 
 
 def list_production_flow_by_stage(
@@ -901,10 +983,14 @@ def list_production_flow_by_stage(
 ) -> dict[str, Any]:
     """PO accepted aktif pada ``node_id`` — pagination penuh tanpa scan-cap.
 
+    ``flow-all`` = seluruh PO accepted unik (filter agregat, bukan membership).
     Iterasi cursor deterministik atas seluruh accepted (+filter) dalam branch scope.
     Membership dihitung server-side; frontend tidak memfilter populasi.
     """
-    valid_ids = {nid for nid, _ in PRODUCTION_FLOW_NODES} | {FLOW_SELESAI_ID}
+    valid_ids = (
+        {nid for nid, _ in PRODUCTION_FLOW_NODES}
+        | {FLOW_SELESAI_ID, FLOW_ALL_ID}
+    )
     if node_id not in valid_ids:
         raise ValueError(f"node_id tidak dikenal: {node_id}")
 
@@ -929,21 +1015,35 @@ def list_production_flow_by_stage(
         scanned += 1
         flow = production_flow_state(db, doc)
         membership = list(flow.get("active_stages") or [])
-        if node_id not in membership:
+        if node_id != FLOW_ALL_ID and node_id not in membership:
             continue
         node = next(
             (n for n in (flow.get("nodes") or []) if n.get("id") == node_id),
             None,
         )
-        if node_id == FLOW_SELESAI_ID:
+        if node_id == FLOW_ALL_ID:
+            stage_status = NODE_DONE if FLOW_SELESAI_ID in membership else NODE_WAITING
+            stage_detail = (
+                "PO diterima — semua tahap aktif."
+                if membership
+                else "PO diterima."
+            )
+            stage_label = FLOW_ALL_LABEL
+            mon_label = (
+                MONITOR_LABEL_SELESAI
+                if FLOW_SELESAI_ID in membership
+                else MONITOR_LABEL_AKTIF
+            )
+        elif node_id == FLOW_SELESAI_ID:
             stage_status = NODE_DONE
             stage_detail = "Seluruh tahap applicable selesai."
             stage_label = FLOW_SELESAI_LABEL
+            mon_label = monitoring_label(node_id=node_id, node_status=stage_status)
         else:
             stage_status = str((node or {}).get("status") or NODE_WAITING)
             stage_detail = str((node or {}).get("detail") or "")
             stage_label = str((node or {}).get("label") or node_label(node_id))
-        mon_label = monitoring_label(node_id=node_id, node_status=stage_status)
+            mon_label = monitoring_label(node_id=node_id, node_status=stage_status)
 
         po_payload = serialize_po(doc, db) if callable(serialize_po) else {
             "accurate_id": doc.get("accurate_id"),

@@ -86,6 +86,15 @@ export type ProductionFlowByStage = {
   source: string;
 };
 
+export type ProductionFlowStageCounts = {
+  counts: Record<string, number>;
+  nodes?: { id: string; label: string }[];
+  scanned?: number;
+  accepted_only?: boolean;
+  source: string;
+  supportedFilters?: string[];
+};
+
 export type DashboardMetrics = {
   po_total: number;
   po_waiting_design_gate: number;
@@ -166,6 +175,22 @@ export async function fetchProductionFlowByStage(params: {
     search.set("accurate_po_id", params.accuratePoId);
   }
   return request(`/api/production-flow/by-stage?${search.toString()}`);
+}
+
+export async function fetchProductionFlowStageCounts(params?: {
+  q?: string;
+  urgent?: boolean;
+  accuratePoId?: string;
+}): Promise<ProductionFlowStageCounts> {
+  const search = new URLSearchParams();
+  if (params?.q?.trim()) search.set("q", params.q.trim());
+  if (params?.urgent === true) search.set("urgent", "true");
+  if (params?.urgent === false) search.set("urgent", "false");
+  if (params?.accuratePoId) {
+    search.set("accurate_po_id", params.accuratePoId);
+  }
+  const qs = search.toString();
+  return request(`/api/production-flow/stage-counts${qs ? `?${qs}` : ""}`);
 }
 
 export async function fetchDashboard(): Promise<DashboardMetrics> {
