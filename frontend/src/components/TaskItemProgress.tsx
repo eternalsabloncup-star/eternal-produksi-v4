@@ -3,7 +3,8 @@
  * Bukan tabel horizontal. Multi-item = grup terpisah + divider tipis.
  */
 
-import { Fragment, type ReactNode } from "react";
+import type { ReactNode } from "react";
+import { WorkSheetStackRow } from "./compactTaskSheet";
 import {
   ITEM_NAME_FALLBACK,
   type TaskItemLineView,
@@ -20,6 +21,7 @@ export type TaskItemProgressField = {
   testId?: string;
   numeric?: boolean;
   title?: string;
+  kpi?: boolean;
 };
 
 type Props = {
@@ -56,41 +58,56 @@ export function TaskItemProgress({
         {rows.map((line, idx) => (
           <div key={line.accurateLineId || `${line.itemName}-${idx}`}>
             {idx > 0 ? <hr className="ep-item-progress-divider" /> : null}
-            <dl className="ep-kv ep-kv-compact ep-item-progress-kv">
-              <dt>Nama Barang</dt>
-              <dd
-                data-testid={
-                  idx === 0 ? "task-popup-item-name" : undefined
-                }
-              >
-                {line.itemName || ITEM_NAME_FALLBACK}
-              </dd>
-              {showItemQty && line.qty != null ? (
-                <>
-                  <dt>Qty</dt>
-                  <dd className="ep-num">
+            <WorkSheetStackRow
+              label="Nama Barang"
+              value={
+                <span
+                  data-testid={
+                    idx === 0 ? "task-popup-item-name" : undefined
+                  }
+                >
+                  {line.itemName || ITEM_NAME_FALLBACK}
+                </span>
+              }
+              emphasize
+            />
+            {showItemQty && line.qty != null ? (
+              <WorkSheetStackRow
+                label="Qty"
+                value={
+                  <span className="ep-num">
                     {formatQty(line.qty)} {line.unit.toLowerCase()}
-                  </dd>
-                </>
-              ) : null}
-            </dl>
+                  </span>
+                }
+                kpi
+              />
+            ) : null}
           </div>
         ))}
-        {fields.length > 0 ? (
-          <dl className="ep-kv ep-kv-compact ep-item-progress-kv">
-            {fields.map((f) => (
-              <Fragment key={f.label}>
-                <dt title={f.title}>{f.label}</dt>
-                <dd
+        {fields.map((f) => (
+          <WorkSheetStackRow
+            key={f.label}
+            label={f.label}
+            value={
+              f.testId ? (
+                <span
                   className={f.numeric ? "ep-num" : undefined}
                   data-testid={f.testId}
+                  title={f.title}
                 >
                   {f.value}
-                </dd>
-              </Fragment>
-            ))}
-          </dl>
-        ) : null}
+                </span>
+              ) : f.numeric ? (
+                <span className="ep-num" title={f.title}>
+                  {f.value}
+                </span>
+              ) : (
+                f.value
+              )
+            }
+            kpi={f.kpi ?? f.numeric}
+          />
+        ))}
       </div>
     </div>
   );

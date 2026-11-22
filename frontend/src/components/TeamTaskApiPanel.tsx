@@ -1570,7 +1570,7 @@ export function TeamTaskApiPanel({
                 <div className="ep-ws-sched-toolbar">
                   <button
                     type="button"
-                    className="ep-btn sm"
+                    className="ep-btn secondary sm"
                     disabled={headerReloading || poDetailLoading}
                     data-testid="designer-modal-reload"
                     title="Muat ulang data desain dan PO"
@@ -1632,58 +1632,44 @@ export function TeamTaskApiPanel({
                           key={s.sample_id}
                           testId="sample-version-card"
                         >
-                          <WorkSheetStackRow
-                            label="Versi"
-                            value={`v${s.version}`}
-                            emphasize
-                          />
-                          <WorkSheetStackRow
-                            label="File"
-                            value={s.filename || "—"}
-                          />
-                          <WorkSheetStackRow
-                            label="Bukti"
-                            value={
-                              s.evidence_id && selected.ref.allocation_id ? (
-                                <button
-                                  type="button"
-                                  className="ep-btn sm"
-                                  data-testid="sample-preview-btn"
-                                  onClick={() =>
-                                    setEvidencePreview({
-                                      title: `Sampel v${s.version}`,
-                                      url: sampleEvidenceContentUrl(
-                                        selected.ref.allocation_id!,
-                                        s.evidence_id!,
-                                      ),
-                                      filename: s.filename,
-                                    })
-                                  }
-                                >
-                                  Preview
-                                </button>
-                              ) : (
-                                "—"
-                              )
-                            }
-                          />
-                          <WorkSheetStackRow
-                            label="Status"
-                            value={
-                              <span className={sampleStatusClass(s.status)}>
-                                {sampleStatusLabel(s.status)}
-                              </span>
-                            }
-                          />
-                          <WorkSheetStackRow
-                            label="Operator"
-                            value={s.submitted_by || "—"}
-                          />
-                          <WorkSheetStackRow
-                            label="Alasan Tolak"
-                            value={s.reject_reason || "—"}
-                            danger={Boolean(s.reject_reason)}
-                          />
+                          <div className="ep-ws-sample-head">
+                            <span className="ep-ws-sample-ver">
+                              v{s.version}
+                            </span>
+                            <span className={sampleStatusClass(s.status)}>
+                              {sampleStatusLabel(s.status)}
+                            </span>
+                            {s.evidence_id && selected.ref.allocation_id ? (
+                              <button
+                                type="button"
+                                className="ep-btn secondary sm"
+                                data-testid="sample-preview-btn"
+                                onClick={() =>
+                                  setEvidencePreview({
+                                    title: `Sampel v${s.version}`,
+                                    url: sampleEvidenceContentUrl(
+                                      selected.ref.allocation_id!,
+                                      s.evidence_id!,
+                                    ),
+                                    filename: s.filename,
+                                  })
+                                }
+                              >
+                                Preview
+                              </button>
+                            ) : null}
+                          </div>
+                          <p className="ep-ws-sample-file">
+                            {s.filename || "—"}
+                          </p>
+                          <p className="ep-ws-sample-meta">
+                            {s.submitted_by || "—"}
+                          </p>
+                          {s.reject_reason ? (
+                            <p className="ep-ws-sample-reject">
+                              Tolak: {s.reject_reason}
+                            </p>
+                          ) : null}
                           {selected.task_type === SAMPLE_APPROVAL_TASK ? (
                             <div className="ep-ws-card-actions">
                               {s.status === "menunggu_approval" &&
@@ -1701,7 +1687,7 @@ export function TeamTaskApiPanel({
                                   </button>
                                   <button
                                     type="button"
-                                    className="ep-btn sm"
+                                    className="ep-btn danger sm"
                                     disabled={busy}
                                     onClick={() =>
                                       void onDecideSample(s.version, false)
@@ -1710,9 +1696,7 @@ export function TeamTaskApiPanel({
                                     Tolak
                                   </button>
                                 </>
-                              ) : (
-                                <span className="ep-muted">—</span>
-                              )}
+                              ) : null}
                             </div>
                           ) : null}
                         </WorkSheetCard>
@@ -1824,7 +1808,7 @@ export function TeamTaskApiPanel({
                       />
                       <button
                         type="button"
-                        className="ep-btn"
+                        className="ep-btn secondary"
                         disabled={busy}
                         data-testid="sample-upload-draft-btn"
                         onClick={() => void onUploadSampleDraft()}
@@ -1838,7 +1822,7 @@ export function TeamTaskApiPanel({
                         data-testid="sample-confirm-btn"
                         onClick={() => void onConfirmSampleSubmission()}
                       >
-                        {busy ? "Mengirim…" : "Konfirmasi"}
+                        {busy ? "Mengirim…" : "Konfirmasi Sampel"}
                       </button>
                     </div>
                   ) : null}
@@ -1936,11 +1920,21 @@ export function TeamTaskApiPanel({
                               />
                               <WorkSheetStackRow
                                 label="Qty SJ"
-                                value={formatQty(Number(it.qty))}
+                                value={
+                                  <span className="ep-num">
+                                    {formatQty(Number(it.qty))}
+                                  </span>
+                                }
+                                kpi
                               />
                               <WorkSheetStackRow
                                 label="Qty Packing tersedia"
-                                value={formatQty(Number(it.qty_available))}
+                                value={
+                                  <span className="ep-num">
+                                    {formatQty(Number(it.qty_available))}
+                                  </span>
+                                }
+                                kpi
                               />
                               <WorkSheetStackRow
                                 label="Status"
@@ -1950,6 +1944,7 @@ export function TeamTaskApiPanel({
                                     : it.reason || "Tidak cocok"
                                 }
                                 danger={!it.matched}
+                                emphasize
                               />
                             </WorkSheetCard>
                           );
@@ -2004,7 +1999,6 @@ export function TeamTaskApiPanel({
                   ) : null}
                   <p className="ep-notice">
                     Pilih Sesuai atau Tidak Sesuai — tanpa menginput ulang Qty SJ.
-                    Backend mengulang validasi authoritative.
                   </p>
                   {(canAct("loading-sj", "confirm") ||
                     canAct(DRIVER_TASK, "confirm")) &&
@@ -2024,7 +2018,7 @@ export function TeamTaskApiPanel({
                       </button>
                       <button
                         type="button"
-                        className="ep-btn"
+                        className="ep-btn danger"
                         disabled={busy}
                         onClick={() => void onLoadingMismatch()}
                       >
@@ -2215,7 +2209,7 @@ export function TeamTaskApiPanel({
                           }
                           options={[
                             { id: "berhasil", label: "Berhasil" },
-                            { id: "gagal", label: "Gagal" },
+                            { id: "gagal", label: "Gagal", tone: "danger" },
                           ]}
                         />
                       ) : (
@@ -2426,7 +2420,7 @@ export function TeamTaskApiPanel({
                   </button>
                   <button
                     type="button"
-                    className="ep-btn"
+                    className="ep-btn danger"
                     disabled={busy}
                     onClick={() => void onLoadingMismatch()}
                   >
@@ -2465,7 +2459,7 @@ export function TeamTaskApiPanel({
                   ) : (
                     <button
                       type="button"
-                      className="ep-btn"
+                      className="ep-btn danger"
                       disabled={busy}
                       onClick={() => void onDeliveryFailed()}
                     >
@@ -2473,15 +2467,21 @@ export function TeamTaskApiPanel({
                     </button>
                   )}
                 </div>
+              ) : busy ? (
+                <span className="ep-muted ep-foot-hint">Memproses…</span>
+              ) : pwaOps ? (
+                selectedIsScheduling ? (
+                  <span className="ep-muted ep-foot-hint">
+                    Penjadwalan · alokasi operator
+                  </span>
+                ) : null
               ) : (
                 <span className="ep-muted">
-                  {busy
-                    ? "Memproses…"
-                    : selectedIsDesigner
-                      ? "Desain"
-                      : selectedIsScheduling
-                        ? "Penjadwalan · alokasi operator"
-                        : "Backend tetap otorisasi final."}
+                  {selectedIsDesigner
+                    ? "Desain"
+                    : selectedIsScheduling
+                      ? "Penjadwalan · alokasi operator"
+                      : null}
                 </span>
               )}
               {!pwaOps ? (

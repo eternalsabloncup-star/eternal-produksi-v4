@@ -57,8 +57,15 @@ export function CollapsibleTaskSection({
   );
 }
 
+type SegmentOption = {
+  id: string;
+  label: string;
+  /** Destructive tone when selected (e.g. Gagal). */
+  tone?: "default" | "danger";
+};
+
 type SegmentProps = {
-  options: { id: string; label: string }[];
+  options: SegmentOption[];
   value: string;
   onChange: (id: string) => void;
   testId?: string;
@@ -73,18 +80,24 @@ export function WorkSheetSegment({
 }: SegmentProps) {
   return (
     <div className="ep-ws-segment" role="tablist" data-testid={testId}>
-      {options.map((opt) => (
-        <button
-          key={opt.id}
-          type="button"
-          role="tab"
-          aria-selected={value === opt.id}
-          className={`ep-ws-segment-btn${value === opt.id ? " is-active" : ""}`}
-          onClick={() => onChange(opt.id)}
-        >
-          {opt.label}
-        </button>
-      ))}
+      {options.map((opt) => {
+        const active = value === opt.id;
+        const danger = opt.tone === "danger";
+        return (
+          <button
+            key={opt.id}
+            type="button"
+            role="tab"
+            aria-selected={active}
+            className={`ep-ws-segment-btn${active ? " is-active" : ""}${
+              danger ? " is-danger" : ""
+            }`}
+            onClick={() => onChange(opt.id)}
+          >
+            {opt.label}
+          </button>
+        );
+      })}
     </div>
   );
 }
@@ -94,21 +107,31 @@ type StackRowProps = {
   value: ReactNode;
   emphasize?: boolean;
   danger?: boolean;
+  /** Primary KPI figure (larger tabular value). */
+  kpi?: boolean;
 };
 
+/**
+ * Label / colon / value — 3-column grid for worksheet info rows.
+ * Not for buttons, pills, or form field labels.
+ */
 export function WorkSheetStackRow({
   label,
   value,
   emphasize,
   danger,
+  kpi,
 }: StackRowProps) {
   return (
     <div
       className={`ep-ws-stack-row${emphasize ? " is-emphasize" : ""}${
         danger ? " is-danger" : ""
-      }`}
+      }${kpi ? " is-kpi" : ""}`}
     >
       <span className="ep-ws-stack-lbl">{label}</span>
+      <span className="ep-ws-stack-colon" aria-hidden="true">
+        :
+      </span>
       <span className="ep-ws-stack-val">{value}</span>
     </div>
   );

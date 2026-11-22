@@ -52,14 +52,17 @@ describe("WorkSheetSegment", () => {
 });
 
 describe("WorkSheetStackRow", () => {
-  it("renders label and value", () => {
+  it("renders label, colon, and value columns", () => {
     const html = renderToStaticMarkup(
       createElement(WorkSheetStackRow, {
         label: "Qty SJ",
         value: "2.000",
+        kpi: true,
       }),
     );
     expect(html).toContain("Qty SJ");
+    expect(html).toContain("ep-ws-stack-colon");
     expect(html).toContain("2.000");
+    expect(html).toContain("is-kpi");
   });
 });

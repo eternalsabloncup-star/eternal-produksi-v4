@@ -443,7 +443,7 @@ export function TeamTaskSchedulingForm({
             <div className="ep-ws-sched-toolbar">
               <button
                 type="button"
-                className="ep-btn sm ep-btn-design"
+                className="ep-btn secondary sm ep-btn-design"
                 data-testid="sched-view-design-body"
                 title="Lihat desain PO aktif"
                 onClick={() => onOpenDesign()}
@@ -497,13 +497,14 @@ export function TeamTaskSchedulingForm({
                     value={
                       <span className="ep-num">{qty(l.qty_unallocated)}</span>
                     }
-                    emphasize
+                    kpi
                   />
                   <WorkSheetStackRow
                     label="Qty Cetak Terkonfirmasi"
                     value={
                       <span className="ep-num">{qty(l.qty_printed)}</span>
                     }
+                    kpi
                   />
                 </WorkSheetCard>
               ))}
@@ -624,7 +625,7 @@ export function TeamTaskSchedulingForm({
                     <WorkSheetStackRow
                       label="Qty Alokasi"
                       value={<span className="ep-num">{qty(a.qty)}</span>}
-                      emphasize
+                      kpi
                     />
                     <WorkSheetStackRow
                       label="Tanggal Pengerjaan"
@@ -643,6 +644,7 @@ export function TeamTaskSchedulingForm({
                       value={
                         <span className="ep-num">{qty(a.qty_printed || 0)}</span>
                       }
+                      kpi
                     />
                     <WorkSheetStackRow
                       label="Status"
