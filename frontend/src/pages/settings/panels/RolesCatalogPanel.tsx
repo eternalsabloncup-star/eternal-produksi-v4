@@ -1,5 +1,7 @@
 import { useState, type FormEvent } from "react";
 import type { SettingsRole } from "../../../api/settings";
+import { SettingsKelolaMenu } from "../SettingsKelolaMenu";
+import { roleKindLabel } from "../settingsLabels";
 
 type Props = {
   roles: SettingsRole[];
@@ -112,7 +114,9 @@ export function RolesCatalogPanel({
                     <td>
                       <code className="ep-settings-code">{r.role_key}</code>
                     </td>
-                    <td className="is-status">{r.kind}</td>
+                    <td className="is-status" title={r.kind}>
+                      {roleKindLabel(r.kind)}
+                    </td>
                     <td className="is-status">v{r.version}</td>
                     <td className="is-status">
                       <span className={`ep-settings-pill${r.is_active ? "" : " is-off"}`}>
@@ -120,31 +124,32 @@ export function RolesCatalogPanel({
                       </span>
                     </td>
                     <td className="is-actions">
-                      <div className="ep-settings-row-actions">
-                        <button
-                          type="button"
-                          className="ep-btn"
-                          disabled={r.role_key === "super_admin"}
-                          onClick={() => onRename(r)}
-                        >
-                          Ubah nama
-                        </button>
-                        <button type="button" className="ep-btn" onClick={() => onDuplicate(r)}>
-                          Gandakan
-                        </button>
-                        <button
-                          type="button"
-                          className="ep-btn"
-                          disabled={
-                            !r.is_active ||
-                            r.role_key === "super_admin" ||
-                            r.kind === "system"
-                          }
-                          onClick={() => onDeactivate(r)}
-                        >
-                          Nonaktifkan
-                        </button>
-                      </div>
+                      <SettingsKelolaMenu
+                        ariaLabel={`Kelola peran ${r.label}`}
+                        items={[
+                          {
+                            id: "rename",
+                            label: "Ubah nama",
+                            disabled: r.role_key === "super_admin",
+                            onSelect: () => onRename(r),
+                          },
+                          {
+                            id: "duplicate",
+                            label: "Gandakan",
+                            onSelect: () => onDuplicate(r),
+                          },
+                          {
+                            id: "deactivate",
+                            label: "Nonaktifkan",
+                            tone: "danger",
+                            disabled:
+                              !r.is_active ||
+                              r.role_key === "super_admin" ||
+                              r.kind === "system",
+                            onSelect: () => onDeactivate(r),
+                          },
+                        ]}
+                      />
                     </td>
                   </tr>
                 ))

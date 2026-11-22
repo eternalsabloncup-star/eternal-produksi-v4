@@ -1,6 +1,6 @@
 import { useMemo, useState } from "react";
 import type { SettingsRole } from "../../../api/settings";
-import { modulePermLabel } from "../settingsLabels";
+import { modulePermLabel, roleKindLabel } from "../settingsLabels";
 import { modulePermsAreDirty } from "../settingsDraftUtils";
 import { SettingsStickySaveBar } from "../SettingsStickySaveBar";
 
@@ -52,6 +52,7 @@ export function ModulePermsPanel({
   askConfirm,
 }: Props) {
   const [query, setQuery] = useState("");
+  const [showTechIds, setShowTechIds] = useState(false);
   const selectedRoleDoc = roles.find((r) => r.role_key === selectedRole);
   const dirty = selectedRoleDoc
     ? modulePermsAreDirty(
@@ -99,7 +100,7 @@ export function ModulePermsPanel({
           >
             {roles.map((r) => (
               <option key={r.role_key} value={r.role_key}>
-                {r.label} ({r.kind}) · v{r.version}
+                {r.label} ({roleKindLabel(r.kind)}) · v{r.version}
               </option>
             ))}
           </select>
@@ -112,6 +113,14 @@ export function ModulePermsPanel({
             placeholder="Contoh: kelola pengguna…"
             aria-label="Cari hak akses menu"
           />
+        </label>
+        <label className="ep-settings-check-row ep-settings-tech-toggle">
+          <input
+            type="checkbox"
+            checked={showTechIds}
+            onChange={(e) => setShowTechIds(e.target.checked)}
+          />
+          Tampilkan ID teknis
         </label>
       </div>
 
@@ -141,11 +150,13 @@ export function ModulePermsPanel({
                 );
                 return (
                   <tr key={p}>
-                    <td>
+                    <td title={showTechIds ? undefined : p}>
                       <div className="ep-settings-perm-label">{modulePermLabel(p)}</div>
-                      <div className="ep-settings-perm-id" title={p}>
-                        {p}
-                      </div>
+                      {showTechIds ? (
+                        <div className="ep-settings-perm-id" title={p}>
+                          {p}
+                        </div>
+                      ) : null}
                       {sensitivePerms.includes(p) ? (
                         <span className="ep-settings-pill is-warn">
                           Sensitif — berisiko tinggi

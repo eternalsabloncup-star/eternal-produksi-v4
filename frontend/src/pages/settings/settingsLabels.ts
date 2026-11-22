@@ -48,6 +48,13 @@ export function modulePermLabel(id: string): string {
   return MODULE_PERM_LABEL[id] || id;
 }
 
+/** Label jenis peran sistem untuk UI (kode internal tetap di title/API). */
+export function roleKindLabel(kind: string): string {
+  if (kind === "system") return "Sistem";
+  if (kind === "custom") return "Kustom";
+  return kind;
+}
+
 export function roleWorkLabel(role: string): string {
   return ROLE_WORK_LABEL[role] || role;
 }

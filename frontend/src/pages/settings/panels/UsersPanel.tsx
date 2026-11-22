@@ -7,6 +7,7 @@ import {
   formatUserBranches,
   toggleBranchId,
 } from "../../settingsUsersUi";
+import { SettingsKelolaMenu } from "../SettingsKelolaMenu";
 import { roleWorkLabel } from "../settingsLabels";
 
 export type UserFormState = {
@@ -194,14 +195,14 @@ export function UsersPanel({
           </label>
         </div>
         <div className="ep-settings-table-wrap">
-          <table className="ep-settings-data-table">
+          <table className="ep-settings-data-table is-users">
             <thead>
               <tr>
-                <th>Email</th>
-                <th>Nama</th>
+                <th className="is-email">Email</th>
+                <th className="is-name">Nama</th>
                 <th className="is-role">Peran sistem</th>
                 <th className="is-role">Peran kerja</th>
-                <th>Cabang</th>
+                <th className="is-branch">Cabang</th>
                 <th className="is-status">Aktif</th>
                 <th className="is-actions">Aksi</th>
               </tr>
@@ -220,8 +221,10 @@ export function UsersPanel({
               ) : (
                 filtered.map((u) => (
                   <tr key={u.id}>
-                    <td title={u.email}>{u.email}</td>
-                    <td>{u.display_name}</td>
+                    <td className="is-email" title={u.email}>
+                      {u.email}
+                    </td>
+                    <td className="is-name">{u.display_name}</td>
                     <td className="is-role">
                       {roles.find((r) => r.role_key === u.role)?.label || u.role}
                     </td>
@@ -230,7 +233,10 @@ export function UsersPanel({
                         ? roleWorkLabel(u.operational_role)
                         : "—"}
                     </td>
-                    <td title={formatUserBranches(u.branch_ids, branches)}>
+                    <td
+                      className="is-branch"
+                      title={formatUserBranches(u.branch_ids, branches)}
+                    >
                       {formatUserBranches(u.branch_ids, branches)}
                     </td>
                     <td className="is-status">
@@ -239,38 +245,46 @@ export function UsersPanel({
                       </span>
                     </td>
                     <td className="is-actions">
-                      <div className="ep-settings-row-actions">
-                        <button
-                          type="button"
-                          className="ep-btn"
-                          onClick={() => {
-                            setEditingUser(u);
-                            setEditUserForm({
-                              display_name: u.display_name,
-                              role: u.role,
-                              operational_role: u.operational_role || "",
-                              branch_ids: [...(u.branch_ids || [])],
-                            });
-                          }}
-                        >
-                          Edit
-                        </button>
-                        {u.is_active ? (
-                          <button type="button" className="ep-btn" onClick={() => onDeactivate(u)}>
-                            Nonaktifkan
-                          </button>
-                        ) : (
-                          <button type="button" className="ep-btn" onClick={() => onActivate(u)}>
-                            Aktifkan kembali
-                          </button>
-                        )}
-                        <button type="button" className="ep-btn" onClick={() => onResetPassword(u)}>
-                          Reset kata sandi
-                        </button>
-                        <button type="button" className="ep-btn" onClick={() => onManageSessions(u)}>
-                          Sesi login
-                        </button>
-                      </div>
+                      <SettingsKelolaMenu
+                        ariaLabel={`Kelola pengguna ${u.display_name || u.email}`}
+                        items={[
+                          {
+                            id: "edit",
+                            label: "Edit",
+                            onSelect: () => {
+                              setEditingUser(u);
+                              setEditUserForm({
+                                display_name: u.display_name,
+                                role: u.role,
+                                operational_role: u.operational_role || "",
+                                branch_ids: [...(u.branch_ids || [])],
+                              });
+                            },
+                          },
+                          u.is_active
+                            ? {
+                                id: "deactivate",
+                                label: "Nonaktifkan",
+                                tone: "danger",
+                                onSelect: () => onDeactivate(u),
+                              }
+                            : {
+                                id: "activate",
+                                label: "Aktifkan kembali",
+                                onSelect: () => onActivate(u),
+                              },
+                          {
+                            id: "reset-password",
+                            label: "Reset kata sandi",
+                            onSelect: () => onResetPassword(u),
+                          },
+                          {
+                            id: "sessions",
+                            label: "Sesi login",
+                            onSelect: () => onManageSessions(u),
+                          },
+                        ]}
+                      />
                     </td>
                   </tr>
                 ))
