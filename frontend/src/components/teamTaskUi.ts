@@ -26,6 +26,9 @@ export function taskDisplayLabel(
   if (task.task_type === "loading-sj") {
     return task.label || "Loading Surat Jalan";
   }
+  if (task.task_type === "loading-menunggu-sj") {
+    return task.label || "Loading — Menunggu Surat Jalan";
+  }
   if (task.task_type === "qty-loading-sj-berbeda") {
     return task.label || "Koordinasi Loading–SJ";
   }
@@ -52,13 +55,21 @@ export function statusLabel(status: OperationalTask["status"]): string {
   return "Belum Dikerjakan";
 }
 
-/** Loading dibatalkan tetap status open di engine — bukan pekerjaan aktif. */
+/** Loading dibatalkan / preliminary siap (loading-sj ada) — bukan pekerjaan aktif. */
 export function isCancelledOrInactiveTask(
-  task: Pick<OperationalTask, "context">,
+  task: Pick<OperationalTask, "task_type" | "context">,
 ): boolean {
   const ctx = task.context;
   if (!ctx || typeof ctx !== "object") return false;
-  return (ctx as { loading_cancelled?: unknown }).loading_cancelled === true;
+  const c = ctx as {
+    loading_cancelled?: unknown;
+    loading_task_ready?: unknown;
+  };
+  if (c.loading_cancelled === true) return true;
+  if (task.task_type === "loading-menunggu-sj" && c.loading_task_ready === true) {
+    return true;
+  }
+  return false;
 }
 
 /**
@@ -66,7 +77,7 @@ export function isCancelledOrInactiveTask(
  * status terbuka dan belum dibatalkan.
  */
 export function isActionableOpenTask(
-  task: Pick<OperationalTask, "status" | "context">,
+  task: Pick<OperationalTask, "status" | "task_type" | "context">,
 ): boolean {
   if (task.status === "selesai") return false;
   if (isCancelledOrInactiveTask(task)) return false;
@@ -158,6 +169,62 @@ export function isCoordinationTask(taskType: string): boolean {
 
 export function isLoadingSjTask(taskType: string): boolean {
   return taskType === "loading-sj";
+}
+
+/** Tugas informatif setelah Cetak — bukan konfirmasi Loading SJ. */
+export function isPreliminaryLoadingTask(taskType: string): boolean {
+  return taskType === "loading-menunggu-sj";
+}
+
+export function preliminaryLoadingDisplay(task: {
+  context?: Record<string, unknown> | null;
+}): {
+  waiting: boolean;
+  loadingReady: boolean;
+  pendingLoading: boolean;
+  statusText: string;
+  qtyPrinted: number | null;
+  sjLabel: string;
+} {
+  const ctx = task.context || {};
+  const linked = Array.isArray(ctx.linked_sj_ids) ? ctx.linked_sj_ids : [];
+  const waiting =
+    ctx.waiting_for_sj === true ||
+    (ctx.waiting_for_sj !== false && linked.length === 0);
+  const loadingReady = ctx.loading_task_ready === true;
+  const pendingLoading = !waiting && !loadingReady;
+  const qtyRaw = ctx.qty_printed;
+  const qtyPrinted =
+    typeof qtyRaw === "number"
+      ? qtyRaw
+      : qtyRaw != null && Number.isFinite(Number(qtyRaw))
+        ? Number(qtyRaw)
+        : null;
+  const nos = Array.isArray(ctx.linked_sj_nos)
+    ? ctx.linked_sj_nos.map((x) => String(x || "").trim()).filter(Boolean)
+    : [];
+  const ids = linked.map((x) => String(x || "").trim()).filter(Boolean);
+  const sjLabel = waiting
+    ? "Belum tersedia"
+    : nos.length
+      ? nos.join(", ")
+      : ids.length
+        ? ids.join(", ")
+        : "Tersedia";
+  let statusText: string;
+  if (waiting) {
+    statusText = "Menunggu Surat Jalan";
+  } else if (pendingLoading) {
+    statusText = String(
+      ctx.display_status || "SJ tersedia — tugas Loading belum siap",
+    );
+  } else {
+    statusText = String(
+      ctx.display_status ||
+        "SJ tersedia — konfirmasi pada tugas Loading Surat Jalan",
+    );
+  }
+  return { waiting, loadingReady, pendingLoading, statusText, qtyPrinted, sjLabel };
 }
 
 export function remainingQty(task: OperationalTask): number | null {
@@ -261,6 +328,7 @@ export function taskItemSecondaryMeta(
 export function canShowQtyConfirmForm(
   task: Pick<OperationalTask, "task_type" | "qty_target">,
 ): boolean {
+  if (isPreliminaryLoadingTask(task.task_type)) return false;
   if (task.task_type === "screen") return true;
   return task.qty_target !== undefined;
 }

@@ -56,8 +56,10 @@ import {
   formatCountBadge,
   isCoordinationTask,
   isLoadingSjTask,
+  isPreliminaryLoadingTask,
   isSampleTask,
   isSchedulingTask,
+  preliminaryLoadingDisplay,
   remainingQty,
   latestDraftSample,
   sampleStatusClass,
@@ -1651,6 +1653,61 @@ export function TeamTaskApiPanel({
                 )}
               </div>
 
+              {isPreliminaryLoadingTask(selected.task_type) ? (
+                <div
+                  className="ep-loading-sj"
+                  data-testid="loading-menunggu-sj-block"
+                >
+                  <p className="ep-sectionlabel">Loading — Menunggu Surat Jalan</p>
+                  {(() => {
+                    const prelim = preliminaryLoadingDisplay(selected);
+                    return (
+                      <>
+                        <p>
+                          Nama Barang:{" "}
+                          <strong>{taskItemDisplayName(selected)}</strong>
+                        </p>
+                        <p>
+                          Qty Cetak:{" "}
+                          <strong>
+                            {prelim.qtyPrinted != null
+                              ? formatQty(prelim.qtyPrinted)
+                              : selected.qty_target != null
+                                ? formatQty(selected.qty_target)
+                                : "—"}
+                          </strong>
+                        </p>
+                        <p>
+                          Surat Jalan: <strong>{prelim.sjLabel}</strong>
+                        </p>
+                        <p>
+                          Status: <strong>{prelim.statusText}</strong>
+                        </p>
+                        {prelim.waiting ? (
+                          <p className="ep-notice">
+                            Tugas informatif setelah konfirmasi Cetak. Konfirmasi
+                            Qty Loading dinonaktifkan sampai Surat Jalan Accurate
+                            tersedia. Backend menolak konfirmasi tanpa SJ.
+                          </p>
+                        ) : prelim.pendingLoading ? (
+                          <p className="ep-notice" data-testid="loading-pending-notice">
+                            Surat Jalan untuk line ini sudah ada, tetapi tugas
+                            Loading Surat Jalan belum siap. Tetap informatif —
+                            konfirmasi Qty Loading tidak tersedia di sini.
+                          </p>
+                        ) : (
+                          <p className="ep-notice">
+                            Surat Jalan terkait line ini sudah masuk. Konfirmasi
+                            Loading dilakukan pada tugas Loading Surat Jalan per
+                            SJ — bukan pada tugas menunggu ini.
+                          </p>
+                        )}
+                      </>
+                    );
+                  })()}
+                </div>
+              ) : null}
+
               {isLoadingSjTask(selected.task_type) ? (
                 <div className="ep-loading-sj" data-testid="loading-sj-block">
                   <p className="ep-sectionlabel">Loading Surat Jalan</p>
@@ -1975,6 +2032,7 @@ export function TeamTaskApiPanel({
               selected.task_type !== DRIVER_TASK &&
               selected.task_type !== DESIGN_TASK &&
               !isLoadingSjTask(selected.task_type) &&
+              !isPreliminaryLoadingTask(selected.task_type) &&
               !isCoordinationTask(selected.task_type) &&
               !selectedIsSample &&
               !isSchedulingTask(selected.task_type) &&

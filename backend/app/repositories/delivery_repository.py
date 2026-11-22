@@ -717,6 +717,42 @@ def list_delivery_notes(
     )
 
 
+def list_sj_links_for_po_line(
+    db: Database,
+    *,
+    accurate_po_id: str,
+    accurate_line_id: str,
+) -> list[dict[str, str]]:
+    """SJ yang memuat pasangan PO+line — hanya lewat ``accurate_line_id``.
+
+    Tidak menebak dari qty, nama pelanggan, atau urutan item.
+    """
+    po_id = str(accurate_po_id or "").strip()
+    line_id = str(accurate_line_id or "").strip()
+    if not po_id or not line_id:
+        return []
+    links: list[dict[str, str]] = []
+    seen: set[str] = set()
+    for note in list_delivery_notes(db, accurate_po_id=po_id):
+        sj_id = str(note.get("accurate_sj_id") or "").strip()
+        if not sj_id or sj_id in seen:
+            continue
+        for item in note.get("items") or []:
+            if not isinstance(item, dict):
+                continue
+            if str(item.get("accurate_line_id") or "").strip() != line_id:
+                continue
+            seen.add(sj_id)
+            links.append(
+                {
+                    "accurate_sj_id": sj_id,
+                    "sj_no": str(note.get("sj_no") or "").strip(),
+                }
+            )
+            break
+    return links
+
+
 def mark_superseded(
     db: Database, *, accurate_sj_id: str, replacement_sj_id: str
 ) -> dict[str, Any]:

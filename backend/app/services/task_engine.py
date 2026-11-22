@@ -114,6 +114,12 @@ def confirm_task(
         raise LookupError(f"Tugas tidak ditemukan: {task_key}")
 
     task_type = str(task.get("task_type") or "")
+    # Preliminary Loading: informatif saja — konfirmasi Qty dilarang tanpa SJ.
+    if task_type == "loading-menunggu-sj":
+        raise TaskPermissionError(
+            "Tugas Loading menunggu Surat Jalan bersifat informatif — "
+            "konfirmasi Loading hanya lewat Surat Jalan Accurate."
+        )
     require_action(db, user, task_type=task_type, action="confirm")
     _assert_task_object_scope(db, user, task)
 

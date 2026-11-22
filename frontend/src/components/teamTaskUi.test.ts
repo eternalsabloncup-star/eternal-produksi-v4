@@ -4,13 +4,18 @@ import {
   aggregateStatusCounts,
   allocationCanReviseQty,
   allocationReviseBounds,
+  actionableOpenCount,
   allowTaskAction,
   canShowQtyConfirmForm,
   filterTasksByStatus,
   filterTasksForActor,
   formatCountBadge,
+  isActionableOpenTask,
+  isCancelledOrInactiveTask,
+  isPreliminaryLoadingTask,
   isSchedulingTask,
   latestDraftSample,
+  preliminaryLoadingDisplay,
   remainingQty,
   sampleStatusClass,
   sampleStatusLabel,
@@ -208,6 +213,90 @@ describe("teamTaskUi labels & scheduling", () => {
         qty_target: 100,
       }),
     ).toBe(true);
+  });
+
+  it("hides qty confirm for preliminary Loading menunggu SJ", () => {
+    expect(isPreliminaryLoadingTask("loading-menunggu-sj")).toBe(true);
+    expect(
+      canShowQtyConfirmForm({
+        task_type: "loading-menunggu-sj",
+        qty_target: 500,
+      }),
+    ).toBe(false);
+    expect(
+      taskDisplayLabel(
+        task({
+          task_key: "p1",
+          task_type: "loading-menunggu-sj",
+          status: "belum_dikerjakan",
+          label: "Loading — Menunggu Surat Jalan",
+        }),
+      ),
+    ).toBe("Loading — Menunggu Surat Jalan");
+    const waiting = preliminaryLoadingDisplay({
+      context: {
+        waiting_for_sj: true,
+        qty_printed: 200,
+        display_status: "Menunggu Surat Jalan",
+      },
+    });
+    expect(waiting.waiting).toBe(true);
+    expect(waiting.statusText).toBe("Menunggu Surat Jalan");
+    expect(waiting.sjLabel).toBe("Belum tersedia");
+    expect(waiting.qtyPrinted).toBe(200);
+    const linked = preliminaryLoadingDisplay({
+      context: {
+        waiting_for_sj: false,
+        loading_task_ready: true,
+        linked_sj_ids: ["SJ-1"],
+        linked_sj_nos: ["SJ/001"],
+      },
+    });
+    expect(linked.waiting).toBe(false);
+    expect(linked.pendingLoading).toBe(false);
+    expect(linked.loadingReady).toBe(true);
+    expect(linked.sjLabel).toBe("SJ/001");
+  });
+
+  it("keeps SJ-without-loading-task preliminary actionable; ready closes it", () => {
+    const waiting = task({
+      task_key: "p-wait",
+      task_type: "loading-menunggu-sj",
+      status: "belum_dikerjakan",
+      context: { waiting_for_sj: true, qty_printed: 100 },
+    });
+    const pending = task({
+      task_key: "p-pending",
+      task_type: "loading-menunggu-sj",
+      status: "belum_dikerjakan",
+      context: {
+        waiting_for_sj: false,
+        loading_task_ready: false,
+        linked_sj_ids: ["SJ-2"],
+        missing_loading_sj_ids: ["SJ-2"],
+        display_status: "SJ tersedia — tugas Loading belum siap",
+      },
+    });
+    const ready = task({
+      task_key: "p-ready",
+      task_type: "loading-menunggu-sj",
+      status: "selesai",
+      context: {
+        waiting_for_sj: false,
+        loading_task_ready: true,
+        linked_sj_ids: ["SJ-1"],
+        linked_sj_nos: ["SJ/001"],
+      },
+    });
+    expect(isActionableOpenTask(waiting)).toBe(true);
+    expect(isActionableOpenTask(pending)).toBe(true);
+    expect(isCancelledOrInactiveTask(pending)).toBe(false);
+    expect(isActionableOpenTask(ready)).toBe(false);
+    expect(isCancelledOrInactiveTask(ready)).toBe(true);
+    expect(actionableOpenCount([waiting, pending, ready])).toBe(2);
+    const pendingView = preliminaryLoadingDisplay(pending);
+    expect(pendingView.pendingLoading).toBe(true);
+    expect(pendingView.statusText).toContain("belum siap");
   });
 
   it("reads Screen qty_alokasi as info only", () => {

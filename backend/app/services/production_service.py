@@ -35,6 +35,7 @@ SAMPLE_TASK = "konfirmasi-sample"
 APPROVAL_TASK = "approval-sampel"
 PRINT_TASK = "cetak"
 QC_TASK = "qc-packing"
+PRELIMINARY_LOADING_TASK = "loading-menunggu-sj"
 
 SAMPLE_SCOPE = "operator-sample"
 
@@ -705,10 +706,56 @@ def confirm_print(
 
     result = tasks.run_in_transaction(db, _operation)
     _sync_qc_task(db, alloc)
+    prelim = _sync_preliminary_loading_task(db, alloc)
+    if prelim:
+        result["preliminary_loading_task_key"] = prelim.get("task_key")
     result["quota"] = helper_quota_state(
         db, accurate_po_id=accurate_po_id, accurate_line_id=accurate_line_id
     )
     return result
+
+
+def preliminary_loading_task_key(accurate_po_id: str, accurate_line_id: str) -> str:
+    return build_task_key(
+        PRELIMINARY_LOADING_TASK,
+        "po_line",
+        TaskRef(accurate_po_id=accurate_po_id, accurate_line_id=accurate_line_id),
+    )
+
+
+def _sync_preliminary_loading_task(
+    db: Database, alloc: dict[str, Any]
+) -> dict[str, Any]:
+    """Tugas informatif Loading menunggu SJ — satu per po_line, qty = total cetak.
+
+    Bukan transaksi Loading: tidak menulis loading_events / delivery / stok.
+    Fail-closed diam jika Master task_type belum diaktifkan (rilis dependency).
+    Jika SJ untuk PO+line sudah ada (SJ-before-Print), tautkan segera.
+    """
+    from app.services import delivery_service as delivery
+
+    try:
+        role = master.require_task_type_assigned_role(db, PRELIMINARY_LOADING_TASK)
+    except (LookupError, master.MissingMasterConfigError):
+        return {}
+    accurate_po_id = str(alloc["accurate_po_id"])
+    accurate_line_id = str(alloc["accurate_line_id"])
+    printed = printed_total_for_line(
+        db, accurate_po_id=accurate_po_id, accurate_line_id=accurate_line_id
+    )
+    if printed <= 0:
+        return {}
+    key = preliminary_loading_task_key(accurate_po_id, accurate_line_id)
+    existing = tasks.get_task(db, key)
+    return delivery.upsert_preliminary_loading_for_line(
+        db,
+        accurate_po_id=accurate_po_id,
+        accurate_line_id=accurate_line_id,
+        assigned_role=role,
+        ref=_line_ref(alloc),
+        qty_printed=printed,
+        prev_context=dict((existing or {}).get("context") or {}),
+    )
 
 
 def _sync_qc_task(db: Database, alloc: dict[str, Any]) -> dict[str, Any]:

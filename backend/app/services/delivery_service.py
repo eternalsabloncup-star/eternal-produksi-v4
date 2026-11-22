@@ -24,6 +24,7 @@ from app.services.task_engine import TaskPermissionError, can_act, require_actio
 
 LOADING_TASK = "qty-loading-sj-berbeda"
 LOADING_SJ_TASK = "loading-sj"
+PRELIMINARY_LOADING_TASK = "loading-menunggu-sj"
 DRIVER_TASK = "pengiriman"
 DELIVERY_FAILURE_TASK = "pengiriman-gagal-koordinasi"
 
@@ -122,8 +123,19 @@ def ingest_delivery_note(
         note = result["delivery_note"]
         sj_id = str(note["accurate_sj_id"])
 
-        if not result["source_changed"]:
+        # True no-op: SJ lama tanpa perubahan item/ship_date — jangan ensure ulang.
+        # Insert pertama: source_changed=False (diff vs None kosong) tetapi was_insert=True
+        # → wajib evaluasi ensure_loading_sj_task.
+        if not result["source_changed"] and not result["was_insert"]:
             return {**result, "revision_status": note.get("revision_status")}
+
+        if result["was_insert"] and not result["source_changed"]:
+            loading_task = ensure_loading_sj_task(db, note, session=session)
+            return {
+                **result,
+                "revision_status": note.get("revision_status"),
+                "loading_task_key": (loading_task or {}).get("task_key"),
+            }
 
         delivered = deliveries.has_successful_delivery_event(
             db, sj_id, session=session
@@ -433,6 +445,209 @@ def _assert_loading_assignee(db: Database, user: dict[str, Any], accurate_sj_id:
         )
 
 
+def _loading_sj_task_ready_ids(
+    db: Database,
+    sj_ids: list[str],
+    *,
+    session: Any | None = None,
+    extra_ready_sj_ids: list[str] | None = None,
+) -> list[str]:
+    """SJ yang sudah punya tugas loading-sj valid (bukan sekadar dokumen SJ)."""
+    ready: list[str] = []
+    seen: set[str] = set()
+    for raw in list(extra_ready_sj_ids or []) + list(sj_ids):
+        sj_id = str(raw or "").strip()
+        if not sj_id or sj_id in seen:
+            continue
+        seen.add(sj_id)
+        if tasks.get_task(db, loading_sj_task_key(sj_id), session=session) is None:
+            continue
+        ready.append(sj_id)
+    return ready
+
+
+def _set_preliminary_lifecycle_status(
+    db: Database,
+    task_key: str,
+    *,
+    can_close: bool,
+    session: Any | None = None,
+) -> None:
+    """Selesai informatif hanya jika semua SJ terkait punya loading-sj.
+
+    Tidak menyelesaikan Loading SJ / Driver — hanya menutup tujuan menunggu.
+    """
+    from datetime import datetime, timezone
+
+    status = tasks.TASK_STATUS_DONE if can_close else tasks.TASK_STATUS_OPEN
+    tasks.tasks_collection(db).update_one(
+        {"task_key": task_key},
+        {"$set": {"status": status, "updated_at": datetime.now(timezone.utc)}},
+        session=session,
+    )
+
+
+def upsert_preliminary_loading_for_line(
+    db: Database,
+    *,
+    accurate_po_id: str,
+    accurate_line_id: str,
+    assigned_role: str,
+    ref: TaskRef,
+    qty_printed: float,
+    label: str = "Loading — Menunggu Surat Jalan",
+    prev_context: dict[str, Any] | None = None,
+    extra_links: list[dict[str, str]] | None = None,
+    extra_ready_sj_ids: list[str] | None = None,
+    session: Any | None = None,
+) -> dict[str, Any]:
+    """Upsert tugas menunggu-SJ + tautan SJ (PO+line) + readiness loading-sj.
+
+    SJ_EXISTS ≠ SJ_LOADING_TASK_READY. Preliminary boleh ``selesai`` hanya jika
+    setiap SJ terkait memiliki tugas ``loading-sj``. Tanpa itu tetap visible.
+    """
+    po_id = str(accurate_po_id or "").strip()
+    line_id = str(accurate_line_id or "").strip()
+    prev = dict(prev_context or {})
+    linked_ids = [str(x) for x in (prev.get("linked_sj_ids") or []) if str(x).strip()]
+    linked_nos = [str(x) for x in (prev.get("linked_sj_nos") or []) if str(x).strip()]
+    merged_links = list(
+        deliveries.list_sj_links_for_po_line(
+            db, accurate_po_id=po_id, accurate_line_id=line_id
+        )
+    )
+    for link in extra_links or []:
+        if isinstance(link, dict):
+            merged_links.append(link)
+    for link in merged_links:
+        sj_id = str(link.get("accurate_sj_id") or "").strip()
+        sj_no = str(link.get("sj_no") or "").strip()
+        if sj_id and sj_id not in linked_ids:
+            linked_ids.append(sj_id)
+        if sj_no and sj_no not in linked_nos:
+            linked_nos.append(sj_no)
+
+    waiting_for_sj = len(linked_ids) == 0
+    ready_ids = _loading_sj_task_ready_ids(
+        db,
+        linked_ids,
+        session=session,
+        extra_ready_sj_ids=extra_ready_sj_ids,
+    )
+    ready_set = set(ready_ids)
+    missing_ids = [sj for sj in linked_ids if sj not in ready_set]
+    loading_task_ready = (not waiting_for_sj) and len(missing_ids) == 0
+    can_close = loading_task_ready
+
+    if waiting_for_sj:
+        display = "Menunggu Surat Jalan"
+    elif loading_task_ready:
+        display = "SJ tersedia — konfirmasi pada tugas Loading Surat Jalan"
+    else:
+        display = "SJ tersedia — tugas Loading belum siap"
+
+    ctx: dict[str, Any] = {
+        **prev,
+        "qty_printed": qty_printed,
+        "waiting_for_sj": waiting_for_sj,
+        "sj_available": not waiting_for_sj,
+        "sj_exists": not waiting_for_sj,
+        "loading_task_ready": loading_task_ready,
+        "ready_loading_sj_ids": ready_ids,
+        "missing_loading_sj_ids": missing_ids,
+        "display_status": display,
+        "linked_sj_ids": linked_ids,
+        "linked_sj_nos": linked_nos,
+    }
+    if not waiting_for_sj:
+        ctx["association"] = "line_id_match"
+    key = build_task_key(
+        PRELIMINARY_LOADING_TASK,
+        "po_line",
+        TaskRef(accurate_po_id=po_id, accurate_line_id=line_id),
+    )
+    task = tasks.upsert_task(
+        db,
+        task_type=PRELIMINARY_LOADING_TASK,
+        scope="po_line",
+        assigned_role=assigned_role,
+        ref=ref,
+        qty_target=qty_printed,
+        label=label,
+        context=ctx,
+        session=session,
+    )
+    _set_preliminary_lifecycle_status(
+        db, key, can_close=can_close, session=session
+    )
+    return tasks.get_task(db, key, session=session) or task
+
+
+def _link_preliminary_loading_for_note(
+    db: Database,
+    note: dict[str, Any],
+    *,
+    session: Any | None = None,
+) -> None:
+    """Tautkan tugas menunggu-SJ (po_line) ke SJ lewat accurate_line_id saja.
+
+    Tidak menebak asosiasi dari qty/urutan/nama. Tidak menandai Loading SJ selesai
+    dan tidak memanggil confirm_loading.
+    """
+    po_id = str(note.get("accurate_po_id") or "").strip()
+    if not po_id:
+        return
+    line_ids = sorted(
+        {
+            str(item.get("accurate_line_id") or "").strip()
+            for item in (note.get("items") or [])
+            if isinstance(item, dict) and str(item.get("accurate_line_id") or "").strip()
+        }
+    )
+    sj_id = str(note.get("accurate_sj_id") or "").strip()
+    sj_no = str(note.get("sj_no") or "").strip()
+    extra = (
+        [{"accurate_sj_id": sj_id, "sj_no": sj_no}]
+        if sj_id
+        else []
+    )
+    # loading-sj baru dalam txn yang sama → anggap ready untuk SJ ini.
+    extra_ready = [sj_id] if sj_id else []
+    for line_id in line_ids:
+        key = build_task_key(
+            PRELIMINARY_LOADING_TASK,
+            "po_line",
+            TaskRef(accurate_po_id=po_id, accurate_line_id=line_id),
+        )
+        existing = tasks.get_task(db, key, session=session)
+        if existing is None:
+            continue
+        upsert_preliminary_loading_for_line(
+            db,
+            accurate_po_id=po_id,
+            accurate_line_id=line_id,
+            assigned_role=str(existing.get("assigned_role") or "helper"),
+            ref=TaskRef(
+                accurate_po_id=po_id,
+                accurate_line_id=line_id,
+                po_no=str(
+                    (existing.get("ref") or {}).get("po_no") or note.get("po_no") or ""
+                ),
+                item_code=str((existing.get("ref") or {}).get("item_code") or ""),
+            ),
+            qty_printed=float(
+                (existing.get("context") or {}).get("qty_printed")
+                or existing.get("qty_target")
+                or 0
+            ),
+            label=str(existing.get("label") or "Loading — Menunggu Surat Jalan"),
+            prev_context=dict((existing.get("context") or {})),
+            extra_links=extra,
+            extra_ready_sj_ids=extra_ready,
+            session=session,
+        )
+
+
 def ensure_loading_sj_task(
     db: Database,
     note: dict[str, Any],
@@ -451,7 +666,7 @@ def ensure_loading_sj_task(
         return None
     try:
         role = master.require_task_type_assigned_role(db, LOADING_SJ_TASK)
-    except LookupError:
+    except (LookupError, master.MissingMasterConfigError):
         return None
     ref = _sj_ref(note)
     key = build_task_key(LOADING_SJ_TASK, "delivery_note", ref)
@@ -469,7 +684,7 @@ def ensure_loading_sj_task(
             ctx["assigned_user_email"] = email
         else:
             ctx.pop("assigned_user_email", None)
-    return tasks.upsert_task(
+    task = tasks.upsert_task(
         db,
         task_type=LOADING_SJ_TASK,
         scope="delivery_note",
@@ -479,6 +694,8 @@ def ensure_loading_sj_task(
         context=ctx,
         session=session,
     )
+    _link_preliminary_loading_for_note(db, note, session=session)
+    return task
 
 
 def assign_loading_sj_task(
