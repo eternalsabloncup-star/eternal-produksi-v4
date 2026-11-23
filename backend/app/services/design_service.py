@@ -61,6 +61,74 @@ def _strip_link_secrets(link: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _lock_design_gate_for_new_version(
+    db: Database,
+    *,
+    accurate_po_id: str,
+    version: int,
+    actor_email: str | None,
+) -> dict[str, Any] | None:
+    """Policy A: new design revision locks scheduling until fresh approval.
+
+    Preserves history — does not cancel allocations/tasks/samples.
+    First upload (v1) while already closed stays closed (no spurious history).
+    """
+    ver = int(version)
+    current = gates.get_gates(db, accurate_po_id)
+    design_gate = current.get("design") if isinstance(current.get("design"), dict) else {}
+    state = design_gate.get("state")
+    # v1 + not open → remain closed (awaiting first approval).
+    if ver <= 1 and state != gates.GATE_OPEN:
+        return None
+    reason = (
+        f"Revisi desain v{ver} diunggah — menunggu approval customer."
+        if ver > 1
+        else f"Desain v{ver} diunggah — menunggu approval customer."
+    )
+    return gates.set_gate(
+        db,
+        accurate_po_id=accurate_po_id,
+        gate="design",
+        state=gates.GATE_REVIEW,
+        reason=reason,
+        actor_email=actor_email,
+        detail={
+            "design_version": ver,
+            "decision": "revision_uploaded",
+            "label": "Revisi Diperlukan",
+        },
+    )
+
+
+def _reopen_design_task_for_revision(
+    db: Database,
+    *,
+    accurate_po_id: str,
+    version: int,
+) -> None:
+    design_task = tasks.get_task(db, f"task:design:po:{accurate_po_id}")
+    if design_task is None:
+        return
+    ctx = (
+        design_task.get("context")
+        if isinstance(design_task.get("context"), dict)
+        else {}
+    )
+    tasks.tasks_collection(db).update_one(
+        {"task_key": design_task["task_key"]},
+        {
+            "$set": {
+                "status": tasks.TASK_STATUS_OPEN,
+                "context": {
+                    **ctx,
+                    "revision_uploaded": True,
+                    "latest_design_version": int(version),
+                },
+            }
+        },
+    )
+
+
 def submit_design(
     db: Database,
     user: dict[str, Any],
@@ -93,6 +161,20 @@ def submit_design(
         filename=filename,
         submitted_by=actor,
     )
+    version = int(submission["version"])
+    gate_doc = _lock_design_gate_for_new_version(
+        db,
+        accurate_po_id=accurate_po_id,
+        version=version,
+        actor_email=actor,
+    )
+    if version > 1 or (
+        gate_doc is not None
+        and (gate_doc.get("design") or {}).get("state") == gates.GATE_REVIEW
+    ):
+        _reopen_design_task_for_revision(
+            db, accurate_po_id=accurate_po_id, version=version
+        )
     append_audit_event(
         db,
         action="design.submission.upload",
@@ -100,11 +182,15 @@ def submit_design(
         target_email=None,
         detail={
             "accurate_po_id": accurate_po_id,
-            "version": submission["version"],
+            "version": version,
             "evidence_id": stored["evidence_id"],
+            "design_gate_locked": gate_doc is not None,
         },
     )
-    return {"submission": submission, "evidence": stored}
+    result: dict[str, Any] = {"submission": submission, "evidence": stored}
+    if gate_doc is not None:
+        result["gates"] = gate_doc
+    return result
 
 
 def confirm_design(
@@ -418,15 +504,43 @@ def approve_design(
     if approval.get("duplicate"):
         return {"approval": approval, "duplicate": True, "gates": gates.get_gates(db, accurate_po_id)}
 
-    gate_doc = gates.set_gate(
-        db,
-        accurate_po_id=accurate_po_id,
-        gate="design",
-        state=gates.GATE_OPEN,
-        reason=f"Approval desain v{design_version} oleh {signer_name.strip()}.",
-        actor_email=None,
-        detail={"design_version": design_version, "signer_name": signer_name.strip()},
-    )
+    # Policy A: only the latest submitted version may unlock the design gate.
+    # Older-version approvals remain recorded but cannot reopen scheduling.
+    latest = design.latest_submission(db, accurate_po_id)
+    latest_version = int(latest["version"]) if latest else design_version
+    is_latest = latest is None or latest_version == design_version
+    if is_latest:
+        gate_doc = gates.set_gate(
+            db,
+            accurate_po_id=accurate_po_id,
+            gate="design",
+            state=gates.GATE_OPEN,
+            reason=f"Approval desain v{design_version} oleh {signer_name.strip()}.",
+            actor_email=None,
+            detail={
+                "design_version": design_version,
+                "signer_name": signer_name.strip(),
+            },
+        )
+    else:
+        gate_doc = gates.set_gate(
+            db,
+            accurate_po_id=accurate_po_id,
+            gate="design",
+            state=gates.GATE_REVIEW,
+            reason=(
+                f"Approval v{design_version} dicatat, tetapi versi terbaru "
+                f"v{latest_version} masih menunggu approval."
+            ),
+            actor_email=None,
+            detail={
+                "design_version": design_version,
+                "latest_design_version": latest_version,
+                "signer_name": signer_name.strip(),
+                "decision": "stale_version_approval",
+                "label": "Revisi Diperlukan",
+            },
+        )
     append_audit_event(
         db,
         action="design.approval.customer",
@@ -437,17 +551,25 @@ def approve_design(
             "design_version": design_version,
             "signer_name": signer_name.strip(),
             "signature_evidence_id": stored["evidence_id"],
+            "gate_opened": is_latest,
+            "latest_design_version": latest_version,
         },
     )
 
-    design_task = tasks.get_task(db, f"task:design:po:{accurate_po_id}")
-    if design_task is not None and design_task.get("status") != tasks.TASK_STATUS_DONE:
-        tasks.tasks_collection(db).update_one(
-            {"task_key": design_task["task_key"]},
-            {"$set": {"status": tasks.TASK_STATUS_DONE}},
-        )
+    if is_latest:
+        design_task = tasks.get_task(db, f"task:design:po:{accurate_po_id}")
+        if design_task is not None and design_task.get("status") != tasks.TASK_STATUS_DONE:
+            tasks.tasks_collection(db).update_one(
+                {"task_key": design_task["task_key"]},
+                {"$set": {"status": tasks.TASK_STATUS_DONE}},
+            )
 
-    return {"approval": approval, "duplicate": False, "gates": gate_doc}
+    return {
+        "approval": approval,
+        "duplicate": False,
+        "gates": gate_doc,
+        "gate_opened": is_latest,
+    }
 
 
 def reject_design(

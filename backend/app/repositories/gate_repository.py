@@ -245,11 +245,39 @@ def gate_history(
     )
 
 
+def design_unlocks_scheduling(
+    db: Database, accurate_po_id: str, *, session: Any | None = None
+) -> bool:
+    """Design gate may unlock scheduling only when OPEN and version-fresh.
+
+    Policy A (Owner): every new design revision needs fresh customer approval.
+    - State must be ``open``.
+    - If any design submission exists for the PO, the latest submission version
+      must have a matching ``design_approvals`` row.
+    - No submissions + OPEN preserves Non-Cetak auto-sync exemption
+      (gate opened without customer design file).
+    """
+    gates_doc = get_gates(db, accurate_po_id, session=session)
+    if gates_doc.get("design", {}).get("state") != GATE_OPEN:
+        return False
+
+    from app.repositories import design_repository as design
+
+    latest = design.latest_submission(db, accurate_po_id)
+    if latest is None:
+        return True
+    version = int(latest["version"])
+    approval = design.get_approval(
+        db, accurate_po_id=accurate_po_id, design_version=version
+    )
+    return approval is not None
+
+
 def both_gates_open(
     db: Database, accurate_po_id: str, *, session: Any | None = None
 ) -> bool:
-    gates = get_gates(db, accurate_po_id, session=session)
+    gates_doc = get_gates(db, accurate_po_id, session=session)
     return (
-        gates.get("design", {}).get("state") == GATE_OPEN
-        and gates.get("payment", {}).get("state") == GATE_OPEN
+        design_unlocks_scheduling(db, accurate_po_id, session=session)
+        and gates_doc.get("payment", {}).get("state") == GATE_OPEN
     )
