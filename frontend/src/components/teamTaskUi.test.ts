@@ -546,6 +546,42 @@ describe("filterTasksForActor", () => {
     });
     expect(filtered.map((t) => t.task_key)).toEqual(["load-a"]);
   });
+
+  it("does not hide accepted PO tasks merely because SJ refs exist", () => {
+    // Backend is SoT for PO-accepted; FE must not re-hide on sj_exists.
+    const rows = [
+      task({
+        task_key: "prelim",
+        task_type: "loading-menunggu-sj",
+        status: "belum_dikerjakan",
+        assigned_role: "helper",
+        ref: { accurate_po_id: "PO-1", po_no: "PO-1" },
+        context: {
+          sj_exists: true,
+          waiting_for_sj: false,
+          linked_sj_ids: ["SJ-1"],
+          linked_sj_nos: ["SJ-1"],
+        },
+      }),
+      task({
+        task_key: "load",
+        task_type: "loading-sj",
+        status: "belum_dikerjakan",
+        assigned_role: "helper",
+        ref: {
+          accurate_delivery_note_id: "SJ-1",
+          sj_no: "SJ-1",
+        },
+        context: {},
+      }),
+    ];
+    const filtered = filterTasksForActor(rows, {
+      isSuperAdmin: false,
+      actorEmail: "helper@eternal.local",
+      operationalRole: "helper",
+    });
+    expect(filtered.map((t) => t.task_key)).toEqual(["prelim", "load"]);
+  });
 });
 
 describe("sample ulang labels", () => {

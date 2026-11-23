@@ -2,7 +2,8 @@
  * Agregasi badge Tugas Tim dari task engine (mode API).
  *
  * Source of truth: `GET /api/tasks/open-counts` — total actionable authoritative
- * (branch + Loading-SJ assignee + exclude selesai/cancelled), tanpa cap 1000.
+ * (PO accepted + branch + Loading-SJ assignee + exclude selesai/cancelled),
+ * tanpa cap 1000. FE tidak menghitung ulang acceptance.
  */
 
 import type { TeamTaskRoleId } from "../app/nav";

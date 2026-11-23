@@ -313,7 +313,7 @@ def get_open_task_counts(
     return {
         "counts": counts,
         "source": "mongodb",
-        "accepted_only": False,
+        "accepted_only": True,
         "truncated": False,
     }
 

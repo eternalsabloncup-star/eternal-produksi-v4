@@ -95,24 +95,52 @@ def _insert_task(
     )
 
 
-def _seed_po(db: Database, po_id: str, branch_id: str) -> None:
+def _seed_po(
+    db: Database,
+    po_id: str,
+    branch_id: str,
+    *,
+    accepted: bool = True,
+) -> None:
+    from app.services.po_acceptance import (
+        ACCEPTANCE_ACCEPTED,
+        ACCEPTANCE_PENDING,
+        INBOX_STATUS_ACCEPTED,
+        INBOX_STATUS_NEW,
+    )
+
+    status = ACCEPTANCE_ACCEPTED if accepted else ACCEPTANCE_PENDING
     db["accurate_sales_orders"].insert_one(
         {
             "accurate_id": po_id,
             "branch_id": branch_id,
             "number": po_id,
+            "operational": {
+                "acceptance": {"status": status},
+                "inbox_status": (
+                    INBOX_STATUS_ACCEPTED if accepted else INBOX_STATUS_NEW
+                ),
+            },
         }
     )
 
 
-def _seed_sj(db: Database, sj_id: str, branch_id: str) -> None:
-    db["accurate_delivery_notes"].insert_one(
-        {
-            "accurate_sj_id": sj_id,
-            "branch_id": branch_id,
-            "number": sj_id,
-        }
-    )
+def _seed_sj(
+    db: Database,
+    sj_id: str,
+    branch_id: str,
+    *,
+    accurate_po_id: str | None = "PO-HQ",
+) -> None:
+    doc: dict = {
+        "accurate_sj_id": sj_id,
+        "branch_id": branch_id,
+        "number": sj_id,
+    }
+    if accurate_po_id:
+        doc["accurate_po_id"] = accurate_po_id
+        doc["accurate_po_ids"] = [accurate_po_id]
+    db["accurate_delivery_notes"].insert_one(doc)
 
 
 def test_loading_sj_assignee_visibility_parity() -> None:
@@ -309,7 +337,8 @@ def test_count_zero_and_small(db: Database) -> None:
 
 
 def test_reassignment_updates_both_actors(db: Database) -> None:
-    _seed_sj(db, "SJ-1", BRANCH_HQ)
+    _seed_po(db, "PO-HQ", BRANCH_HQ)
+    _seed_sj(db, "SJ-1", BRANCH_HQ, accurate_po_id="PO-HQ")
     _insert_task(
         db,
         key="load-1",
@@ -371,6 +400,7 @@ def test_open_counts_api_and_six_roles(
     assert res.status_code == 200, res.text
     body = res.json()
     assert body["truncated"] is False
+    assert body["accepted_only"] is True
     assert body["source"] == "mongodb"
     counts = body["counts"]
     # Non-elevated: hanya role akun (anti spoof / info leak antar role).
