@@ -9,7 +9,14 @@ import {
   type TrackingLinkRow,
   type TrackingPayload,
 } from "../../api/tracking";
+import { ConfirmationSuccessOverlay } from "../../components/ConfirmationSuccessOverlay";
 import "../../styles/tracking.css";
+
+type Feedback = {
+  tone: "success" | "error";
+  title: string;
+  message: string;
+};
 
 /** Route kompatibilitas /app/tracking — akses utama via kolom Inbox PO. */
 export function TrackingAdminPage() {
@@ -20,18 +27,30 @@ export function TrackingAdminPage() {
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [copied, setCopied] = useState<string | null>(null);
+  const [feedback, setFeedback] = useState<Feedback | null>(null);
 
   const accurateId = payload?.order.accurate_po_id || poKey.trim();
 
+  function showOk(title: string, message: string) {
+    setFeedback({ tone: "success", title, message });
+  }
+
+  function showFail(message: string) {
+    setError(message);
+    setFeedback({ tone: "error", title: "Gagal", message });
+  }
+
   async function load(id: string) {
+    if (busy) return;
     setBusy(true);
     setError(null);
+    setFeedback(null);
     try {
       const data = await fetchInternalTracking(id);
       setPayload(data);
       setLinks(data.links || []);
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Gagal memuat");
+      showFail(err instanceof Error ? err.message : "Gagal memuat");
       setPayload(null);
       setLinks([]);
     } finally {
@@ -40,57 +59,92 @@ export function TrackingAdminPage() {
   }
 
   async function onGenerate() {
-    if (!accurateId) return;
+    if (!accurateId || busy) return;
     setBusy(true);
     setError(null);
+    setFeedback(null);
     try {
       const gen = await generateTrackingLink(accurateId);
       setLastGenerated(gen);
-      await load(accurateId);
+      showOk("Link dibuat", "Link Live Tracking baru siap. Salin sebelum menutup halaman.");
+      try {
+        await loadQuiet(accurateId);
+      } catch {
+        /* generate sudah sukses — refresh list gagal tidak membatalkan link */
+      }
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Gagal generate");
+      showFail(err instanceof Error ? err.message : "Gagal generate");
     } finally {
       setBusy(false);
     }
   }
 
   async function onRegenerate() {
-    if (!accurateId) return;
+    if (!accurateId || busy) return;
     setBusy(true);
     setError(null);
+    setFeedback(null);
     try {
       const gen = await regenerateTrackingLink(accurateId);
       setLastGenerated(gen);
-      await load(accurateId);
+      showOk("Link diganti", "Link aktif sebelumnya dicabut. Salin link baru sekarang.");
+      try {
+        await loadQuiet(accurateId);
+      } catch {
+        /* regenerate sudah sukses — refresh list gagal tidak membatalkan link */
+      }
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Gagal regenerate");
+      showFail(err instanceof Error ? err.message : "Gagal regenerate");
     } finally {
       setBusy(false);
     }
   }
 
+  /** Reload tanpa menggeser busy flag induk (sudah dipegang caller). */
+  async function loadQuiet(id: string) {
+    const data = await fetchInternalTracking(id);
+    setPayload(data);
+    setLinks(data.links || []);
+  }
+
   async function onRevoke(linkId: string) {
+    if (busy) return;
     setBusy(true);
     setError(null);
+    setFeedback(null);
     try {
       await revokeTrackingLink(linkId, "manual revoke");
-      if (accurateId) await load(accurateId);
+      showOk("Link dicabut", "Link tidak lagi dapat dibuka pelanggan.");
+      if (accurateId) {
+        try {
+          await loadQuiet(accurateId);
+        } catch {
+          /* revoke sudah sukses */
+        }
+      }
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Gagal revoke");
+      showFail(err instanceof Error ? err.message : "Gagal revoke");
     } finally {
       setBusy(false);
     }
   }
 
   async function copyPath(path: string) {
+    if (busy) return;
     const absolute = `${window.location.origin}${path}`;
-    await navigator.clipboard.writeText(absolute);
-    setCopied(absolute);
-    window.setTimeout(() => setCopied(null), 2000);
+    try {
+      await navigator.clipboard.writeText(absolute);
+      setCopied(absolute);
+      showOk("Disalin", "URL Live Tracking ada di clipboard.");
+      window.setTimeout(() => setCopied(null), 2000);
+    } catch {
+      setCopied(absolute);
+      showFail("Clipboard gagal — salin URL secara manual dari kartu link.");
+    }
   }
 
   return (
-    <div className="elt-admin">
+    <div className="elt-admin" data-testid="tracking-admin-page">
       <h1>Live Tracking</h1>
       <p className="muted" style={{ marginTop: 0, color: "var(--elt-muted)" }}>
         Halaman kompatibilitas. Manajemen utama ada di kolom{" "}
@@ -104,20 +158,44 @@ export function TrackingAdminPage() {
           onChange={(e) => setPoKey(e.target.value)}
           placeholder="Accurate PO ID atau nomor PO"
           aria-label="PO ID"
+          disabled={busy}
         />
-        <button type="button" disabled={busy || !poKey.trim()} onClick={() => void load(poKey.trim())}>
-          Lihat
+        <button
+          type="button"
+          disabled={busy || !poKey.trim()}
+          aria-busy={busy}
+          onClick={() => void load(poKey.trim())}
+        >
+          {busy ? "Memuat…" : "Lihat"}
         </button>
-        <button type="button" disabled={busy || !accurateId} onClick={() => void onGenerate()}>
+        <button
+          type="button"
+          disabled={busy || !accurateId}
+          aria-busy={busy}
+          onClick={() => void onGenerate()}
+        >
           Generate
         </button>
-        <button type="button" disabled={busy || !accurateId} onClick={() => void onRegenerate()}>
+        <button
+          type="button"
+          disabled={busy || !accurateId}
+          aria-busy={busy}
+          onClick={() => void onRegenerate()}
+        >
           Regenerate
         </button>
       </div>
 
-      {error ? <p style={{ color: "var(--elt-danger)" }}>{error}</p> : null}
-      {copied ? <p style={{ color: "var(--elt-ok)" }}>Disalin: {copied}</p> : null}
+      {error ? (
+        <p style={{ color: "var(--elt-danger)" }} role="alert">
+          {error}
+        </p>
+      ) : null}
+      {copied ? (
+        <p style={{ color: "var(--elt-ok)" }} role="status">
+          Disalin: {copied}
+        </p>
+      ) : null}
 
       {lastGenerated ? (
         <div className="elt-link-card">
@@ -130,6 +208,7 @@ export function TrackingAdminPage() {
             <button
               type="button"
               className="is-ghost"
+              disabled={busy}
               onClick={() => void copyPath(lastGenerated.path)}
             >
               Salin Link
@@ -178,6 +257,7 @@ export function TrackingAdminPage() {
                       type="button"
                       className="is-danger"
                       disabled={busy}
+                      aria-busy={busy}
                       onClick={() => void onRevoke(link.id)}
                     >
                       Revoke
@@ -203,6 +283,16 @@ export function TrackingAdminPage() {
           ) : null}
         </>
       ) : null}
+
+      <ConfirmationSuccessOverlay
+        open={Boolean(feedback)}
+        global
+        tone={feedback?.tone || "success"}
+        title={feedback?.title || ""}
+        message={feedback?.message || ""}
+        autoCloseMs={feedback?.tone === "success" ? 1800 : 2600}
+        onClose={() => setFeedback(null)}
+      />
     </div>
   );
 }
