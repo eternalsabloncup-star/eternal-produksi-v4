@@ -17,8 +17,25 @@ export function installApiSimulation(): boolean {
 
   const nativeFetch = window.fetch.bind(window);
   window.fetch = (input: RequestInfo | URL, init?: RequestInit) => {
+    const url =
+      typeof input === "string"
+        ? input
+        : input instanceof URL
+          ? input.toString()
+          : input.url;
     const handled = handleSimRequest(input, init, session);
-    if (handled) return Promise.resolve(handled);
+    if (handled) {
+      // Dev-only: delay public approve for SLOW tokens so busy/double-submit is observable.
+      if (
+        /\/api\/public\/design-approval\/[^/]*SLOW[^/]*\/approve/i.test(url) &&
+        String(init?.method || "GET").toUpperCase() === "POST"
+      ) {
+        return new Promise<Response>((resolve) => {
+          setTimeout(() => resolve(handled), 700);
+        });
+      }
+      return Promise.resolve(handled);
+    }
     return nativeFetch(input, init);
   };
 

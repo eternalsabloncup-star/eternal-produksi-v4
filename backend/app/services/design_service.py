@@ -24,9 +24,24 @@ from app.services.task_engine import require_action
 DESIGN_SCOPE = "design"
 SIGNATURE_SCOPE = "design-signature"
 
+# MIME yang boleh dipreview lewat token publik (subset bukti desain).
+PUBLIC_PREVIEW_MIME_TYPES: frozenset[str] = frozenset(
+    {
+        "application/pdf",
+        "image/png",
+        "image/jpeg",
+        "image/jpg",
+        "image/webp",
+    }
+)
+
 
 class DesignStateError(RuntimeError):
     """Aksi desain tidak sah pada state saat ini."""
+
+
+class DesignDecisionConflict(RuntimeError):
+    """Approve/reject bertabrakan dengan keputusan final yang sudah ada."""
 
 
 class DesignLinkRecoveryError(RuntimeError):
@@ -304,21 +319,51 @@ def public_approval_context(
         for i in (header.get("items") or [])
         if isinstance(i, dict) and i.get("process_kind") == "Cetak"
     ]
-    submission = design.latest_submission(db, link["accurate_po_id"]) or {}
+    design_version = int(link["design_version"])
+    submission = (
+        design.get_submission_for_version(
+            db, accurate_po_id=str(link["accurate_po_id"]), version=design_version
+        )
+        or design.latest_submission(db, link["accurate_po_id"])
+        or {}
+    )
     approval = design.get_approval(
         db,
         accurate_po_id=link["accurate_po_id"],
-        design_version=int(link["design_version"]),
+        design_version=design_version,
     )
+    rejected_at = link.get("rejected_at")
+    decision = "pending"
+    if approval is not None:
+        decision = "approved"
+    elif rejected_at is not None:
+        decision = "rejected"
+
+    content_type: str | None = None
+    evidence_id = submission.get("evidence_id")
+    if evidence_id:
+        meta = evidence.get_evidence(db, str(evidence_id))
+        if meta and meta.get("deleted_at") is None:
+            content_type = str(meta.get("content_type") or "") or None
+
+    preview_supported = bool(
+        content_type and content_type.split(";")[0].strip().lower() in PUBLIC_PREVIEW_MIME_TYPES
+    )
+
     return {
         "po_no": po_doc.get("po_no") or header.get("po_no"),
         "customer": header.get("customer"),
-        "design_version": link["design_version"],
+        "design_version": design_version,
         "design_filename": submission.get("filename"),
-        "design_evidence_id": submission.get("evidence_id"),
+        "design_evidence_id": evidence_id,
+        "design_content_type": content_type,
+        "preview_supported": preview_supported,
         "items": print_items,
         "already_approved": approval is not None,
         "approved_at": (approval or {}).get("approved_at"),
+        "decision": decision,
+        "rejected_at": rejected_at,
+        "reject_reason": link.get("reject_reason") if rejected_at else None,
     }
 
 
@@ -333,6 +378,10 @@ def approve_design(
     link = design.find_valid_link(db, raw_token)
     if link is None:
         raise LookupError("Link approval tidak valid atau sudah kedaluwarsa.")
+    if link.get("rejected_at") is not None:
+        raise DesignDecisionConflict(
+            "Desain versi ini sudah ditolak. Unggah revisi dan buat link approval baru."
+        )
     if not signer_name.strip():
         raise ValueError("Nama penanda tangan wajib diisi.")
     if not signature_png:
@@ -399,3 +448,171 @@ def approve_design(
         )
 
     return {"approval": approval, "duplicate": False, "gates": gate_doc}
+
+
+def reject_design(
+    db: Database,
+    *,
+    raw_token: str,
+    reject_reason: str,
+) -> dict[str, Any]:
+    """Tolak desain customer — alasan wajib; tidak membatalkan PO/produksi historis.
+
+    State gate design → ``review`` (Revisi diperlukan). Scheduling tetap terkunci
+    sampai ada approval versi baru. Approval final tidak bisa dibatalkan lewat sini.
+    """
+    reason = (reject_reason or "").strip()
+    if len(reason) < 3:
+        raise ValueError("Alasan penolakan wajib diisi (minimal 3 karakter).")
+    if len(reason) > 500:
+        raise ValueError("Alasan penolakan terlalu panjang.")
+
+    link = design.find_valid_link(db, raw_token)
+    if link is None:
+        raise LookupError("Link approval tidak valid atau sudah kedaluwarsa.")
+
+    accurate_po_id = str(link["accurate_po_id"])
+    design_version = int(link["design_version"])
+
+    existing = design.get_approval(
+        db, accurate_po_id=accurate_po_id, design_version=design_version
+    )
+    if existing is not None:
+        raise DesignDecisionConflict(
+            "Desain versi ini sudah disetujui dan tidak dapat ditolak."
+        )
+
+    if link.get("rejected_at") is not None:
+        return {
+            "rejected": True,
+            "duplicate": True,
+            "design_version": design_version,
+            "reject_reason": link.get("reject_reason"),
+            "rejected_at": link.get("rejected_at"),
+            "gates": gates.get_gates(db, accurate_po_id),
+        }
+
+    claimed = design.claim_link_rejection(
+        db, token_hash=str(link["token_hash"]), reject_reason=reason
+    )
+    if claimed is None:
+        # Race: revoked atau reject lain menang — atau approval baru saja masuk.
+        if design.get_approval(
+            db, accurate_po_id=accurate_po_id, design_version=design_version
+        ):
+            raise DesignDecisionConflict(
+                "Desain versi ini sudah disetujui dan tidak dapat ditolak."
+            )
+        fresh = design.find_valid_link(db, raw_token)
+        if fresh and fresh.get("rejected_at") is not None:
+            return {
+                "rejected": True,
+                "duplicate": True,
+                "design_version": design_version,
+                "reject_reason": fresh.get("reject_reason"),
+                "rejected_at": fresh.get("rejected_at"),
+                "gates": gates.get_gates(db, accurate_po_id),
+            }
+        raise LookupError("Link approval tidak valid atau sudah kedaluwarsa.")
+
+    # Re-check approval setelah klaim (race approve paralel) — approval menang.
+    if design.get_approval(
+        db, accurate_po_id=accurate_po_id, design_version=design_version
+    ):
+        design.links_collection(db).update_one(
+            {"token_hash": str(link["token_hash"])},
+            {"$unset": {"rejected_at": "", "reject_reason": ""}},
+        )
+        raise DesignDecisionConflict(
+            "Desain versi ini sudah disetujui dan tidak dapat ditolak."
+        )
+
+    gate_doc = gates.set_gate(
+        db,
+        accurate_po_id=accurate_po_id,
+        gate="design",
+        state=gates.GATE_REVIEW,
+        reason=f"Revisi diperlukan (v{design_version}): {reason}",
+        actor_email=None,
+        detail={
+            "design_version": design_version,
+            "decision": "rejected",
+            "reject_reason": reason,
+            "label": "Revisi Diperlukan",
+        },
+    )
+    append_audit_event(
+        db,
+        action="design.rejection.customer",
+        actor_email=None,
+        target_email=None,
+        detail={
+            "accurate_po_id": accurate_po_id,
+            "design_version": design_version,
+            "reject_reason": reason,
+        },
+    )
+
+    design_task = tasks.get_task(db, f"task:design:po:{accurate_po_id}")
+    if design_task is not None:
+        ctx = design_task.get("context") if isinstance(design_task.get("context"), dict) else {}
+        tasks.tasks_collection(db).update_one(
+            {"task_key": design_task["task_key"]},
+            {
+                "$set": {
+                    "status": tasks.TASK_STATUS_OPEN,
+                    "context": {
+                        **ctx,
+                        "revision_required": True,
+                        "reject_reason": reason,
+                        "rejected_design_version": design_version,
+                    },
+                }
+            },
+        )
+
+    return {
+        "rejected": True,
+        "duplicate": False,
+        "design_version": design_version,
+        "reject_reason": reason,
+        "rejected_at": claimed.get("rejected_at"),
+        "gates": gate_doc,
+    }
+
+
+def resolve_public_design_evidence(
+    db: Database, *, raw_token: str
+) -> tuple[dict[str, Any], Any]:
+    """Stream bukti desain untuk token publik — ownership ketat ke versi link."""
+    link = design.find_valid_link(db, raw_token)
+    if link is None:
+        raise LookupError("Link approval tidak valid atau sudah kedaluwarsa.")
+
+    accurate_po_id = str(link["accurate_po_id"])
+    design_version = int(link["design_version"])
+    submission = design.get_submission_for_version(
+        db, accurate_po_id=accurate_po_id, version=design_version
+    )
+    if submission is None:
+        raise LookupError("File desain tidak ditemukan untuk versi link ini.")
+
+    evidence_id = str(submission.get("evidence_id") or "").strip()
+    if not evidence_id:
+        raise LookupError("File desain tidak ditemukan untuk versi link ini.")
+
+    meta = evidence.get_evidence(db, evidence_id)
+    if meta is None or meta.get("deleted_at") is not None:
+        raise LookupError("Bukti desain tidak tersedia.")
+    if str(meta.get("scope")) != DESIGN_SCOPE:
+        raise DesignStateError("Bukti bukan file desain.")
+    if str(meta.get("scope_id")) != accurate_po_id:
+        raise DesignStateError("Bukti di luar scope PO yang diminta.")
+
+    content_type = str(meta.get("content_type") or "application/octet-stream")
+    mime = content_type.split(";")[0].strip().lower()
+    if mime not in PUBLIC_PREVIEW_MIME_TYPES:
+        raise DesignStateError("Tipe file tidak didukung untuk preview publik.")
+
+    _doc, stream = evidence.open_evidence_stream(db, evidence_id)
+    return meta, stream

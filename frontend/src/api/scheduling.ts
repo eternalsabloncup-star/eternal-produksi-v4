@@ -236,11 +236,16 @@ export async function reviseAllocationQty(
   );
 }
 
+export type PublicApprovalDecision = "pending" | "approved" | "rejected";
+
 export type PublicApprovalContext = {
   po_no: string;
   customer: string;
   design_version: number;
-  design_filename: string;
+  design_filename: string | null;
+  design_evidence_id?: string | null;
+  design_content_type?: string | null;
+  preview_supported?: boolean;
   items: {
     item_name: string;
     item_code: string;
@@ -249,7 +254,15 @@ export type PublicApprovalContext = {
     color: string;
   }[];
   already_approved: boolean;
+  approved_at?: string | null;
+  decision?: PublicApprovalDecision;
+  rejected_at?: string | null;
+  reject_reason?: string | null;
 };
+
+export function publicDesignEvidenceUrl(token: string): string {
+  return `/api/public/design-approval/${encodeURIComponent(token)}/evidence`;
+}
 
 export async function fetchPublicApproval(
   token: string,
@@ -283,4 +296,27 @@ export async function submitPublicApproval(
     throw new SchedulingApiError(err.message, res.status, err.code);
   }
   return (await res.json()) as { duplicate: boolean };
+}
+
+export async function submitPublicRejection(
+  token: string,
+  rejectReason: string,
+): Promise<{ rejected: boolean; duplicate: boolean; reject_reason?: string }> {
+  const res = await fetch(
+    `/api/public/design-approval/${encodeURIComponent(token)}/reject`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ reject_reason: rejectReason }),
+    },
+  );
+  if (!res.ok) {
+    const err = await readError(res);
+    throw new SchedulingApiError(err.message, res.status, err.code);
+  }
+  return (await res.json()) as {
+    rejected: boolean;
+    duplicate: boolean;
+    reject_reason?: string;
+  };
 }

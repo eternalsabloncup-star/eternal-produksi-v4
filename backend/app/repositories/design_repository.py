@@ -218,6 +218,9 @@ def create_approval_link(
         "expires_at": now + timedelta(hours=ttl_hours),
         "used_at": None,
         "revoked_at": None,
+        # Aditif M7.1 — CAS reject memakai rejected_at=None (tanpa indeks baru).
+        "rejected_at": None,
+        "reject_reason": None,
     }
     if token_ciphertext:
         doc["token_ciphertext"] = token_ciphertext
@@ -306,4 +309,45 @@ def get_approval(
     _ensure_once(db)
     return approvals_collection(db).find_one(
         {"accurate_po_id": accurate_po_id, "design_version": design_version}, {"_id": 0}
+    )
+
+
+def claim_link_rejection(
+    db: Database,
+    *,
+    token_hash: str,
+    reject_reason: str,
+) -> dict[str, Any] | None:
+    """CAS: tandai link ditolak hanya jika belum rejected/revoked.
+
+    Field aditif pada dokumen link (tanpa indeks baru). Mengembalikan None
+    jika klaim kalah (sudah rejected / revoked / tidak ditemukan).
+    """
+    _ensure_once(db)
+    now = datetime.now(timezone.utc)
+    return links_collection(db).find_one_and_update(
+        {
+            "token_hash": token_hash,
+            "rejected_at": None,
+            "revoked_at": None,
+        },
+        {
+            "$set": {
+                "rejected_at": now,
+                "reject_reason": reject_reason.strip(),
+                "used_at": now,
+            }
+        },
+        projection={"_id": 0},
+        return_document=ReturnDocument.AFTER,
+    )
+
+
+def get_submission_for_version(
+    db: Database, *, accurate_po_id: str, version: int
+) -> dict[str, Any] | None:
+    _ensure_once(db)
+    return submissions_collection(db).find_one(
+        {"accurate_po_id": accurate_po_id, "version": int(version)},
+        {"_id": 0},
     )
