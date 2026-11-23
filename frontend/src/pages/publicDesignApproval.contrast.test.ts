@@ -30,6 +30,9 @@ describe("public Design Approval contrast + preview contract", () => {
     expect(pageSource).toMatch(/if \(submitting\) return/);
     expect(pageSource).toMatch(/design-reject-panel/);
     expect(pageSource).toMatch(/Pastikan desain, warna, dan informasi produk/);
+    expect(pageSource).toMatch(/is-danger-solid/);
+    expect(cssSource).not.toMatch(/\.ep-reject-panel[\s\S]*position:\s*sticky/);
+    expect(cssSource).toMatch(/\.ep-reject-panel[\s\S]*background:\s*#f7faf8/);
   });
 
   it("reuses PDF.js for in-app PDF preview without new tab", () => {

@@ -105,8 +105,21 @@ export function DesignApprovalPage() {
 
   useEffect(() => {
     if (!showReject) return;
+    // Bring whole reject card into view (actions included) — natural scroll, no sticky.
     rejectPanelRef.current?.scrollIntoView({ behavior: "smooth", block: "nearest" });
   }, [showReject]);
+
+  function onRejectReasonFocus() {
+    // Soft-keyboard shrinks visual viewport — scroll so submit/batal stay reachable.
+    window.setTimeout(() => {
+      const panel = rejectPanelRef.current;
+      if (!panel) return;
+      const submit = panel.querySelector(
+        '[data-testid="design-reject-submit"]',
+      ) as HTMLElement | null;
+      (submit || panel).scrollIntoView({ behavior: "smooth", block: "nearest" });
+    }, 180);
+  }
 
   function pos(e: React.PointerEvent<HTMLCanvasElement>) {
     const canvas = canvasRef.current;
@@ -423,22 +436,16 @@ export function DesignApprovalPage() {
                   id="reject-reason"
                   value={rejectReason}
                   onChange={(e) => setRejectReason(e.target.value)}
+                  onFocus={onRejectReasonFocus}
                   disabled={submitting}
                   maxLength={500}
                   placeholder="Contoh: warna tidak sesuai brief"
                   aria-required="true"
                 />
+                <div className="ep-reject-meta" aria-live="polite">
+                  {rejectReason.length} / 500
+                </div>
                 <div className="ep-public-actions">
-                  <button
-                    type="button"
-                    className={`ep-btn is-danger-outline${submitting ? " is-busy" : ""}`}
-                    data-testid="design-reject-submit"
-                    disabled={submitting}
-                    aria-busy={submitting}
-                    onClick={() => void onReject()}
-                  >
-                    {submitting ? "Mengirim…" : "Kirim Penolakan"}
-                  </button>
                   <button
                     type="button"
                     className="ep-btn"
@@ -446,6 +453,16 @@ export function DesignApprovalPage() {
                     onClick={() => setShowReject(false)}
                   >
                     Batal
+                  </button>
+                  <button
+                    type="button"
+                    className={`ep-btn is-danger-solid${submitting ? " is-busy" : ""}`}
+                    data-testid="design-reject-submit"
+                    disabled={submitting}
+                    aria-busy={submitting}
+                    onClick={() => void onReject()}
+                  >
+                    {submitting ? "Mengirim…" : "Kirim Penolakan"}
                   </button>
                 </div>
               </div>
