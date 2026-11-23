@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import {
   createAllocations,
   fetchPoSchedule,
@@ -119,6 +119,9 @@ export function TeamTaskSchedulingForm({
   const [reviseQty, setReviseQty] = useState("");
   const [reviseReason, setReviseReason] = useState("");
   const [reviseError, setReviseError] = useState<string | null>(null);
+  /** Mobile: form collapsed until shortcut / validation needs it. */
+  const [allocFormOpen, setAllocFormOpen] = useState(false);
+  const allocFormRef = useRef<HTMLDivElement | null>(null);
 
   const poId = task.ref.accurate_po_id;
 
@@ -392,6 +395,14 @@ export function TeamTaskSchedulingForm({
     return () => onRegisterDesignOpen?.(null);
   }, [onRegisterDesignOpen, onOpenDesign]);
 
+  useEffect(() => {
+    if (!mobileSheet || !canAllocate) return;
+    const anyAlloc = lines.some((l) => l.allocations.length > 0);
+    if (!anyAlloc && line && line.qty_unallocated > 0) {
+      setAllocFormOpen(true);
+    }
+  }, [mobileSheet, canAllocate, lines, line]);
+
   const isReschedule = task.task_type === "penjadwalan-ulang";
   const usableOperators =
     operatorsState.status === "ok" ? operatorsState.items : [];
@@ -455,6 +466,29 @@ export function TeamTaskSchedulingForm({
               >
                 Lihat Design
               </button>
+              {canAllocate && line && line.qty_unallocated > 0 ? (
+                <button
+                  type="button"
+                  className="ep-btn primary sm"
+                  data-testid="sched-open-alloc-form"
+                  title="Buka form tambah alokasi"
+                  onClick={() => {
+                    setAllocFormOpen(true);
+                    requestAnimationFrame(() => {
+                      allocFormRef.current?.scrollIntoView({
+                        behavior: "smooth",
+                        block: "nearest",
+                      });
+                      const first = allocFormRef.current?.querySelector(
+                        "select, input",
+                      ) as HTMLElement | null;
+                      first?.focus();
+                    });
+                  }}
+                >
+                  Tambah Alokasi
+                </button>
+              ) : null}
             </div>
           ) : null}
 
@@ -818,8 +852,10 @@ export function TeamTaskSchedulingForm({
 
           {canAllocate && line && line.qty_unallocated > 0 ? (
             <>
-              <p className="ep-sectionlabel">Tambah Alokasi</p>
-              {operatorsLoading ? (
+              {!mobileSheet || allocFormOpen ? (
+                <p className="ep-sectionlabel">Tambah Alokasi</p>
+              ) : null}
+              {operatorsLoading && (!mobileSheet || allocFormOpen) ? (
                 <p
                   className="ep-notice ep-notice-compact"
                   data-testid="sched-op-loading"
@@ -827,14 +863,21 @@ export function TeamTaskSchedulingForm({
                   Memuat daftar operator…
                 </p>
               ) : null}
-              {operatorsError ? (
+              {operatorsError && (!mobileSheet || allocFormOpen) ? (
                 <p className="ep-error" role="alert" data-testid="sched-op-blocker">
                   {operatorsError}
                 </p>
               ) : null}
+              {mobileSheet && !allocFormOpen ? (
+                <p className="ep-notice ep-notice-compact">
+                  Form alokasi tersedia lewat tombol Tambah Alokasi di atas.
+                </p>
+              ) : null}
               <div
+                ref={allocFormRef}
                 className="ep-sched-form-grid"
                 data-testid="sched-alloc-form"
+                hidden={mobileSheet && !allocFormOpen}
               >
                 <label className="ep-sched-field">
                   <span>Nama Barang</span>

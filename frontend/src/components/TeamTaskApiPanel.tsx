@@ -45,6 +45,7 @@ import { DEFAULT_TABLE_PAGE_SIZE } from "./DataTable/Pagination";
 import type { ColumnDef } from "./DataTable/types";
 import { DesignWorkflowPanel } from "./DesignWorkflowPanel";
 import { EvidenceContentPreview } from "./EvidenceContentPreview";
+import { MobileFilePicker } from "./MobileFilePicker";
 import {
   CollapsibleTaskSection,
   WorkSheetCard,
@@ -1826,13 +1827,25 @@ export function TeamTaskApiPanel({
                     </div>
                   ) : canAct(SAMPLE_UPLOAD_TASK, "input") ||
                     canAct(SAMPLE_UPLOAD_TASK, "confirm") ? (
-                    <div className="ep-filterbar">
-                      <input
-                        ref={fileRef}
-                        type="file"
-                        aria-label="File sampel"
-                        accept="image/png,image/jpeg,image/webp,application/pdf"
-                      />
+                    <div
+                      className={`ep-filterbar${pwaOps ? " ep-ws-upload-row" : ""}`}
+                    >
+                      {pwaOps ? (
+                        <MobileFilePicker
+                          inputRef={fileRef}
+                          ariaLabel="File sampel"
+                          accept="image/png,image/jpeg,image/webp,application/pdf"
+                          disabled={busy}
+                          testId="sample-file-picker"
+                        />
+                      ) : (
+                        <input
+                          ref={fileRef}
+                          type="file"
+                          aria-label="File sampel"
+                          accept="image/png,image/jpeg,image/webp,application/pdf"
+                        />
+                      )}
                       <button
                         type="button"
                         className="ep-btn secondary"
@@ -2303,7 +2316,10 @@ export function TeamTaskApiPanel({
                           {!pwaOps ? null : (
                             <p className="ep-sectionlabel">Pengiriman Berhasil</p>
                           )}
-                          <div className="ep-filterbar">
+                          <div
+                            className={`ep-filterbar${pwaOps ? " ep-ws-upload-row" : ""}`}
+                            data-testid="driver-success-fields"
+                          >
                             <label htmlFor="recipient-name">Nama penerima</label>
                             <input
                               id="recipient-name"
@@ -2311,14 +2327,36 @@ export function TeamTaskApiPanel({
                               onChange={(e) =>
                                 setRecipientName(e.target.value)
                               }
+                              onFocus={(e) => {
+                                if (!pwaOps) return;
+                                const el = e.currentTarget;
+                                requestAnimationFrame(() => {
+                                  el.scrollIntoView({
+                                    behavior: "smooth",
+                                    block: "center",
+                                  });
+                                });
+                              }}
                             />
-                            <input
-                              ref={photosRef}
-                              type="file"
-                              multiple
-                              aria-label="Foto bukti pengiriman"
-                              accept="image/png,image/jpeg,image/webp"
-                            />
+                            {pwaOps ? (
+                              <MobileFilePicker
+                                inputRef={photosRef}
+                                multiple
+                                ariaLabel="Foto bukti pengiriman"
+                                accept="image/png,image/jpeg,image/webp"
+                                disabled={busy}
+                                testId="driver-photo-picker"
+                                buttonLabel="Pilih Foto"
+                              />
+                            ) : (
+                              <input
+                                ref={photosRef}
+                                type="file"
+                                multiple
+                                aria-label="Foto bukti pengiriman"
+                                accept="image/png,image/jpeg,image/webp"
+                              />
+                            )}
                           </div>
                           <div
                             className="ep-signature-wrap"
