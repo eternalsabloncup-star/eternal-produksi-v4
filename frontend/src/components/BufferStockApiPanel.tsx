@@ -197,13 +197,16 @@ export function BufferStockApiPanel() {
               </span>
             );
           }
-          if (typeof v === "number" && v < 0) {
+          if (
+            (typeof v === "number" && v < 0) ||
+            r.ready_mismatch === true
+          ) {
             return (
               <span
                 className="ep-text-danger"
-                title="Ketidaksesuaian: qty terkirim > qty cetak"
+                title="Ketidaksesuaian: qty terkirim > qty cetak (bukan inventori fiktif)"
               >
-                {num(v)}
+                {typeof v === "number" ? num(v) : String(v)}
               </span>
             );
           }
