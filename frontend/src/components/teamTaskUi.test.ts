@@ -162,6 +162,75 @@ describe("teamTaskUi labels & scheduling", () => {
     ).toBe("Nama barang belum tersedia");
   });
 
+  it("QC packing resolves Nama Barang from ref.item_name (authoritative line)", () => {
+    expect(
+      taskItemDisplayName(
+        task({
+          task_key: "qc1",
+          task_type: "qc-packing",
+          status: "belum_dikerjakan",
+          ref: {
+            accurate_po_id: "10001",
+            accurate_line_id: "L-100",
+            item_code: "CUP-12OZ",
+            item_name: "Cup 12oz Cetak",
+          },
+        }),
+      ),
+    ).toBe("Cup 12oz Cetak");
+  });
+
+  it("multi-item lines keep distinct names by accurate_line_id", () => {
+    const rows = taskItemLines(
+      task({
+        task_key: "multi",
+        task_type: "loading-sj",
+        status: "belum_dikerjakan",
+        item_lines: [
+          {
+            accurate_line_id: "L-100",
+            item_name: "Cup 12oz Cetak",
+            qty: 2000,
+            unit: "PCS",
+          },
+          {
+            accurate_line_id: "L-301",
+            item_name: "Lid 16oz Non-Cetak",
+            qty: 1000,
+            unit: "PCS",
+          },
+        ],
+        ref: {},
+      }),
+    );
+    expect(rows.map((r) => r.itemName)).toEqual([
+      "Cup 12oz Cetak",
+      "Lid 16oz Non-Cetak",
+    ]);
+    expect(rows.map((r) => r.accurateLineId)).toEqual(["L-100", "L-301"]);
+  });
+
+  it("skips item_lines rows without item_name (no invent)", () => {
+    expect(
+      taskItemLines(
+        task({
+          task_key: "sparse",
+          task_type: "qc-packing",
+          status: "belum_dikerjakan",
+          item_lines: [
+            {
+              accurate_line_id: "L-100",
+              item_name: "",
+              qty: 1,
+              unit: "PCS",
+            },
+          ],
+          ref: { accurate_line_id: "L-100", item_code: "CUP" },
+        }),
+      ),
+    ).toEqual([]);
+  });
+
   it("Designer PO-scoped multi-item names stay compact multiline", () => {
     const design = task({
       task_key: "design-1",

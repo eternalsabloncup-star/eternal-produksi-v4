@@ -10,7 +10,13 @@ import {
   WorkflowApiError,
 } from "../api/workflow";
 import { ConfirmationSuccessOverlay } from "./ConfirmationSuccessOverlay";
+import {
+  WorkSheetCard,
+  WorkSheetKvGroup,
+  WorkSheetStackRow,
+} from "./compactTaskSheet";
 import { EvidenceContentPreview } from "./EvidenceContentPreview";
+import { MobileFilePicker } from "./MobileFilePicker";
 
 type Props = {
   accuratePoId: string;
@@ -162,7 +168,7 @@ export function DesignWorkflowPanel({
       const path = customerApprovalPath(res.token);
       setApprovalUrl(path);
       showOk(
-        `Link approval dibuat untuk desain v${res.link.design_version}. Salin URL sekarang — token hanya ditampilkan sekali.`,
+        `Link approval dibuat untuk desain v${res.link.design_version}. Salin URL sekarang: token hanya ditampilkan sekali.`,
       );
       await load();
       onChanged?.();
@@ -214,31 +220,38 @@ export function DesignWorkflowPanel({
       {!loading && state ? (
         <>
           {compact ? (
-            <div className="ep-design-status-strip" data-testid="design-status-strip">
-              <div className="ep-design-status-item">
-                <span className="ep-design-status-lbl">Gate Design</span>
-                <strong>{gateLabel(designGate, designGateReason)}</strong>
-              </div>
-              <div className="ep-design-status-item">
-                <span className="ep-design-status-lbl">Versi terbaru</span>
-                <strong>
-                  {latest
-                    ? `v${latest.version} · ${latest.filename || "file"}${
-                        latest.confirmed_at
-                          ? " · dikonfirmasi"
-                          : " · menunggu konfirmasi"
-                      }`
-                    : "Belum ada submission"}
-                </strong>
-              </div>
-              <div className="ep-design-status-item is-wide">
-                <span className="ep-design-status-lbl">Approval customer</span>
-                <strong>
-                  {state.approval
-                    ? `Disetujui ${state.approval.signer_name || ""} (${state.approval.approved_at || ""})`
-                    : "Belum ada"}
-                </strong>
-              </div>
+            <div
+              className="ep-ws-stack-list"
+              data-testid="design-status-strip"
+            >
+              <WorkSheetCard testId="design-status-card">
+                <WorkSheetKvGroup>
+                  <WorkSheetStackRow
+                    label="Gate Design"
+                    value={gateLabel(designGate, designGateReason)}
+                  />
+                  <WorkSheetStackRow
+                    label="Versi terbaru"
+                    value={
+                      latest
+                        ? `v${latest.version} · ${latest.filename || "file"}${
+                            latest.confirmed_at
+                              ? " · dikonfirmasi"
+                              : " · menunggu konfirmasi"
+                          }`
+                        : "Belum ada submission"
+                    }
+                  />
+                  <WorkSheetStackRow
+                    label="Approval customer"
+                    value={
+                      state.approval
+                        ? `Disetujui ${state.approval.signer_name || ""} (${state.approval.approved_at || ""})`
+                        : "Belum ada"
+                    }
+                  />
+                </WorkSheetKvGroup>
+              </WorkSheetCard>
             </div>
           ) : (
             <dl className="ep-kv">
@@ -264,12 +277,22 @@ export function DesignWorkflowPanel({
           )}
 
           <div className="ep-filterbar ep-design-actions">
-            <input
-              ref={fileRef}
-              type="file"
-              aria-label="File desain"
-              accept="application/pdf,image/png,image/jpeg,image/webp"
-            />
+            {compact ? (
+              <MobileFilePicker
+                inputRef={fileRef}
+                ariaLabel="File desain"
+                accept="application/pdf,image/png,image/jpeg,image/webp"
+                disabled={busy}
+                testId="design-file-picker"
+              />
+            ) : (
+              <input
+                ref={fileRef}
+                type="file"
+                aria-label="File desain"
+                accept="application/pdf,image/png,image/jpeg,image/webp"
+              />
+            )}
             <button
               type="button"
               className={`ep-btn primary${busy ? " is-busy" : ""}`}
@@ -334,48 +357,118 @@ export function DesignWorkflowPanel({
 
           <p className="ep-sectionlabel ep-design-history-label">Riwayat file</p>
           {state.submissions.length > 0 ? (
-            <div
-              className={`ep-tblscroll${compact ? " ep-tblscroll-embed" : ""}`}
-            >
-              <table className="ep-table">
-                <thead>
-                  <tr>
-                    <th>Versi</th>
-                    <th>File</th>
-                    <th>Diunggah</th>
-                    <th>Dikonfirmasi</th>
-                    <th>Bukti</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {state.submissions.map((s) => (
-                    <tr key={s.version}>
-                      <td>{s.version}</td>
-                      <td>{s.filename || "—"}</td>
-                      <td>{s.submitted_by || "—"}</td>
-                      <td>{s.confirmed_at ? s.confirmed_by || "ya" : "—"}</td>
-                      <td>
-                        {s.evidence_id ? (
-                          <button
-                            type="button"
-                            className="ep-btn sm"
-                            data-testid="design-preview-btn"
-                            onClick={() => {
-                              setPreviewEvidenceId(s.evidence_id || null);
-                              setPreviewFilename(s.filename || null);
-                            }}
-                          >
-                            Preview
-                          </button>
-                        ) : (
-                          "—"
-                        )}
-                      </td>
+            compact ? (
+              <div
+                className="ep-ws-stack-list"
+                data-testid="design-history-cards"
+              >
+                {state.submissions.map((s) => (
+                  <WorkSheetCard
+                    key={s.version}
+                    testId="design-history-card"
+                  >
+                    <div className="ep-ws-sample-head">
+                      <span className="ep-ws-sample-ver">v{s.version}</span>
+                      <span
+                        className={
+                          s.confirmed_at
+                            ? "ep-task-status is-selesai"
+                            : "ep-task-status is-wait"
+                        }
+                      >
+                        {s.confirmed_at ? "Dikonfirmasi" : "Menunggu konfirmasi"}
+                      </span>
+                    </div>
+                    <WorkSheetKvGroup>
+                      <WorkSheetStackRow
+                        label="File"
+                        value={
+                          <span title={s.filename || undefined}>
+                            {s.filename || "—"}
+                          </span>
+                        }
+                      />
+                      <WorkSheetStackRow
+                        label="Diunggah"
+                        value={s.submitted_by || "—"}
+                      />
+                      {s.submitted_at ? (
+                        <WorkSheetStackRow
+                          label="Waktu unggah"
+                          value={s.submitted_at}
+                        />
+                      ) : null}
+                      <WorkSheetStackRow
+                        label="Dikonfirmasi"
+                        value={
+                          s.confirmed_at
+                            ? s.confirmed_by || "ya"
+                            : "Belum"
+                        }
+                      />
+                    </WorkSheetKvGroup>
+                    {s.evidence_id ? (
+                      <div className="ep-ws-card-actions">
+                        <button
+                          type="button"
+                          className="ep-btn sm"
+                          data-testid="design-preview-btn"
+                          onClick={() => {
+                            setPreviewEvidenceId(s.evidence_id || null);
+                            setPreviewFilename(s.filename || null);
+                          }}
+                        >
+                          Preview
+                        </button>
+                      </div>
+                    ) : null}
+                  </WorkSheetCard>
+                ))}
+              </div>
+            ) : (
+              <div className="ep-tblscroll">
+                <table className="ep-table">
+                  <thead>
+                    <tr>
+                      <th>Versi</th>
+                      <th>File</th>
+                      <th>Diunggah</th>
+                      <th>Dikonfirmasi</th>
+                      <th>Bukti</th>
                     </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
+                  </thead>
+                  <tbody>
+                    {state.submissions.map((s) => (
+                      <tr key={s.version}>
+                        <td>{s.version}</td>
+                        <td>{s.filename || "—"}</td>
+                        <td>{s.submitted_by || "—"}</td>
+                        <td>
+                          {s.confirmed_at ? s.confirmed_by || "ya" : "—"}
+                        </td>
+                        <td>
+                          {s.evidence_id ? (
+                            <button
+                              type="button"
+                              className="ep-btn sm"
+                              data-testid="design-preview-btn"
+                              onClick={() => {
+                                setPreviewEvidenceId(s.evidence_id || null);
+                                setPreviewFilename(s.filename || null);
+                              }}
+                            >
+                              Preview
+                            </button>
+                          ) : (
+                            "—"
+                          )}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )
           ) : (
             <p className="ep-empty ep-empty-inline">
               Belum ada file desain untuk PO ini.

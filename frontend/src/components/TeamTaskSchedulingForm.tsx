@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import {
   createAllocations,
   fetchPoSchedule,
@@ -16,6 +16,12 @@ import {
 } from "../api/workflow";
 import { newIdempotencyKey, type OperationalTask } from "../api/operational";
 import { formatDateDisplay } from "../lib/formatDate";
+import { useMobileOpsActive } from "../mobile/MobileOpsContext";
+import {
+  WorkSheetCard,
+  WorkSheetKvGroup,
+  WorkSheetStackRow,
+} from "./compactTaskSheet";
 import {
   operatorCandidateLabel,
   operatorsBlockerMessage,
@@ -23,6 +29,7 @@ import {
   operatorsLoadFromSuccess,
   type OperatorsLoadState,
 } from "./schedulingOperators";
+import { allocCardNeedsItemIdentity } from "./teamTaskDedupe";
 import {
   allocationCanReviseQty,
   allocationReviseBounds,
@@ -84,6 +91,7 @@ export function TeamTaskSchedulingForm({
   onChanged,
   onRegisterDesignOpen,
 }: Props) {
+  const mobileSheet = useMobileOpsActive();
   const [lines, setLines] = useState<LineSchedule[]>([]);
   const [lineId, setLineId] = useState(task.ref.accurate_line_id || "");
   const [line, setLine] = useState<LineSchedule | null>(null);
@@ -111,6 +119,9 @@ export function TeamTaskSchedulingForm({
   const [reviseQty, setReviseQty] = useState("");
   const [reviseReason, setReviseReason] = useState("");
   const [reviseError, setReviseError] = useState<string | null>(null);
+  /** Mobile: form collapsed until shortcut / validation needs it. */
+  const [allocFormOpen, setAllocFormOpen] = useState(false);
+  const allocFormRef = useRef<HTMLDivElement | null>(null);
 
   const poId = task.ref.accurate_po_id;
 
@@ -250,7 +261,7 @@ export function TeamTaskSchedulingForm({
         scheduleDate.trim(),
       );
       const msg = res.duplicate
-        ? "Perintah sama sudah tercatat — jadwal tidak digandakan."
+        ? "Perintah sama sudah tercatat: jadwal tidak digandakan."
         : `Alokasi ${res.allocations[0]?.allocation_id || ""} tersimpan.`;
       onNotice(msg);
       onSuccess(msg);
@@ -384,6 +395,14 @@ export function TeamTaskSchedulingForm({
     return () => onRegisterDesignOpen?.(null);
   }, [onRegisterDesignOpen, onOpenDesign]);
 
+  useEffect(() => {
+    if (!mobileSheet || !canAllocate) return;
+    const anyAlloc = lines.some((l) => l.allocations.length > 0);
+    if (!anyAlloc && line && line.qty_unallocated > 0) {
+      setAllocFormOpen(true);
+    }
+  }, [mobileSheet, canAllocate, lines, line]);
+
   const isReschedule = task.task_type === "penjadwalan-ulang";
   const usableOperators =
     operatorsState.status === "ok" ? operatorsState.items : [];
@@ -436,78 +455,277 @@ export function TeamTaskSchedulingForm({
       ) : null}
       {lines.length > 0 || line ? (
         <>
+          {mobileSheet ? (
+            <div className="ep-ws-sched-toolbar">
+              <button
+                type="button"
+                className="ep-btn secondary sm ep-btn-design"
+                data-testid="sched-view-design-body"
+                title="Lihat desain PO aktif"
+                onClick={() => onOpenDesign()}
+              >
+                Lihat Design
+              </button>
+              {canAllocate && line && line.qty_unallocated > 0 ? (
+                <button
+                  type="button"
+                  className="ep-btn primary sm"
+                  data-testid="sched-open-alloc-form"
+                  title="Buka form tambah alokasi"
+                  onClick={() => {
+                    setAllocFormOpen(true);
+                    requestAnimationFrame(() => {
+                      allocFormRef.current?.scrollIntoView({
+                        behavior: "smooth",
+                        block: "nearest",
+                      });
+                      const first = allocFormRef.current?.querySelector(
+                        "select, input",
+                      ) as HTMLElement | null;
+                      first?.focus();
+                    });
+                  }}
+                >
+                  Tambah Alokasi
+                </button>
+              ) : null}
+            </div>
+          ) : null}
+
           <p className="ep-sectionlabel">Item Cetak</p>
-          <div
-            className="ep-sched-items-scroll"
-            data-testid="sched-items-scroll"
-          >
-            <table
-              className="ep-table ep-table-compact ep-sched-items-table"
-              data-testid="sched-items-table"
+          {mobileSheet ? (
+            <div
+              className="ep-ws-stack-list"
+              data-testid="sched-items-cards"
             >
-              <colgroup>
-                <col className="ep-sched-col-name" />
-                <col className="ep-sched-col-qty" />
-                <col className="ep-sched-col-qty" />
-                <col className="ep-sched-col-qty" />
-                <col className="ep-sched-col-qty" />
-              </colgroup>
-              <thead>
-                <tr>
-                  <th scope="col">Nama Barang</th>
-                  <th scope="col">Qty PO</th>
-                  <th scope="col">
-                    Qty Alokasi
-                    <br />
-                    Aktif
-                  </th>
-                  <th scope="col">
-                    Qty Belum
-                    <br />
-                    Dialokasikan
-                  </th>
-                  <th scope="col">
-                    Qty Cetak
-                    <br />
-                    Terkonfirmasi
-                  </th>
-                </tr>
-              </thead>
-              <tbody>
-                {lines.map((l) => (
-                  <tr
-                    key={l.accurate_line_id}
-                    className={
-                      l.accurate_line_id === lineId ? "is-active-line" : undefined
-                    }
+              {lines.map((l) => (
+                <WorkSheetCard
+                  key={l.accurate_line_id}
+                  className={
+                    l.accurate_line_id === lineId ? "is-active-line" : undefined
+                  }
+                  testId="sched-item-card"
+                >
+                  <button
+                    type="button"
+                    className="ep-ws-sched-item-pick"
                     onClick={() => setLineId(l.accurate_line_id)}
                   >
-                    <td>
-                      <span
-                        className="ep-sched-item-name"
-                        data-testid="sched-item-name"
-                      >
-                        {itemNameForLine(l)}
-                      </span>
-                      <span className="ep-sched-item-code">
-                        {l.accurate_line_id}
-                      </span>
-                    </td>
-                    <td className="ep-num">{qty(l.qty_target)}</td>
-                    <td className="ep-num">{qty(l.qty_allocated)}</td>
-                    <td className="ep-num">{qty(l.qty_unallocated)}</td>
-                    <td className="ep-num">{qty(l.qty_printed)}</td>
+                    <span
+                      className="ep-sched-item-name"
+                      data-testid="sched-item-name"
+                    >
+                      {itemNameForLine(l)}
+                    </span>
+                    <span className="ep-sched-item-code">
+                      {l.accurate_line_id}
+                    </span>
+                  </button>
+                  <WorkSheetKvGroup>
+                    <WorkSheetStackRow
+                      label="Qty PO"
+                      value={
+                        <span className="ep-num">{qty(l.qty_target)}</span>
+                      }
+                    />
+                    <WorkSheetStackRow
+                      label="Qty Alokasi Aktif"
+                      value={
+                        <span className="ep-num">{qty(l.qty_allocated)}</span>
+                      }
+                    />
+                    <WorkSheetStackRow
+                      label="Qty Belum Dialokasikan"
+                      value={
+                        <span className="ep-num">{qty(l.qty_unallocated)}</span>
+                      }
+                    />
+                    <WorkSheetStackRow
+                      label="Qty Cetak Terkonfirmasi"
+                      value={
+                        <span className="ep-num">{qty(l.qty_printed)}</span>
+                      }
+                    />
+                  </WorkSheetKvGroup>
+                </WorkSheetCard>
+              ))}
+            </div>
+          ) : (
+            <div
+              className="ep-sched-items-scroll"
+              data-testid="sched-items-scroll"
+            >
+              <table
+                className="ep-table ep-table-compact ep-sched-items-table"
+                data-testid="sched-items-table"
+              >
+                <colgroup>
+                  <col className="ep-sched-col-name" />
+                  <col className="ep-sched-col-qty" />
+                  <col className="ep-sched-col-qty" />
+                  <col className="ep-sched-col-qty" />
+                  <col className="ep-sched-col-qty" />
+                </colgroup>
+                <thead>
+                  <tr>
+                    <th scope="col">Nama Barang</th>
+                    <th scope="col">Qty PO</th>
+                    <th scope="col">
+                      Qty Alokasi
+                      <br />
+                      Aktif
+                    </th>
+                    <th scope="col">
+                      Qty Belum
+                      <br />
+                      Dialokasikan
+                    </th>
+                    <th scope="col">
+                      Qty Cetak
+                      <br />
+                      Terkonfirmasi
+                    </th>
                   </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
+                </thead>
+                <tbody>
+                  {lines.map((l) => (
+                    <tr
+                      key={l.accurate_line_id}
+                      className={
+                        l.accurate_line_id === lineId
+                          ? "is-active-line"
+                          : undefined
+                      }
+                      onClick={() => setLineId(l.accurate_line_id)}
+                    >
+                      <td>
+                        <span
+                          className="ep-sched-item-name"
+                          data-testid="sched-item-name"
+                        >
+                          {itemNameForLine(l)}
+                        </span>
+                        <span className="ep-sched-item-code">
+                          {l.accurate_line_id}
+                        </span>
+                      </td>
+                      <td className="ep-num">{qty(l.qty_target)}</td>
+                      <td className="ep-num">{qty(l.qty_allocated)}</td>
+                      <td className="ep-num">{qty(l.qty_unallocated)}</td>
+                      <td className="ep-num">{qty(l.qty_printed)}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
 
           <p className="ep-sectionlabel ep-sched-section-title">
             Daftar Alokasi
           </p>
           {lines.every((l) => l.allocations.length === 0) ? (
             <p className="ep-empty ep-empty-inline">Belum ada alokasi.</p>
+          ) : mobileSheet ? (
+            <div
+              className="ep-ws-stack-list"
+              data-testid="sched-alloc-cards"
+            >
+              {lines.flatMap((l) =>
+                l.allocations.map((a) => (
+                  <WorkSheetCard
+                    key={a.allocation_id}
+                    testId="sched-alloc-card"
+                  >
+                    <WorkSheetKvGroup>
+                      <WorkSheetStackRow
+                        label="Operator"
+                        value={
+                          <span
+                            title={
+                              (a.operator_display_name || "").trim() ||
+                              "Nama belum tersedia"
+                            }
+                          >
+                            {operatorLabel(a)}
+                          </span>
+                        }
+                      />
+                      {allocCardNeedsItemIdentity(lines.length) ? (
+                        <WorkSheetStackRow
+                          label="Item"
+                          value={
+                            <>
+                              <span className="ep-sched-item-name">
+                                {itemNameForLine(l)}
+                              </span>
+                              <span className="ep-sched-item-code">
+                                {a.accurate_line_id}
+                              </span>
+                            </>
+                          }
+                        />
+                      ) : null}
+                      <WorkSheetStackRow
+                        label="Qty Alokasi"
+                        value={<span className="ep-num">{qty(a.qty)}</span>}
+                      />
+                      <WorkSheetStackRow
+                        label="Tanggal Pengerjaan"
+                        value={formatDateDisplay(a.schedule_date) || "—"}
+                      />
+                      <WorkSheetStackRow
+                        label="Warna Cetak"
+                        value={a.print_color?.trim() || "—"}
+                      />
+                      <WorkSheetStackRow
+                        label="Jenis Screen"
+                        value={a.screen_kind?.trim() || "—"}
+                      />
+                      <WorkSheetStackRow
+                        label="Qty Cetak"
+                        value={
+                          <span className="ep-num">
+                            {qty(a.qty_printed || 0)}
+                          </span>
+                        }
+                      />
+                      <WorkSheetStackRow
+                        label="Status"
+                        value={
+                          <span className={allocStatusClass(a.status)}>
+                            {allocStatusLabel(a.status)}
+                          </span>
+                        }
+                      />
+                    </WorkSheetKvGroup>
+                    <div className="ep-ws-card-actions">
+                      {canRevise && allocationCanReviseQty(a) ? (
+                        <button
+                          type="button"
+                          className="ep-btn sm"
+                          disabled={busy}
+                          title={`Ubah Qty · ${a.allocation_id}`}
+                          onClick={() => openRevise(a, l)}
+                        >
+                          Ubah Qty
+                        </button>
+                      ) : canRevise ? (
+                        <button
+                          type="button"
+                          className="ep-btn sm"
+                          disabled
+                          title="Alokasi tidak dapat direvisi"
+                        >
+                          Ubah Qty
+                        </button>
+                      ) : (
+                        <span className="ep-muted">—</span>
+                      )}
+                    </div>
+                  </WorkSheetCard>
+                )),
+              )}
+            </div>
           ) : (
             <div className="ep-sched-alloc-scroll">
               <table
@@ -634,8 +852,10 @@ export function TeamTaskSchedulingForm({
 
           {canAllocate && line && line.qty_unallocated > 0 ? (
             <>
-              <p className="ep-sectionlabel">Tambah Alokasi</p>
-              {operatorsLoading ? (
+              {!mobileSheet || allocFormOpen ? (
+                <p className="ep-sectionlabel">Tambah Alokasi</p>
+              ) : null}
+              {operatorsLoading && (!mobileSheet || allocFormOpen) ? (
                 <p
                   className="ep-notice ep-notice-compact"
                   data-testid="sched-op-loading"
@@ -643,14 +863,21 @@ export function TeamTaskSchedulingForm({
                   Memuat daftar operator…
                 </p>
               ) : null}
-              {operatorsError ? (
+              {operatorsError && (!mobileSheet || allocFormOpen) ? (
                 <p className="ep-error" role="alert" data-testid="sched-op-blocker">
                   {operatorsError}
                 </p>
               ) : null}
+              {mobileSheet && !allocFormOpen ? (
+                <p className="ep-notice ep-notice-compact">
+                  Form alokasi tersedia lewat tombol Tambah Alokasi di atas.
+                </p>
+              ) : null}
               <div
+                ref={allocFormRef}
                 className="ep-sched-form-grid"
                 data-testid="sched-alloc-form"
+                hidden={mobileSheet && !allocFormOpen}
               >
                 <label className="ep-sched-field">
                   <span>Nama Barang</span>
