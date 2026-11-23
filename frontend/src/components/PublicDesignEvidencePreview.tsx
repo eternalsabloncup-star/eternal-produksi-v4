@@ -15,6 +15,7 @@ type Props = {
   title: string;
   filename?: string | null;
   contentType?: string | null;
+  designVersion?: number | null;
   onClose: () => void;
 };
 
@@ -34,9 +35,11 @@ export function PublicDesignEvidencePreview({
   title,
   filename,
   contentType,
+  designVersion,
   onClose,
 }: Props) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
+  const frameRef = useRef<HTMLDivElement>(null);
   const docRef = useRef<PDFDocumentProxy | null>(null);
   const blobUrlRef = useRef<string | null>(null);
   const [loading, setLoading] = useState(false);
@@ -53,7 +56,12 @@ export function PublicDesignEvidencePreview({
       if (e.key === "Escape") onClose();
     }
     window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
+    const prevOverflow = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    return () => {
+      window.removeEventListener("keydown", onKey);
+      document.body.style.overflow = prevOverflow;
+    };
   }, [open, onClose]);
 
   useEffect(() => {
@@ -64,6 +72,7 @@ export function PublicDesignEvidencePreview({
     setImageUrl(null);
     setPage(1);
     setPageCount(0);
+    setScale(1.1);
     docRef.current = null;
 
     void (async () => {
@@ -147,7 +156,23 @@ export function PublicDesignEvidencePreview({
     };
   }, [open, pdfMode, page, scale, pageCount]);
 
+  async function fitToWidth() {
+    if (!docRef.current || !frameRef.current) return;
+    try {
+      const pdfPage = await docRef.current.getPage(page);
+      const base = pdfPage.getViewport({ scale: 1 });
+      const avail = Math.max(120, frameRef.current.clientWidth - 24);
+      const next = Math.min(2.4, Math.max(0.6, avail / base.width));
+      setScale(Number(next.toFixed(2)));
+    } catch {
+      /* keep current scale */
+    }
+  }
+
   if (!open) return null;
+
+  const versionLabel =
+    designVersion != null ? ` · versi ${designVersion}` : "";
 
   return (
     <div
@@ -167,7 +192,10 @@ export function PublicDesignEvidencePreview({
         <div className="ep-modal-head ep-pdf-head">
           <div>
             <h2>{title}</h2>
-            <div className="ep-modal-submeta">{filename || "—"}</div>
+            <div className="ep-modal-submeta">
+              {filename || "—"}
+              {versionLabel}
+            </div>
           </div>
           <button type="button" className="ep-btn sm" onClick={onClose}>
             Tutup
@@ -208,6 +236,15 @@ export function PublicDesignEvidencePreview({
             >
               Zoom +
             </button>
+            <button
+              type="button"
+              className="ep-btn sm"
+              data-testid="design-preview-fit"
+              disabled={!pageCount}
+              onClick={() => void fitToWidth()}
+            >
+              Muat lebar
+            </button>
           </div>
         ) : null}
         <div className="ep-modal-body">
@@ -218,7 +255,7 @@ export function PublicDesignEvidencePreview({
             </p>
           ) : null}
           {!loading && !error ? (
-            <div className="ep-public-preview-frame">
+            <div className="ep-public-preview-frame" ref={frameRef}>
               {pdfMode ? (
                 <div className="ep-pdf-canvas-wrap">
                   <canvas ref={canvasRef} className="ep-pdf-canvas" />

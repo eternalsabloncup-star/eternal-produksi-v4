@@ -261,6 +261,30 @@ export function handleSimRequest(
       return json({ detail: "Link approval tidak valid atau sudah kedaluwarsa." }, 404);
     }
     if (parts[4] === "evidence" && method === "GET") {
+      const wantPdf = tokenPart.toUpperCase().includes("PDF");
+      if (wantPdf) {
+        // Minimal 1-page PDF fixture for PDF.js smoke (DEV sim only).
+        const pdfStr = [
+          "%PDF-1.1",
+          "1 0 obj<< /Type /Catalog /Pages 2 0 R >>endobj",
+          "2 0 obj<< /Type /Pages /Kids [3 0 R] /Count 1 >>endobj",
+          "3 0 obj<< /Type /Page /Parent 2 0 R /MediaBox [0 0 300 200] /Contents 4 0 R /Resources<< /Font<< /F1 5 0 R >> >> >>endobj",
+          "4 0 obj<< /Length 55 >>stream",
+          "BT /F1 18 Tf 40 140 Td (Eternal Design) Tj ET",
+          "endstream",
+          "endobj",
+          "5 0 obj<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>endobj",
+          "trailer<< /Root 1 0 R >>",
+          "%%EOF",
+        ].join("\n");
+        return new Response(new TextEncoder().encode(pdfStr), {
+          status: 200,
+          headers: {
+            "Content-Type": "application/pdf",
+            "Cache-Control": "private, no-store",
+          },
+        });
+      }
       // 320×180 solid #1a4d3e PNG — visible in-app preview smoke (DEV sim only).
       const png = Uint8Array.from(
         atob(
@@ -277,6 +301,9 @@ export function handleSimRequest(
       });
     }
     if (parts[4] === "approve" && method === "POST") {
+      if (tokenPart.toUpperCase().includes("ERROR")) {
+        return json({ detail: "Sim error — gagal menyimpan approval." }, 500);
+      }
       return json({
         approval: { design_version: 1, signer_name: "Sim Customer" },
         duplicate: false,
@@ -295,13 +322,15 @@ export function handleSimRequest(
       });
     }
     if (method === "GET" && parts.length === 4) {
+      const wantPdf = tokenPart.toUpperCase().includes("PDF");
+      const rejected = tokenPart.toUpperCase().includes("REJECT");
       return json({
         po_no: PO_NO,
         customer: "PT Contoh Kemasan",
         design_version: 1,
-        design_filename: "desain-cup.png",
-        design_evidence_id: "evid:design:sim:v1",
-        design_content_type: "image/png",
+        design_filename: wantPdf ? "desain-cup.pdf" : "desain-cup.png",
+        design_evidence_id: wantPdf ? "evid:design:sim:pdf" : "evid:design:sim:v1",
+        design_content_type: wantPdf ? "application/pdf" : "image/png",
         preview_supported: true,
         items: [
           {
@@ -314,9 +343,13 @@ export function handleSimRequest(
         ],
         already_approved: tokenPart.toUpperCase().includes("APPR"),
         approved_at: null,
-        decision: tokenPart.toUpperCase().includes("APPR") ? "approved" : "pending",
-        rejected_at: null,
-        reject_reason: null,
+        decision: tokenPart.toUpperCase().includes("APPR")
+          ? "approved"
+          : rejected
+            ? "rejected"
+            : "pending",
+        rejected_at: rejected ? "2026-11-23T10:00:00Z" : null,
+        reject_reason: rejected ? "Warna tidak sesuai" : null,
       });
     }
   }

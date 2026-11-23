@@ -26,8 +26,10 @@ describe("DesignApprovalPage signature contract", () => {
   it("scopes public contrast styles and exposes reject + preview", () => {
     expect(source).toMatch(/publicDesignApproval\.css/);
     expect(source).toMatch(/ep-public-approval/);
-    expect(source).toMatch(/Tolak Desain/);
+    expect(source).toMatch(/Tolak &amp; Minta Revisi|Tolak & Minta Revisi/);
+    expect(source).toMatch(/Setujui Desain/);
     expect(source).toMatch(/PublicDesignEvidencePreview/);
     expect(source).toMatch(/submitPublicRejection/);
+    expect(source).toMatch(/ep-public-approval-shell/);
   });
 });

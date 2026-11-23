@@ -1,25 +1,90 @@
 /**
- * Scoped public Design Approval — dark page + readable shell widgets.
+ * Scoped public Design Approval — Eternal dark-green identity.
  * Do not alter global AppShell theme tokens.
  */
+
 .ep-public-approval {
-  color: var(--ink, #f3f0e7);
+  color: #f3f0e7;
 }
 
-.ep-public-approval h2 {
-  color: var(--ink, #f3f0e7);
+.ep-public-approval-shell {
+  width: 100%;
+  max-width: 960px;
+  margin: 0 auto;
+  padding: 1rem 1.1rem 2.25rem;
+  box-sizing: border-box;
+}
+
+.ep-public-approval-brand {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  flex-wrap: wrap;
+  margin-bottom: 1rem;
+  padding-bottom: 0.85rem;
+  border-bottom: 1px solid rgba(243, 240, 231, 0.16);
+}
+
+.ep-public-approval-brand-logo {
+  height: 28px;
+  width: auto;
+  max-width: min(180px, 55vw);
+  object-fit: contain;
+}
+
+.ep-public-status {
+  display: inline-flex;
+  align-items: center;
+  min-height: 32px;
+  padding: 0.25rem 0.7rem;
+  border-radius: 999px;
+  border: 1px solid rgba(243, 240, 231, 0.28);
+  background: rgba(15, 28, 23, 0.55);
+  color: #e8eee9;
+  font-size: 0.82rem;
+  font-weight: 650;
+  letter-spacing: 0.01em;
+}
+
+.ep-public-status.is-approved {
+  border-color: rgba(95, 186, 140, 0.55);
+  color: #c8f0d8;
+}
+
+.ep-public-status.is-rejected {
+  border-color: rgba(224, 122, 106, 0.6);
+  color: #ffd4cc;
+}
+
+.ep-public-approval h1.ep-public-title {
+  margin: 0 0 0.35rem;
+  font-size: clamp(1.35rem, 2.4vw, 1.75rem);
+  font-weight: 750;
+  letter-spacing: 0.01em;
+  color: #f7faf8;
+  line-height: 1.25;
 }
 
 .ep-public-approval .muted,
 .ep-public-approval .ep-public-meta {
-  color: var(--muted, #b7c4bc);
+  color: #b7c4bc;
+}
+
+.ep-public-ref {
+  margin: 0 0 1rem;
+  color: #b7c4bc;
+  font-size: 0.95rem;
+  line-height: 1.45;
 }
 
 .ep-public-approval .ep-table {
+  width: 100%;
   background: rgba(15, 28, 23, 0.55);
-  border: 1px solid rgba(243, 240, 231, 0.18);
+  border: 1px solid rgba(243, 240, 231, 0.2);
   border-radius: 8px;
-  overflow: hidden;
+  overflow: auto;
+  margin: 0 0 1rem;
 }
 
 .ep-public-approval .ep-table th {
@@ -27,6 +92,7 @@
   color: #f7faf8;
   font-weight: 700;
   border-color: rgba(243, 240, 231, 0.2);
+  white-space: nowrap;
 }
 
 .ep-public-approval .ep-table td {
@@ -35,23 +101,64 @@
   background: transparent;
 }
 
+.ep-public-preview-card {
+  margin: 0 0 1.15rem;
+  padding: 1rem 1.05rem;
+  border: 1px solid rgba(243, 240, 231, 0.22);
+  border-radius: 10px;
+  background: rgba(15, 28, 23, 0.5);
+}
+
+.ep-public-preview-card strong {
+  display: block;
+  margin-bottom: 0.3rem;
+  color: #f7faf8;
+  font-size: 1.02rem;
+}
+
+.ep-public-preview-card .ep-public-meta {
+  display: block;
+  margin-bottom: 0.85rem;
+  line-height: 1.4;
+}
+
+.ep-public-preview-card .ep-btn.primary {
+  min-height: 44px;
+  min-width: 160px;
+  padding-inline: 1.1rem;
+}
+
+.ep-public-explain {
+  margin: 0 0 1.15rem;
+  padding: 0.85rem 0.95rem;
+  border-left: 3px solid rgba(196, 163, 90, 0.75);
+  background: rgba(15, 28, 23, 0.4);
+  color: #e8eee9;
+  font-size: 0.95rem;
+  line-height: 1.5;
+}
+
 .ep-public-approval .ep-approval-form label,
 .ep-public-approval .ep-signature-label {
+  display: block;
   color: #e8eee9;
   font-weight: 650;
+  margin-bottom: 0.3rem;
 }
 
 .ep-public-approval .ep-approval-form input#signer {
   width: 100%;
-  max-width: 420px;
+  max-width: 560px;
   display: block;
-  margin: 0.35rem 0 0.85rem;
-  padding: 0.65rem 0.75rem;
-  border: 1px solid rgba(243, 240, 231, 0.28);
+  margin: 0 0 1rem;
+  padding: 0.7rem 0.8rem;
+  min-height: 44px;
+  border: 1px solid rgba(243, 240, 231, 0.32);
   border-radius: 8px;
   background: rgba(255, 255, 255, 0.96);
   color: #14241c;
   font: inherit;
+  box-sizing: border-box;
 }
 
 .ep-public-approval .ep-approval-form input#signer:focus {
@@ -59,34 +166,45 @@
   outline-offset: 1px;
 }
 
+.ep-public-approval .ep-signature-wrap {
+  width: 100%;
+  max-width: 560px;
+  margin-bottom: 0.85rem;
+}
+
 .ep-public-approval .ep-signature {
-  border-color: rgba(243, 240, 231, 0.35);
-}
-
-.ep-public-approval .ep-public-file {
-  margin: 0.75rem 0 1rem;
-  padding: 0.75rem 0.9rem;
-  border: 1px solid rgba(243, 240, 231, 0.2);
-  border-radius: 8px;
-  background: rgba(15, 28, 23, 0.45);
-}
-
-.ep-public-approval .ep-public-file strong {
   display: block;
-  margin-bottom: 0.35rem;
+  width: 100%;
+  max-width: 100%;
+  height: 140px;
+  border: 1px solid rgba(243, 240, 231, 0.38);
+  border-radius: 8px;
+  background: #fff;
+  touch-action: none;
+  cursor: crosshair;
 }
 
-.ep-public-approval .ep-public-actions {
+.ep-public-actions {
   display: flex;
   flex-wrap: wrap;
-  gap: 0.5rem;
-  margin-top: 0.5rem;
+  gap: 0.55rem;
+  margin-top: 0.35rem;
+  align-items: stretch;
+}
+
+.ep-public-actions .ep-btn {
+  min-height: 44px;
+  padding-inline: 0.95rem;
+}
+
+.ep-public-actions .ep-btn.primary {
+  flex: 1 1 180px;
 }
 
 .ep-public-approval .ep-btn.is-danger-outline {
   background: transparent;
   color: #ffc9c0;
-  border: 1px solid rgba(224, 122, 106, 0.75);
+  border: 1px solid rgba(224, 122, 106, 0.8);
 }
 
 .ep-public-approval .ep-btn.is-danger-outline:hover:not(:disabled) {
@@ -95,23 +213,37 @@
 
 .ep-public-approval .ep-reject-panel {
   margin-top: 1rem;
-  padding: 0.9rem;
-  border: 1px solid rgba(224, 122, 106, 0.45);
-  border-radius: 8px;
-  background: rgba(40, 18, 16, 0.55);
+  padding: 0.95rem;
+  border: 1px solid rgba(224, 122, 106, 0.5);
+  border-radius: 10px;
+  background: rgba(40, 18, 16, 0.62);
+  scroll-margin-bottom: 1.5rem;
 }
 
 .ep-public-approval .ep-reject-panel textarea {
   width: 100%;
-  min-height: 88px;
-  margin: 0.4rem 0 0.75rem;
-  padding: 0.65rem 0.75rem;
+  min-height: 96px;
+  max-height: 180px;
+  margin: 0.35rem 0 0.75rem;
+  padding: 0.7rem 0.75rem;
   border-radius: 8px;
   border: 1px solid rgba(243, 240, 231, 0.28);
   background: rgba(255, 255, 255, 0.96);
   color: #14241c;
   font: inherit;
   resize: vertical;
+  box-sizing: border-box;
+}
+
+.ep-public-approval .ep-reject-panel .ep-public-actions {
+  position: sticky;
+  bottom: 0;
+  padding-top: 0.25rem;
+  background: linear-gradient(
+    180deg,
+    rgba(40, 18, 16, 0) 0%,
+    rgba(40, 18, 16, 0.92) 28%
+  );
 }
 
 .ep-public-approval .ep-notice.is-rejected {
@@ -119,18 +251,27 @@
   color: #ffd4cc;
 }
 
-/* Modal is portaled in-tree under .ep-public-approval — reset ink for light shell. */
+.ep-public-approval .ep-error {
+  margin-top: 0.75rem;
+}
+
+/* Preview modal — light shell under dark public page */
 .ep-public-preview-shade {
   z-index: 80;
+  overscroll-behavior: contain;
 }
 
 .ep-public-preview-shade .ep-modal {
   color: #14241c;
   background: #f7faf8;
+  width: min(920px, calc(100vw - 1.25rem));
+  max-height: min(92dvh, 920px);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
 }
 
 .ep-public-preview-shade .ep-modal h2,
-.ep-public-preview-shade .ep-modal-submeta,
 .ep-public-preview-shade .ep-pdf-page {
   color: #14241c;
 }
@@ -143,9 +284,25 @@
   color: #3d5248;
 }
 
+.ep-public-preview-shade .ep-modal-body {
+  overflow: auto;
+  -webkit-overflow-scrolling: touch;
+  flex: 1 1 auto;
+  min-height: 0;
+}
+
+.ep-public-preview-shade .ep-pdf-toolbar {
+  flex-wrap: wrap;
+  gap: 0.35rem;
+}
+
+.ep-public-preview-shade .ep-pdf-toolbar .ep-btn {
+  min-height: 40px;
+}
+
 .ep-public-preview-frame {
-  min-height: 280px;
-  max-height: min(70vh, 720px);
+  min-height: 240px;
+  max-height: none;
   overflow: auto;
   background: #0b1511;
   border-radius: 8px;
@@ -154,12 +311,38 @@
 .ep-public-preview-frame img {
   display: block;
   max-width: 100%;
+  width: 100%;
   height: auto;
   margin: 0 auto;
+  object-fit: contain;
 }
 
 .ep-public-preview-frame .ep-pdf-canvas-wrap {
   display: flex;
   justify-content: center;
   padding: 0.75rem;
+}
+
+.ep-public-preview-frame .ep-pdf-canvas {
+  max-width: 100%;
+  height: auto;
+}
+
+@media (max-width: 640px) {
+  .ep-public-approval-shell {
+    padding: 0.85rem 0.8rem 2rem;
+  }
+
+  .ep-public-actions .ep-btn.primary,
+  .ep-public-actions .ep-btn.is-danger-outline {
+    flex: 1 1 100%;
+  }
+
+  .ep-public-approval .ep-signature-wrap {
+    max-width: 100%;
+  }
+
+  .ep-public-approval .ep-approval-form input#signer {
+    max-width: 100%;
+  }
 }
