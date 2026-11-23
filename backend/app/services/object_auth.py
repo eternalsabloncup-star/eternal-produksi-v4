@@ -226,20 +226,108 @@ def is_actionable_open_task(task: dict[str, Any] | None) -> bool:
     return True
 
 
+def resolve_task_source_po_ids(
+    db: Database,
+    task: dict[str, Any],
+    *,
+    sj_cache: dict[str, dict[str, Any] | None] | None = None,
+) -> list[str]:
+    """Kumpulkan PO sumber tugas (ref + context + parent SJ). Dedup urut."""
+    from app.repositories import delivery_repository as deliveries
+
+    ref = task.get("ref") if isinstance(task.get("ref"), dict) else {}
+    ctx = task.get("context") if isinstance(task.get("context"), dict) else {}
+    found: list[str] = []
+
+    po_id = str(ref.get("accurate_po_id") or "").strip()
+    if po_id:
+        found.append(po_id)
+
+    ctx_ids = ctx.get("accurate_po_ids")
+    if isinstance(ctx_ids, list):
+        for raw in ctx_ids:
+            text = str(raw or "").strip()
+            if text:
+                found.append(text)
+
+    sj_id = str(ref.get("accurate_delivery_note_id") or "").strip()
+    if sj_id:
+        cache = sj_cache if sj_cache is not None else {}
+        if sj_id not in cache:
+            cache[sj_id] = deliveries.get_delivery_note(db, sj_id)
+        for parent in deliveries.note_parent_po_ids(cache[sj_id]):
+            found.append(parent)
+
+    return list(dict.fromkeys(found))
+
+
+def task_has_po_source_ref(task: dict[str, Any] | None) -> bool:
+    """True bila tugas mengklaim sumber PO dan/atau SJ (bukan tugas tanpa dokumen)."""
+    if not isinstance(task, dict):
+        return False
+    ref = task.get("ref") if isinstance(task.get("ref"), dict) else {}
+    ctx = task.get("context") if isinstance(task.get("context"), dict) else {}
+    if str(ref.get("accurate_po_id") or "").strip():
+        return True
+    if str(ref.get("accurate_delivery_note_id") or "").strip():
+        return True
+    ctx_ids = ctx.get("accurate_po_ids")
+    if isinstance(ctx_ids, list) and any(str(x or "").strip() for x in ctx_ids):
+        return True
+    return False
+
+
+def task_source_po_accepted(
+    db: Database,
+    task: dict[str, Any],
+    *,
+    po_cache: dict[str, dict[str, Any] | None] | None = None,
+    sj_cache: dict[str, dict[str, Any] | None] | None = None,
+) -> bool:
+    """Gate visibilitas: tugas berbasis PO/SJ hanya bila SEMUA parent PO accepted.
+
+    Sumber otoritatif: ``operational.acceptance.status == accepted``.
+    Keberadaan SJ tidak menyembunyikan tugas bila PO sudah accepted.
+    Fail-closed: klaim sumber PO/SJ tetapi parent tidak ter-resolve → sembunyikan.
+    Tugas tanpa ref PO/SJ → tidak digate (bukan PO-based).
+    """
+    from app.repositories.po_repository import get_by_accurate_id
+    from app.services.po_acceptance import is_po_accepted
+
+    if not task_has_po_source_ref(task):
+        return True
+    po_ids = resolve_task_source_po_ids(db, task, sj_cache=sj_cache)
+    if not po_ids:
+        return False
+    cache = po_cache if po_cache is not None else {}
+    for po_id in po_ids:
+        if po_id not in cache:
+            cache[po_id] = get_by_accurate_id(db, po_id)
+        if not is_po_accepted(cache[po_id]):
+            return False
+    return True
+
+
 def filter_tasks_for_actor(
     db: Database,
     user: dict[str, Any],
     items: list[dict[str, Any]],
 ) -> list[dict[str, Any]]:
-    """Filter cabang + visibility Loading-SJ assignee (selaras panel FE)."""
+    """Filter PO-accepted + cabang + visibility Loading-SJ assignee."""
     from app.repositories import delivery_repository as deliveries
     from app.repositories.po_repository import get_by_accurate_id
 
     elevated = is_super_admin(user.get("role")) or has_operations_full(user)
     out: list[dict[str, Any]] = []
     all_branches = bypasses_branch(user)
+    po_cache: dict[str, dict[str, Any] | None] = {}
+    sj_cache: dict[str, dict[str, Any] | None] = {}
 
     for task in items:
+        if not task_source_po_accepted(
+            db, task, po_cache=po_cache, sj_cache=sj_cache
+        ):
+            continue
         if not loading_sj_visible_to_actor(user, task):
             continue
         if elevated or all_branches:
@@ -247,12 +335,16 @@ def filter_tasks_for_actor(
             continue
         ref = task.get("ref") if isinstance(task.get("ref"), dict) else {}
         scope_obj: dict[str, Any] | None = None
-        sj_id = ref.get("accurate_delivery_note_id")
-        po_id = ref.get("accurate_po_id")
+        sj_id = str(ref.get("accurate_delivery_note_id") or "").strip()
+        po_id = str(ref.get("accurate_po_id") or "").strip()
         if sj_id:
-            scope_obj = deliveries.get_delivery_note(db, str(sj_id))
+            if sj_id not in sj_cache:
+                sj_cache[sj_id] = deliveries.get_delivery_note(db, sj_id)
+            scope_obj = sj_cache[sj_id]
         elif po_id:
-            scope_obj = get_by_accurate_id(db, str(po_id))
+            if po_id not in po_cache:
+                po_cache[po_id] = get_by_accurate_id(db, po_id)
+            scope_obj = po_cache[po_id]
         try:
             assert_branch_access(user, scope_object=scope_obj)
         except ObjectAuthError:

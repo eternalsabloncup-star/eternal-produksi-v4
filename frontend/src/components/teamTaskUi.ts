@@ -367,7 +367,9 @@ export function allowTaskAction(
 
 /**
  * Filter presentasional selaras backend ``loading_sj_visible_to_actor``:
- * cabang di server; Loading-SJ dengan assignee hanya untuk email yang ditugaskan
+ * cabang + PO-accepted di server (SoT); FE tidak menghidupkan ulang data
+ * tersaring backend dan tidak menyembunyikan task accepted hanya karena SJ ada.
+ * Loading-SJ dengan assignee hanya untuk email yang ditugaskan
  * kecuali SA / operations.full / operations.tasks.view_all (read).
  * ``viewAllTasks`` ≠ mutation authority.
  */

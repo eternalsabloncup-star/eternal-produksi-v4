@@ -34,8 +34,18 @@ def _seed_sa(db: Database) -> None:
 
 
 def _seed_po(db: Database, po_id: str, branch_id: str) -> None:
+    from app.services.po_acceptance import ACCEPTANCE_ACCEPTED, INBOX_STATUS_ACCEPTED
+
     db["accurate_sales_orders"].insert_one(
-        {"accurate_id": po_id, "branch_id": branch_id, "number": po_id}
+        {
+            "accurate_id": po_id,
+            "branch_id": branch_id,
+            "number": po_id,
+            "operational": {
+                "acceptance": {"status": ACCEPTANCE_ACCEPTED},
+                "inbox_status": INBOX_STATUS_ACCEPTED,
+            },
+        }
     )
 
 
@@ -252,8 +262,15 @@ def test_holding_sees_loading_sj_of_other_assignee(
         db, role_key=ROLE_HOLDING, label="Holding", module_permissions=[]
     )
     master.seed_master_defaults(db)
+    _seed_po(db, PO_HQ, BRANCH_HQ)
     db["accurate_delivery_notes"].insert_one(
-        {"accurate_sj_id": "SJ-HOLD", "branch_id": BRANCH_HQ, "number": "SJ-HOLD"}
+        {
+            "accurate_sj_id": "SJ-HOLD",
+            "branch_id": BRANCH_HQ,
+            "number": "SJ-HOLD",
+            "accurate_po_id": PO_HQ,
+            "accurate_po_ids": [PO_HQ],
+        }
     )
     tasks.upsert_task(
         db,
@@ -262,7 +279,10 @@ def test_holding_sees_loading_sj_of_other_assignee(
         assigned_role="helper",
         ref=TaskRef(accurate_delivery_note_id="SJ-HOLD"),
         label="load-other",
-        context={"assigned_user_email": "helper-a@eternal.local"},
+        context={
+            "assigned_user_email": "helper-a@eternal.local",
+            "accurate_po_ids": [PO_HQ],
+        },
     )
     _seed_user(db, "holding@eternal.local", role=ROLE_HOLDING, permissions=[])
     _seed_user(db, "helper-a@eternal.local", operational_role="helper")

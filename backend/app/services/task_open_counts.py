@@ -16,6 +16,7 @@ from app.services.object_auth import (
     has_operations_full,
     is_actionable_open_task,
     loading_sj_visible_to_actor,
+    task_source_po_accepted,
 )
 
 
@@ -32,8 +33,9 @@ def count_actionable_open_by_role(
     Kontrak sama daftar tugas:
     - status ≠ selesai
     - bukan ``context.loading_cancelled``
+    - PO sumber accepted (fail-closed; SJ tidak menyembunyikan bila accepted)
     - cabang (fail-closed)
-    - Loading-SJ: hanya assignee (kecuali SA / operations.full)
+    - Loading-SJ: hanya assignee (kecuali SA / operations.full / view_all)
     - dedupe ``task_key``
     Tidak memakai limit 1000 list API.
     """
@@ -65,6 +67,10 @@ def count_actionable_open_by_role(
 
     for task in cursor:
         if not is_actionable_open_task(task):
+            continue
+        if not task_source_po_accepted(
+            db, task, po_cache=po_cache, sj_cache=sj_cache
+        ):
             continue
         if not loading_sj_visible_to_actor(user, task):
             continue
