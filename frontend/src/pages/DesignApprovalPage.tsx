@@ -3,14 +3,17 @@ import { useParams } from "react-router-dom";
 import {
   fetchPublicApproval,
   submitPublicApproval,
+  submitPublicRejection,
   type PublicApprovalContext,
 } from "../api/scheduling";
 import { ConfirmationSuccessOverlay } from "../components/ConfirmationSuccessOverlay";
+import { PublicDesignEvidencePreview } from "../components/PublicDesignEvidencePreview";
 import {
   SIGNATURE_CANVAS_HEIGHT,
   canvasPointerPos,
   syncSignatureCanvasSize,
 } from "../components/signatureCanvas";
+import "./publicDesignApproval.css";
 
 function canvasToBase64Png(canvas: HTMLCanvasElement): string {
   const dataUrl = canvas.toDataURL("image/png");
@@ -26,7 +29,12 @@ export function DesignApprovalPage() {
   const [signerName, setSignerName] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const [done, setDone] = useState(false);
+  const [rejected, setRejected] = useState(false);
+  const [rejectReasonSaved, setRejectReasonSaved] = useState<string | null>(null);
   const [hasSignature, setHasSignature] = useState(false);
+  const [showReject, setShowReject] = useState(false);
+  const [rejectReason, setRejectReason] = useState("");
+  const [previewOpen, setPreviewOpen] = useState(false);
   const [feedback, setFeedback] = useState<{
     tone: "success" | "error";
     title: string;
@@ -49,7 +57,14 @@ export function DesignApprovalPage() {
     try {
       const data = await fetchPublicApproval(token);
       setContext(data);
-      if (data.already_approved) setDone(true);
+      if (data.already_approved || data.decision === "approved") {
+        setDone(true);
+        setRejected(false);
+      } else if (data.decision === "rejected") {
+        setRejected(true);
+        setDone(false);
+        setRejectReasonSaved(data.reject_reason || null);
+      }
     } catch (err) {
       setError(err instanceof Error ? err.message : "Link tidak valid.");
     } finally {
@@ -62,14 +77,14 @@ export function DesignApprovalPage() {
   }, [load]);
 
   useLayoutEffect(() => {
-    if (done || loading || !context) return;
+    if (done || rejected || loading || !context) return;
     syncCanvas();
     const wrap = signatureWrapRef.current;
     if (!wrap || typeof ResizeObserver === "undefined") return;
     const ro = new ResizeObserver(() => syncCanvas());
     ro.observe(wrap);
     return () => ro.disconnect();
-  }, [done, loading, context, syncCanvas]);
+  }, [done, rejected, loading, context, syncCanvas]);
 
   function pos(e: React.PointerEvent<HTMLCanvasElement>) {
     const canvas = canvasRef.current;
@@ -135,6 +150,7 @@ export function DesignApprovalPage() {
     try {
       await submitPublicApproval(token, signerName.trim(), canvasToBase64Png(canvas));
       setDone(true);
+      setRejected(false);
       setFeedback({
         tone: "success",
         title: "Approval tersimpan",
@@ -149,9 +165,46 @@ export function DesignApprovalPage() {
     }
   }
 
+  async function onReject() {
+    const reason = rejectReason.trim();
+    if (reason.length < 3) {
+      setError("Alasan penolakan wajib diisi (minimal 3 karakter).");
+      return;
+    }
+    if (
+      !window.confirm(
+        "Tolak desain ini? Keputusan ini tidak dapat dibatalkan untuk versi ini. Desainer perlu mengunggah revisi.",
+      )
+    ) {
+      return;
+    }
+    if (submitting) return;
+    setSubmitting(true);
+    setError(null);
+    setFeedback(null);
+    try {
+      const res = await submitPublicRejection(token, reason);
+      setRejected(true);
+      setDone(false);
+      setShowReject(false);
+      setRejectReasonSaved(res.reject_reason || reason);
+      setFeedback({
+        tone: "success",
+        title: res.duplicate ? "Sudah ditolak" : "Desain ditolak",
+        message: "Revisi diperlukan. Tim desain akan mengunggah versi baru untuk approval ulang.",
+      });
+    } catch (err) {
+      const message = err instanceof Error ? err.message : "Penolakan gagal.";
+      setError(message);
+      setFeedback({ tone: "error", title: "Gagal", message });
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
   if (loading) {
     return (
-      <div className="page center">
+      <div className="page center ep-public-approval">
         <p className="muted">Memuat approval desain…</p>
       </div>
     );
@@ -159,17 +212,19 @@ export function DesignApprovalPage() {
 
   if (!context) {
     return (
-      <div className="page center">
+      <div className="page center ep-public-approval">
         <h3>Link approval tidak valid</h3>
         <p className="muted">{error || "Link sudah kedaluwarsa atau dicabut."}</p>
       </div>
     );
   }
 
+  const canDecide = !done && !rejected;
+
   return (
-    <div className="page" data-testid="design-approval-page">
+    <div className="page ep-public-approval" data-testid="design-approval-page">
       <h2>Approval Desain</h2>
-      <p className="muted">
+      <p className="muted ep-public-meta">
         {context.po_no} · {context.customer} · desain versi {context.design_version}
       </p>
 
@@ -196,11 +251,45 @@ export function DesignApprovalPage() {
         </tbody>
       </table>
 
+      <div className="ep-public-file" data-testid="design-file-meta">
+        <strong>File desain</strong>
+        <span className="ep-public-meta">
+          {context.design_filename || "Nama file tidak tersedia"} · versi{" "}
+          {context.design_version}
+          {context.design_content_type ? ` · ${context.design_content_type}` : ""}
+        </span>
+        <div className="ep-public-actions">
+          <button
+            type="button"
+            className="ep-btn"
+            data-testid="design-preview-open"
+            disabled={!context.preview_supported}
+            title={
+              context.preview_supported
+                ? "Preview di dalam aplikasi"
+                : "Preview tidak tersedia untuk tipe file ini"
+            }
+            onClick={() => setPreviewOpen(true)}
+          >
+            Preview Desain
+          </button>
+        </div>
+      </div>
+
       {done ? (
         <p className="ep-notice" data-testid="approval-done">
           Terima kasih. Approval desain sudah tercatat.
         </p>
-      ) : (
+      ) : null}
+
+      {rejected ? (
+        <p className="ep-notice is-rejected" data-testid="approval-rejected">
+          Desain ditolak — Revisi Diperlukan.
+          {rejectReasonSaved ? ` Alasan: ${rejectReasonSaved}` : ""}
+        </p>
+      ) : null}
+
+      {canDecide ? (
         <div className="ep-approval-form">
           <label htmlFor="signer">Nama penanda tangan</label>
           <input
@@ -232,7 +321,7 @@ export function DesignApprovalPage() {
               onPointerLeave={endDraw}
             />
           </div>
-          <div className="ep-filterbar">
+          <div className="ep-filterbar ep-public-actions">
             <button
               type="button"
               className="ep-btn"
@@ -250,14 +339,70 @@ export function DesignApprovalPage() {
             >
               {submitting ? "Mengirim…" : "Konfirmasi Approval"}
             </button>
+            <button
+              type="button"
+              className="ep-btn is-danger-outline"
+              data-testid="design-reject-open"
+              disabled={submitting}
+              onClick={() => {
+                setShowReject(true);
+                setError(null);
+              }}
+            >
+              Tolak Desain
+            </button>
           </div>
+
+          {showReject ? (
+            <div className="ep-reject-panel" data-testid="design-reject-panel">
+              <label htmlFor="reject-reason">Alasan penolakan (wajib)</label>
+              <textarea
+                id="reject-reason"
+                value={rejectReason}
+                onChange={(e) => setRejectReason(e.target.value)}
+                disabled={submitting}
+                maxLength={500}
+                placeholder="Contoh: warna tidak sesuai brief"
+              />
+              <div className="ep-public-actions">
+                <button
+                  type="button"
+                  className={`ep-btn is-danger-outline${submitting ? " is-busy" : ""}`}
+                  data-testid="design-reject-submit"
+                  disabled={submitting}
+                  aria-busy={submitting}
+                  onClick={() => void onReject()}
+                >
+                  {submitting ? "Mengirim…" : "Kirim Penolakan"}
+                </button>
+                <button
+                  type="button"
+                  className="ep-btn"
+                  disabled={submitting}
+                  onClick={() => setShowReject(false)}
+                >
+                  Batal
+                </button>
+              </div>
+            </div>
+          ) : null}
+
           {error ? (
             <p className="ep-error" role="alert">
               {error}
             </p>
           ) : null}
         </div>
-      )}
+      ) : null}
+
+      <PublicDesignEvidencePreview
+        open={previewOpen}
+        token={token}
+        title="Preview desain"
+        filename={context.design_filename}
+        contentType={context.design_content_type}
+        onClose={() => setPreviewOpen(false)}
+      />
 
       <ConfirmationSuccessOverlay
         open={Boolean(feedback)}

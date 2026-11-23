@@ -39,6 +39,10 @@ class ApproveDesignRequest(BaseModel):
     signature_png_base64: str = Field(min_length=16)
 
 
+class RejectDesignRequest(BaseModel):
+    reject_reason: str = Field(min_length=3, max_length=500)
+
+
 class ReceiptIn(BaseModel):
     id: str = Field(min_length=1)
     invoice_no: str | None = None
@@ -298,10 +302,58 @@ def post_public_design_approval(
             signer_name=body.signer_name,
             signature_png=signature,
         )
+    except design_service.DesignDecisionConflict as exc:
+        raise HTTPException(status.HTTP_409_CONFLICT, str(exc)) from exc
     except LookupError as exc:
         raise HTTPException(status.HTTP_404_NOT_FOUND, str(exc)) from exc
     except ValueError as exc:
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, str(exc)) from exc
+
+
+@router.post("/public/design-approval/{token}/reject")
+def post_public_design_rejection(
+    token: str, body: RejectDesignRequest
+) -> dict[str, Any]:
+    """Tolak desain (customer) — alasan wajib; tidak membatalkan approval final."""
+    db = get_db()
+    try:
+        return design_service.reject_design(
+            db, raw_token=token, reject_reason=body.reject_reason
+        )
+    except design_service.DesignDecisionConflict as exc:
+        raise HTTPException(status.HTTP_409_CONFLICT, str(exc)) from exc
+    except LookupError as exc:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, str(exc)) from exc
+
+
+@router.get("/public/design-approval/{token}/evidence")
+def get_public_design_evidence(token: str) -> StreamingResponse:
+    """Preview bukti desain ber-token — ownership ke PO+versi link; tanpa sesi."""
+    db = get_db()
+    try:
+        meta, stream = design_service.resolve_public_design_evidence(
+            db, raw_token=token
+        )
+    except LookupError as exc:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, str(exc)) from exc
+    except design_service.DesignStateError as exc:
+        raise HTTPException(status.HTTP_403_FORBIDDEN, str(exc)) from exc
+    except design_service.DesignDecisionConflict as exc:
+        raise HTTPException(status.HTTP_409_CONFLICT, str(exc)) from exc
+
+    filename = str(meta.get("filename") or "design.bin").replace('"', "")
+    content_type = str(meta.get("content_type") or "application/octet-stream")
+    return StreamingResponse(
+        stream,
+        media_type=content_type,
+        headers={
+            "Content-Disposition": f'inline; filename="{filename}"',
+            "Cache-Control": "private, no-store",
+            "X-Content-Type-Options": "nosniff",
+        },
+    )
 
 
 @router.get("/payment/{accurate_po_id}")

@@ -253,6 +253,74 @@ export function handleSimRequest(
     });
   }
 
+  // Public design-approval — no internal session (parity production).
+  if (path.startsWith("/api/public/design-approval/")) {
+    const parts = path.split("/").filter(Boolean);
+    const tokenPart = parts[3] || "";
+    if (!tokenPart || tokenPart.includes("INVALID")) {
+      return json({ detail: "Link approval tidak valid atau sudah kedaluwarsa." }, 404);
+    }
+    if (parts[4] === "evidence" && method === "GET") {
+      // 320×180 solid #1a4d3e PNG — visible in-app preview smoke (DEV sim only).
+      const png = Uint8Array.from(
+        atob(
+          "iVBORw0KGgoAAAANSUhEUgAAAUAAAAC0CAIAAABqhmJGAAABlElEQVR42u3TAQkAAAzDsOm4mDu4fzvXMQhEQaGZW6BUJAADAwYGDAwGBgwMGBgwMBgYMDBgYDAwYGDAwICBwcCAgQEDAwYGAwMGBgwMBgYMDBgYMDAYGDAwYGDAwGBgwMCAgcHAgIEBAwMGBgMDBgYMDAZWAQwMGBgwMBgYMDBgYMDAYGDAwICBwcCAgQEDAwYGAwMGBgwMGBgMDBgYMDAYGDAwYGDAwGBgwMCAgQEDg4EBAwMGBgMDBgYMDBgYDAwYGDAwGBgwMGBgwMBgYMDAgIEBA4OBAQMDBgYDAwYGDAwYGAwMGBgwMGBgMDBgYMDAYGDAwICBAQODgQEDAwYGDAwGBgwMGBgMDBgYMDBgYDAwYGDAwGBgwMCAgQEDg4EBAwMGBgwMBgYMDBgYDAwYGDAwYGAwMGBgwMCAgcHAgIEBA4OBAQMDBgYMDAYGDAwYGAysAhgYMDBgYDAwYGDAwICBwcCAgQEDg4EBAwMGBgwMBgYMDBgYMDAYGDAwYGAwMGBgwMCAgcHAgIEBAwMGhm4PtlcNgG0R1wMAAAAASUVORK5CYII=",
+        ),
+        (c) => c.charCodeAt(0),
+      );
+      return new Response(png, {
+        status: 200,
+        headers: {
+          "Content-Type": "image/png",
+          "Cache-Control": "private, no-store",
+        },
+      });
+    }
+    if (parts[4] === "approve" && method === "POST") {
+      return json({
+        approval: { design_version: 1, signer_name: "Sim Customer" },
+        duplicate: false,
+        gates: { design: { state: "open" } },
+        simulation: true,
+      });
+    }
+    if (parts[4] === "reject" && method === "POST") {
+      return json({
+        rejected: true,
+        duplicate: false,
+        design_version: 1,
+        reject_reason: "Sim reject",
+        gates: { design: { state: "review" } },
+        simulation: true,
+      });
+    }
+    if (method === "GET" && parts.length === 4) {
+      return json({
+        po_no: PO_NO,
+        customer: "PT Contoh Kemasan",
+        design_version: 1,
+        design_filename: "desain-cup.png",
+        design_evidence_id: "evid:design:sim:v1",
+        design_content_type: "image/png",
+        preview_supported: true,
+        items: [
+          {
+            item_name: "Cup 12oz Cetak",
+            item_code: "CUP-12OZ",
+            qty: 3000,
+            unit: "PCS",
+            color: "Putih",
+          },
+        ],
+        already_approved: tokenPart.toUpperCase().includes("APPR"),
+        approved_at: null,
+        decision: tokenPart.toUpperCase().includes("APPR") ? "approved" : "pending",
+        rejected_at: null,
+        reject_reason: null,
+      });
+    }
+  }
+
   if (!session.active) {
     return json({ detail: "Tidak terautentikasi" }, 401);
   }
@@ -1570,44 +1638,6 @@ export function handleSimRequest(
       links: undefined,
       design_approval,
       order: { ...SIM_TRACKING.order, accurate_po_id: null },
-    });
-  }
-
-  // Public design approval page — DEV sim only (dummy token, not production).
-  if (path.startsWith("/api/public/design-approval/") && method === "GET") {
-    const tokenPart = path.split("/").pop() || "";
-    if (!tokenPart || tokenPart.includes("INVALID")) {
-      return json({ detail: "Link approval tidak valid atau sudah kedaluwarsa." }, 404);
-    }
-    return json({
-      po_no: PO_NO,
-      customer: "PT Contoh Kemasan",
-      design_version: 1,
-      design_filename: "desain-cup.png",
-      design_evidence_id: "evid:design:sim:v1",
-      items: [
-        {
-          item_name: "Cup 12oz Cetak",
-          item_code: "CUP-12OZ",
-          qty: 3000,
-          unit: "PCS",
-          color: "Putih",
-        },
-      ],
-      already_approved: tokenPart.toUpperCase().includes("APPR"),
-      approved_at: null,
-    });
-  }
-  if (
-    path.startsWith("/api/public/design-approval/") &&
-    path.endsWith("/approve") &&
-    method === "POST"
-  ) {
-    return json({
-      approval: { design_version: 1, signer_name: "Sim Customer" },
-      duplicate: false,
-      gates: { design: { state: "open" } },
-      simulation: true,
     });
   }
 

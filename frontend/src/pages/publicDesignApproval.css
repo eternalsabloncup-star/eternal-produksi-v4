@@ -1,0 +1,165 @@
+/**
+ * Scoped public Design Approval — dark page + readable shell widgets.
+ * Do not alter global AppShell theme tokens.
+ */
+.ep-public-approval {
+  color: var(--ink, #f3f0e7);
+}
+
+.ep-public-approval h2 {
+  color: var(--ink, #f3f0e7);
+}
+
+.ep-public-approval .muted,
+.ep-public-approval .ep-public-meta {
+  color: var(--muted, #b7c4bc);
+}
+
+.ep-public-approval .ep-table {
+  background: rgba(15, 28, 23, 0.55);
+  border: 1px solid rgba(243, 240, 231, 0.18);
+  border-radius: 8px;
+  overflow: hidden;
+}
+
+.ep-public-approval .ep-table th {
+  background: #1a4d3e;
+  color: #f7faf8;
+  font-weight: 700;
+  border-color: rgba(243, 240, 231, 0.2);
+}
+
+.ep-public-approval .ep-table td {
+  color: #f3f0e7;
+  border-color: rgba(243, 240, 231, 0.14);
+  background: transparent;
+}
+
+.ep-public-approval .ep-approval-form label,
+.ep-public-approval .ep-signature-label {
+  color: #e8eee9;
+  font-weight: 650;
+}
+
+.ep-public-approval .ep-approval-form input#signer {
+  width: 100%;
+  max-width: 420px;
+  display: block;
+  margin: 0.35rem 0 0.85rem;
+  padding: 0.65rem 0.75rem;
+  border: 1px solid rgba(243, 240, 231, 0.28);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.96);
+  color: #14241c;
+  font: inherit;
+}
+
+.ep-public-approval .ep-approval-form input#signer:focus {
+  outline: 2px solid rgba(196, 163, 90, 0.55);
+  outline-offset: 1px;
+}
+
+.ep-public-approval .ep-signature {
+  border-color: rgba(243, 240, 231, 0.35);
+}
+
+.ep-public-approval .ep-public-file {
+  margin: 0.75rem 0 1rem;
+  padding: 0.75rem 0.9rem;
+  border: 1px solid rgba(243, 240, 231, 0.2);
+  border-radius: 8px;
+  background: rgba(15, 28, 23, 0.45);
+}
+
+.ep-public-approval .ep-public-file strong {
+  display: block;
+  margin-bottom: 0.35rem;
+}
+
+.ep-public-approval .ep-public-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  margin-top: 0.5rem;
+}
+
+.ep-public-approval .ep-btn.is-danger-outline {
+  background: transparent;
+  color: #ffc9c0;
+  border: 1px solid rgba(224, 122, 106, 0.75);
+}
+
+.ep-public-approval .ep-btn.is-danger-outline:hover:not(:disabled) {
+  background: rgba(224, 122, 106, 0.16);
+}
+
+.ep-public-approval .ep-reject-panel {
+  margin-top: 1rem;
+  padding: 0.9rem;
+  border: 1px solid rgba(224, 122, 106, 0.45);
+  border-radius: 8px;
+  background: rgba(40, 18, 16, 0.55);
+}
+
+.ep-public-approval .ep-reject-panel textarea {
+  width: 100%;
+  min-height: 88px;
+  margin: 0.4rem 0 0.75rem;
+  padding: 0.65rem 0.75rem;
+  border-radius: 8px;
+  border: 1px solid rgba(243, 240, 231, 0.28);
+  background: rgba(255, 255, 255, 0.96);
+  color: #14241c;
+  font: inherit;
+  resize: vertical;
+}
+
+.ep-public-approval .ep-notice.is-rejected {
+  border-color: rgba(224, 122, 106, 0.5);
+  color: #ffd4cc;
+}
+
+/* Modal is portaled in-tree under .ep-public-approval — reset ink for light shell. */
+.ep-public-preview-shade {
+  z-index: 80;
+}
+
+.ep-public-preview-shade .ep-modal {
+  color: #14241c;
+  background: #f7faf8;
+}
+
+.ep-public-preview-shade .ep-modal h2,
+.ep-public-preview-shade .ep-modal-submeta,
+.ep-public-preview-shade .ep-pdf-page {
+  color: #14241c;
+}
+
+.ep-public-preview-shade .ep-modal-submeta {
+  color: #3d5248;
+}
+
+.ep-public-preview-shade .ep-notice {
+  color: #3d5248;
+}
+
+.ep-public-preview-frame {
+  min-height: 280px;
+  max-height: min(70vh, 720px);
+  overflow: auto;
+  background: #0b1511;
+  border-radius: 8px;
+}
+
+.ep-public-preview-frame img {
+  display: block;
+  max-width: 100%;
+  height: auto;
+  margin: 0 auto;
+}
+
+.ep-public-preview-frame .ep-pdf-canvas-wrap {
+  display: flex;
+  justify-content: center;
+  padding: 0.75rem;
+}

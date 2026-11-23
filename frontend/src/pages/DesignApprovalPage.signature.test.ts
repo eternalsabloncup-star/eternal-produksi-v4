@@ -22,4 +22,12 @@ describe("DesignApprovalPage signature contract", () => {
     expect(source).toMatch(/if \(submitting\) return/);
     expect(source).toMatch(/aria-busy=\{submitting\}/);
   });
+
+  it("scopes public contrast styles and exposes reject + preview", () => {
+    expect(source).toMatch(/publicDesignApproval\.css/);
+    expect(source).toMatch(/ep-public-approval/);
+    expect(source).toMatch(/Tolak Desain/);
+    expect(source).toMatch(/PublicDesignEvidencePreview/);
+    expect(source).toMatch(/submitPublicRejection/);
+  });
 });
