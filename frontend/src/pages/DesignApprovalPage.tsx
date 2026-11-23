@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { useParams } from "react-router-dom";
 import {
   fetchPublicApproval,
@@ -6,6 +6,11 @@ import {
   type PublicApprovalContext,
 } from "../api/scheduling";
 import { ConfirmationSuccessOverlay } from "../components/ConfirmationSuccessOverlay";
+import {
+  SIGNATURE_CANVAS_HEIGHT,
+  canvasPointerPos,
+  syncSignatureCanvasSize,
+} from "../components/signatureCanvas";
 
 function canvasToBase64Png(canvas: HTMLCanvasElement): string {
   const dataUrl = canvas.toDataURL("image/png");
@@ -28,7 +33,15 @@ export function DesignApprovalPage() {
     message: string;
   } | null>(null);
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
+  const signatureWrapRef = useRef<HTMLDivElement | null>(null);
   const drawing = useRef(false);
+
+  const syncCanvas = useCallback(() => {
+    const canvas = canvasRef.current;
+    const wrap = signatureWrapRef.current;
+    if (!canvas || !wrap) return;
+    syncSignatureCanvasSize(canvas, wrap.clientWidth, SIGNATURE_CANVAS_HEIGHT);
+  }, []);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -48,17 +61,28 @@ export function DesignApprovalPage() {
     void load();
   }, [load]);
 
+  useLayoutEffect(() => {
+    if (done || loading || !context) return;
+    syncCanvas();
+    const wrap = signatureWrapRef.current;
+    if (!wrap || typeof ResizeObserver === "undefined") return;
+    const ro = new ResizeObserver(() => syncCanvas());
+    ro.observe(wrap);
+    return () => ro.disconnect();
+  }, [done, loading, context, syncCanvas]);
+
   function pos(e: React.PointerEvent<HTMLCanvasElement>) {
     const canvas = canvasRef.current;
     if (!canvas) return { x: 0, y: 0 };
-    const rect = canvas.getBoundingClientRect();
-    return { x: e.clientX - rect.left, y: e.clientY - rect.top };
+    return canvasPointerPos(canvas, e.clientX, e.clientY);
   }
 
   function startDraw(e: React.PointerEvent<HTMLCanvasElement>) {
-    const ctx = canvasRef.current?.getContext("2d");
-    if (!ctx) return;
+    const canvas = canvasRef.current;
+    const ctx = canvas?.getContext("2d");
+    if (!canvas || !ctx) return;
     drawing.current = true;
+    canvas.setPointerCapture(e.pointerId);
     const { x, y } = pos(e);
     ctx.beginPath();
     ctx.moveTo(x, y);
@@ -77,8 +101,12 @@ export function DesignApprovalPage() {
     setHasSignature(true);
   }
 
-  function endDraw() {
+  function endDraw(e?: React.PointerEvent<HTMLCanvasElement>) {
     drawing.current = false;
+    const canvas = canvasRef.current;
+    if (canvas && e && canvas.hasPointerCapture(e.pointerId)) {
+      canvas.releasePointerCapture(e.pointerId);
+    }
   }
 
   function clearSignature() {
@@ -179,34 +207,55 @@ export function DesignApprovalPage() {
             id="signer"
             value={signerName}
             onChange={(e) => setSignerName(e.target.value)}
+            disabled={submitting}
           />
 
-          <p className="ep-sectionlabel">Tanda tangan</p>
-          <canvas
-            ref={canvasRef}
-            width={420}
-            height={160}
-            className="ep-signature"
-            data-testid="signature-canvas"
-            onPointerDown={startDraw}
-            onPointerMove={moveDraw}
-            onPointerUp={endDraw}
-            onPointerLeave={endDraw}
-          />
+          <div
+            className="ep-signature-wrap"
+            ref={signatureWrapRef}
+            data-testid="approval-signature-wrap"
+          >
+            <p className="ep-signature-label" id="approval-signature-label">
+              Tanda tangan
+            </p>
+            <canvas
+              ref={canvasRef}
+              width={420}
+              height={SIGNATURE_CANVAS_HEIGHT}
+              className="ep-signature"
+              data-testid="signature-canvas"
+              aria-labelledby="approval-signature-label"
+              onPointerDown={startDraw}
+              onPointerMove={moveDraw}
+              onPointerUp={endDraw}
+              onPointerCancel={endDraw}
+              onPointerLeave={endDraw}
+            />
+          </div>
           <div className="ep-filterbar">
-            <button type="button" className="ep-btn" onClick={clearSignature}>
+            <button
+              type="button"
+              className="ep-btn"
+              disabled={submitting}
+              onClick={clearSignature}
+            >
               Hapus tanda tangan
             </button>
             <button
               type="button"
-              className="ep-btn primary"
+              className={`ep-btn primary${submitting ? " is-busy" : ""}`}
               disabled={submitting}
+              aria-busy={submitting}
               onClick={() => void onApprove()}
             >
               {submitting ? "Mengirim…" : "Konfirmasi Approval"}
             </button>
           </div>
-          {error ? <p className="ep-error">{error}</p> : null}
+          {error ? (
+            <p className="ep-error" role="alert">
+              {error}
+            </p>
+          ) : null}
         </div>
       )}
 
