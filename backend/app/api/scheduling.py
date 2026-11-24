@@ -138,10 +138,12 @@ def get_capacity_advisory(
 ) -> dict[str, Any]:
     """M8.3 read-only machine capacity + urgent quota advisory.
 
-    Fail-closed: INSUFFICIENT_DATA / POLICY_NOT_CONFIGURED when inputs incomplete.
-    Does not mutate schedules and does not enable invented enforcement.
+    Informational only — never mutates schedules; never enables machine/urgent
+    enforcement. Fail-closed: INSUFFICIENT_DATA / POLICY_NOT_CONFIGURED when
+    inputs incomplete. Branch-scoped even when accuratePoId is omitted.
     """
     from app.services import scheduling_capacity_advisory as advisory
+    from app.services.object_auth import bypasses_branch, user_branch_ids
     from app.services.task_engine import can_act
 
     db = get_db()
@@ -157,6 +159,21 @@ def get_capacity_advisory(
             status.HTTP_403_FORBIDDEN,
             "Capacity advisory hanya untuk peran penjadwalan.",
         )
+
+    elevated = bypasses_branch(auth.user)
+    branch_scope: set[str] | None = None if elevated else user_branch_ids(auth.user)
+    if not elevated:
+        if not branch_scope:
+            raise HTTPException(
+                status.HTTP_403_FORBIDDEN,
+                "Akun tanpa scope cabang yang valid — akses ditolak.",
+            )
+        requested_branch = (branch_code or "").strip().upper() or None
+        if requested_branch and requested_branch not in branch_scope:
+            raise HTTPException(
+                status.HTTP_403_FORBIDDEN,
+                "Cabang di luar scope akun — capacity advisory ditolak.",
+            )
 
     po_doc: dict[str, Any] | None = None
     qty_target: float | None = None
@@ -185,6 +202,7 @@ def get_capacity_advisory(
         schedule_date=schedule_date,
         shift_code=shift_code,
         requested_qty=requested_qty,
+        allowed_branch_codes=branch_scope,
     )
 
 

@@ -148,15 +148,14 @@ def test_t06_invalid_operator_rejected(db: Database) -> None:
         )
 
 
-def test_t07_cross_branch_scheduling_hold_not_machine_bound(db: Database) -> None:
-    """HOLD/N/A: allocations are not machine/branch-bound for capacity.
-
-    Existing object_auth branch checks remain the SoT for PO access — verified
-    separately. Machine cross-branch capacity enforcement is POLICY_REQUIRED.
-    """
-    snap = advisory.machine_capacity_snapshot(db, branch_code="JKT")
+def test_t07_cross_branch_advisory_scoped_not_enforced(db: Database) -> None:
+    """Branch filter is informational; machine capacity never blocks scheduling."""
+    snap = advisory.machine_capacity_snapshot(
+        db, branch_code="JKT", allowed_branch_codes={"JKT"}
+    )
     assert snap["status"] == advisory.STATUS_INSUFFICIENT_DATA
     assert snap["enforcement_active"] is False
+    assert snap["branch_scope"] == ["JKT"]
 
 
 def test_t08_unauthorized_scheduling_rejected(db: Database) -> None:
@@ -473,6 +472,9 @@ def test_capacity_advisory_http_ok(app_client: TestClient, db: Database) -> None
     assert res.status_code == 200, res.text
     body = res.json()
     assert body["advisory_only"] is True
+    assert body["mode"] == "INFORMATIONAL"
+    assert "policy_holds" not in body
+    assert isinstance(body.get("data_limitations"), list)
     assert body["machine_capacity"]["status"] == "INSUFFICIENT_DATA"
     assert body["urgent_quota"]["status"] == "POLICY_NOT_CONFIGURED"
     assert body["enforcement"]["machine_shift_capacity"] is False
@@ -532,3 +534,95 @@ def test_create_allocations_does_not_call_machine_enforcement(db: Database) -> N
     # Empty masters must not block scheduling
     result = _alloc(db, po, qty=25, key="m83-no-machine-enf")
     assert result["allocations"][0]["qty"] == 25.0
+
+
+def test_advisory_without_po_id_http_ok(app_client: TestClient, db: Database) -> None:
+    """Branch-authorized advisory works without accuratePoId."""
+    _seed_http_users(db)
+    org.upsert_branch(db, code="JKT", name="Jakarta", is_active=True)
+    org.upsert_machine(
+        db, code="JKT1", label="Mesin JKT", branch_code="JKT", is_active=True
+    )
+    _login(app_client, "kp@eternal.local")
+    before = db["production_allocations"].count_documents({})
+    res = app_client.get("/api/scheduling/capacity-advisory")
+    assert res.status_code == 200, res.text
+    body = res.json()
+    assert body["advisory_only"] is True
+    assert body["mode"] == "INFORMATIONAL"
+    assert "policy_holds" not in body
+    assert isinstance(body.get("data_limitations"), list)
+    assert body["enforcement"]["machine_shift_capacity"] is False
+    assert body["enforcement"]["urgent_quota"] is False
+    assert body["enforcement"]["urgent_margin_restriction"] is False
+    # Read-only: no schedule writes
+    assert db["production_allocations"].count_documents({}) == before
+
+
+def test_advisory_limited_branch_rejects_foreign_branch_code(
+    app_client: TestClient, db: Database
+) -> None:
+    from tests.scheduling_operator_fixtures import upsert_test_user
+
+    _seed_http_users(db)
+    org.upsert_branch(db, code="JKT", name="Jakarta", is_active=True)
+    org.upsert_branch(db, code="BDG", name="Bandung", is_active=True)
+    upsert_test_user(
+        db,
+        "kp-jkt@eternal.local",
+        operational_role="production-head",
+        display_name="KP JKT",
+        password=PASSWORD,
+        # Non-empty list required: fixture treats [] as falsy and defaults to all_branches.
+        effective_module_permissions=["reports.view"],
+        branch_ids=["JKT"],
+    )
+    _login(app_client, "kp-jkt@eternal.local")
+    me = app_client.get("/api/auth/me")
+    assert me.status_code == 200, me.text
+    user = me.json().get("user") or {}
+    perms = user.get("permissions") or []
+    assert "access.all_branches" not in perms
+    assert "operations.full" not in perms
+    assert "JKT" in (user.get("branch_ids") or [])
+    # Probe without branch filter first — must be scoped, not "all".
+    scoped = app_client.get("/api/scheduling/capacity-advisory")
+    assert scoped.status_code == 200, scoped.text
+    assert scoped.json()["machine_capacity"]["branch_scope"] == ["JKT"], scoped.text
+    denied = app_client.get(
+        "/api/scheduling/capacity-advisory",
+        params={"branchCode": "BDG"},
+    )
+    assert denied.status_code == 403, denied.text
+    ok = app_client.get(
+        "/api/scheduling/capacity-advisory",
+        params={"branchCode": "JKT"},
+    )
+    assert ok.status_code == 200, ok.text
+    assert ok.json()["machine_capacity"]["branch_scope"] == ["JKT"]
+
+
+def test_advisory_limited_without_po_excludes_foreign_machines(db: Database) -> None:
+    org.upsert_branch(db, code="JKT", name="Jakarta", is_active=True)
+    org.upsert_branch(db, code="BDG", name="Bandung", is_active=True)
+    org.upsert_machine(
+        db, code="JKT1", label="JKT", branch_code="JKT", is_active=True
+    )
+    org.upsert_machine(
+        db, code="BDG1", label="BDG", branch_code="BDG", is_active=True
+    )
+    snap = advisory.machine_capacity_snapshot(
+        db, allowed_branch_codes={"JKT"}
+    )
+    assert snap["active_machine_count"] == 1
+    assert snap["branch_scope"] == ["JKT"]
+    assert snap["enforcement_active"] is False
+
+
+def test_owner_rejected_auto_enforcement_permanent(db: Database) -> None:
+    """Owner clarified: advisory permanently active; no future auto-enforcement holds."""
+    po = _seed_po(db, urgent=True)
+    built = advisory.build_capacity_advisory(db, po_doc=po)
+    advisory.assert_no_invented_machine_enforcement(built)
+    assert built["mode"] == "INFORMATIONAL"
+    assert "policy_holds" not in built

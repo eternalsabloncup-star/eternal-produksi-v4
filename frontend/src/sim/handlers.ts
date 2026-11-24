@@ -617,6 +617,7 @@ export function handleSimRequest(
     return json({
       milestone: "M8_3_URGENT_SCHEDULING_MACHINE_CAPACITY",
       advisory_only: true,
+      mode: "INFORMATIONAL",
       enforcement: {
         line_qty_reservation: true,
         machine_shift_capacity: false,
@@ -660,7 +661,7 @@ export function handleSimRequest(
         eligible_for_urgent_priority: null,
         enforcement_active: false,
       },
-      policy_holds: ["sim advisory"],
+      data_limitations: ["sim advisory informational"],
     });
   }
   if (path === "/api/scheduling/board" && method === "GET") {

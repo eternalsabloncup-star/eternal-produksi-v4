@@ -203,10 +203,11 @@ export async function fetchSchedulingOperators(): Promise<{
   return request("/api/scheduling/operators");
 }
 
-/** M8.3 read-only capacity / urgent advisory — never invents capacity defaults. */
+/** M8.3 read-only capacity / urgent advisory — informational; no auto-enforcement. */
 export type CapacityAdvisory = {
   milestone: string;
   advisory_only: boolean;
+  mode?: "INFORMATIONAL";
   enforcement: {
     line_qty_reservation: boolean;
     machine_shift_capacity: boolean;
@@ -250,7 +251,8 @@ export type CapacityAdvisory = {
     eligible_for_urgent_priority: boolean | null;
     enforcement_active: boolean;
   } | null;
-  policy_holds: string[];
+  /** Display gaps only — not pending enforcement activation. */
+  data_limitations: string[];
 };
 
 export async function fetchCapacityAdvisory(opts?: {

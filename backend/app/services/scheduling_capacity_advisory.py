@@ -1,13 +1,14 @@
-"""M8.3 — read-only advisory for machine capacity & urgent quota.
+"""M8.3 — permanent read-only / informational capacity & urgent advisory.
 
-Fail-closed: never invent capacity defaults, quota formulas, or margin rules.
-Never mutates schedules. Never enables enforcement without Owner-approved policy
-and complete authoritative inputs.
+Owner decision: advisory only. Do NOT introduce automatic machine-capacity,
+urgent-quota, or margin-based scheduling enforcement. Missing inputs surface as
+INSUFFICIENT_DATA or POLICY_NOT_CONFIGURED. Never invent capacity defaults.
+Never mutates schedules.
 """
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Collection
 
 from pymongo.database import Database
 
@@ -19,13 +20,12 @@ STATUS_POLICY_NOT_CONFIGURED = "POLICY_NOT_CONFIGURED"
 STATUS_OK = "OK"
 STATUS_UNKNOWN = "UNKNOWN"
 
-# Optional machine document fields — present only when Owner has populated them.
+# Optional machine document fields — present only when populated in Settings.
 # Never hardcode historical 17_000 pcs/shift as a universal default.
 OPTIONAL_OUTPUT_FIELD = "output_per_shift_pcs"
 OPTIONAL_MACHINE_TYPE_FIELD = "machine_type"
 
-# Urgent daily quota / sales distribution / margin floor are Owner policy —
-# no approved config collection exists in V4 yet.
+# Optional urgent config collection — indicators only when present & complete.
 URGENT_POLICY_CONFIG_COLLECTION = "urgent_quota_policy"
 
 
@@ -38,7 +38,8 @@ def line_reservation_snapshot(
     """Authoritative line-qty reservation (existing schedule SoT).
 
     Units: pcs on one PO item line. Released/cancelled allocations are excluded
-    via status=active only.
+    via status=active only. This is the pre-existing scheduling validation —
+    not a new M8.3 restriction.
     """
     reserved = float(schedules.active_allocated_qty(db, accurate_line_id))
     target = float(qty_target or 0)
@@ -60,31 +61,47 @@ def line_reservation_snapshot(
     }
 
 
+def _machine_branch(m: dict[str, Any]) -> str | None:
+    return (str(m.get("branch_code") or "").strip().upper() or None)
+
+
 def machine_capacity_snapshot(
     db: Database,
     *,
     branch_code: str | None = None,
     schedule_date: str | None = None,
     shift_code: str | None = None,
+    allowed_branch_codes: Collection[str] | None = None,
 ) -> dict[str, Any]:
     """Machine/shift capacity advisory — fail-closed to INSUFFICIENT_DATA.
 
     Does not hardcode Automatic≈17000. Does not treat monthly totals as daily capacity.
     Allocations today have no machine_code / shift_code binding, so reserved
     machine capacity cannot be attributed even when output_per_shift_pcs exists.
+
+    ``allowed_branch_codes``:
+      - None → elevated / all-branch caller; no branch ACL filter.
+      - set → limited caller; only machines whose branch_code is in the set
+        (unscoped machines with empty branch_code are excluded).
     """
     org.require_org_master_indexes(db)
     machines = org.list_docs(db, org.MACHINES)
     shifts = org.list_docs(db, org.SHIFTS)
 
     branch = (branch_code or "").strip().upper() or None
+    allowed: set[str] | None = None
+    if allowed_branch_codes is not None:
+        allowed = {
+            str(c).strip().upper()
+            for c in allowed_branch_codes
+            if str(c).strip()
+        }
+
+    if allowed is not None:
+        machines = [m for m in machines if _machine_branch(m) in allowed]
+
     if branch:
-        machines = [
-            m
-            for m in machines
-            if (str(m.get("branch_code") or "").strip().upper() or None) == branch
-            or m.get("branch_code") in (None, "")
-        ]
+        machines = [m for m in machines if _machine_branch(m) == branch]
 
     active_machines = [m for m in machines if m.get("is_active", True)]
     active_shifts = [s for s in shifts if s.get("is_active", True)]
@@ -130,7 +147,6 @@ def machine_capacity_snapshot(
             f"{OPTIONAL_MACHINE_TYPE_FIELD}"
         )
 
-    # Schedules are operator-bound, not machine-bound — cannot deduct reserved.
     gaps.append(
         "production_allocations have no machine_code/shift_code; "
         "machine-level RESERVED_CAPACITY cannot be attributed"
@@ -141,17 +157,14 @@ def machine_capacity_snapshot(
             "shift isolation for machine capacity is UNKNOWN"
         )
     if schedule_date:
-        # Date is recorded on allocations but without machine binding it does not
-        # yield per-machine remaining capacity.
         gaps.append(
             "schedule_date known on allocations but not linkable to machines"
         )
 
-    status = STATUS_INSUFFICIENT_DATA
     return {
-        "status": status,
+        "status": STATUS_INSUFFICIENT_DATA,
         "unit": "pcs_per_shift",
-        "available_capacity": None if gaps else available_sum,
+        "available_capacity": None,
         "reserved_capacity": None,
         "remaining_capacity": None,
         "projected_utilization": None,
@@ -163,12 +176,13 @@ def machine_capacity_snapshot(
         "branch_code": branch,
         "schedule_date": schedule_date,
         "shift_code": (shift_code or "").strip().upper() or None,
+        "branch_scope": sorted(allowed) if allowed is not None else "all",
         "enforcement_active": False,
-        "authority": "master_machines + master_shifts (incomplete for capacity math)",
+        "authority": "master_machines + master_shifts (informational; incomplete for capacity math)",
         "gaps": gaps,
         "notes": [
             "Historical Automatic≈17000 pcs/shift is reference-only — not applied.",
-            "No invented capacity default. Scheduling writes remain operator-allocation only.",
+            "M8.3 is advisory only — machine capacity does not block scheduling.",
         ],
     }
 
@@ -180,33 +194,51 @@ def urgent_quota_snapshot(
     sales_owner: str | None = None,
     requested_urgent_qty: float | None = None,
 ) -> dict[str, Any]:
-    """Urgent quota advisory — POLICY_NOT_CONFIGURED until Owner approves formula."""
+    """Urgent quota indicators — POLICY_NOT_CONFIGURED when config absent.
+
+    Informational only. Owner rejected automatic urgent quota enforcement.
+    """
     org.require_org_master_indexes(db)
     policy = db[URGENT_POLICY_CONFIG_COLLECTION].find_one({}, {"_id": 0})
     gaps: list[str] = []
+    daily_quota: float | None = None
     if policy is None:
         gaps.append(
             f"collection {URGENT_POLICY_CONFIG_COLLECTION} absent — "
-            "no approved URGENT_DAILY_QUOTA / sales distribution config"
+            "urgent quota indicators unavailable"
         )
     else:
-        # Config may exist later; still refuse to invent distribution math.
-        if policy.get("daily_quota_pcs") is None:
+        raw = policy.get("daily_quota_pcs")
+        if raw is None or raw == "":
             gaps.append("daily_quota_pcs missing in urgent policy config")
+        else:
+            try:
+                daily_quota = float(raw)
+            except (TypeError, ValueError):
+                gaps.append("daily_quota_pcs not numeric")
+                daily_quota = None
         if not policy.get("distribution_formula_approved"):
-            gaps.append("distribution_formula_approved not true — no enforcement")
+            gaps.append(
+                "distribution_formula_approved not true — "
+                "per-sales remaining cannot be computed"
+            )
 
-    # Consumption cannot be computed without approved semantics.
     gaps.append(
         "urgent consumption ledger not defined; header.urgent is display/filter only"
     )
     if sales_owner is None or not str(sales_owner).strip():
-        gaps.append("sales_owner empty or not provided for quota isolation check")
+        gaps.append("sales_owner empty or not provided for quota isolation display")
 
+    status = (
+        STATUS_POLICY_NOT_CONFIGURED
+        if daily_quota is None or gaps
+        else STATUS_OK
+    )
+    # Even if config appears complete, remaining stays None without a ledger.
     return {
-        "status": STATUS_POLICY_NOT_CONFIGURED,
+        "status": STATUS_POLICY_NOT_CONFIGURED if daily_quota is None else status,
         "unit": "pcs_per_day",
-        "urgent_daily_quota": None,
+        "urgent_daily_quota": daily_quota,
         "urgent_already_allocated": None,
         "urgent_remaining": None,
         "requested_urgent_qty": requested_urgent_qty,
@@ -214,35 +246,35 @@ def urgent_quota_snapshot(
         "branch": None,
         "production_date": (production_date or "")[:10] or None,
         "enforcement_active": False,
-        "authority": "none — historical 10000 pcs/day Owner direction not codified",
+        "authority": "optional urgent_quota_policy (informational only)",
         "gaps": gaps,
         "notes": [
             "Do not infer urgency from deadline alone.",
             "header.urgent (Accurate) is KPI/filter only — not a quota engine.",
-            "No default urgent approval actor invented.",
+            "M8.3 does not enforce urgent quotas automatically.",
         ],
     }
 
 
 def urgent_eligibility_snapshot(po_doc: dict[str, Any]) -> dict[str, Any]:
-    """Eligibility advisory from authoritative PO fields only.
+    """Eligibility indicators from authoritative PO fields only.
 
-    Margin restriction (Rp55/pcs) requires an approved margin SoT — absent today.
+    Margin restriction is not applied — Owner rejected automatic margin-based
+    scheduling limits. Missing margin → INSUFFICIENT_DATA display only.
     """
     header = po_doc.get("header") if isinstance(po_doc.get("header"), dict) else {}
     urgent_flag = bool(header.get("urgent") is True)
     seller = str(header.get("seller") or "").strip() or None
     customer = str(header.get("customer") or "").strip() or None
 
-    # Margin is not on PoHeaderModel / Accurate normalize path.
     margin_gaps = [
         "no authoritative selling-margin field on PO header or line",
         "do not infer margin from unit price alone",
-        "Rp55/pcs minimum-margin urgent restriction POLICY_REQUIRED",
+        "margin-based scheduling restriction is not part of M8.3 (advisory only)",
     ]
 
     return {
-        "status": STATUS_INSUFFICIENT_DATA if margin_gaps else STATUS_OK,
+        "status": STATUS_INSUFFICIENT_DATA,
         "urgent_flag": urgent_flag,
         "urgent_flag_source": "header.urgent",
         "sales_owner": seller,
@@ -255,8 +287,8 @@ def urgent_eligibility_snapshot(po_doc: dict[str, Any]) -> dict[str, Any]:
         "enforcement_active": False,
         "gaps": margin_gaps,
         "notes": [
-            "Urgent flag is informational until quota + margin policy are approved.",
-            "No automatic conversion regular→urgent.",
+            "Urgent flag is informational; M8.3 does not auto-convert or override.",
+            "No automatic margin-based scheduling restriction.",
         ],
     }
 
@@ -271,6 +303,7 @@ def build_capacity_advisory(
     schedule_date: str | None = None,
     shift_code: str | None = None,
     requested_qty: float | None = None,
+    allowed_branch_codes: Collection[str] | None = None,
 ) -> dict[str, Any]:
     """Composite read-only advisory for M8.3 UI / ops review."""
     line_snap: dict[str, Any] | None = None
@@ -298,6 +331,7 @@ def build_capacity_advisory(
         branch_code=branch_code,
         schedule_date=schedule_date,
         shift_code=shift_code,
+        allowed_branch_codes=allowed_branch_codes,
     )
     urgent_quota = urgent_quota_snapshot(
         db,
@@ -312,6 +346,7 @@ def build_capacity_advisory(
     return {
         "milestone": "M8_3_URGENT_SCHEDULING_MACHINE_CAPACITY",
         "advisory_only": True,
+        "mode": "INFORMATIONAL",
         "enforcement": {
             "line_qty_reservation": True,
             "machine_shift_capacity": False,
@@ -324,13 +359,11 @@ def build_capacity_advisory(
         "machine_capacity": machine,
         "urgent_quota": urgent_quota,
         "urgent_eligibility": eligibility,
-        "policy_holds": [
-            "URGENT_DAILY_QUOTA value and reset rules",
-            "sales-ownership quota distribution formula",
-            "minimum-margin (Rp55/pcs) margin source of truth",
-            "machine_type taxonomy + output_per_shift_pcs population",
-            "allocation↔machine/shift binding before machine remaining capacity",
-            "urgent approval workflow / actor",
+        # Data limitations for display — not Owner decisions pending activation.
+        "data_limitations": [
+            "machine remaining capacity needs machine/shift binding on allocations",
+            "urgent remaining needs optional urgent_quota_policy + consumption ledger",
+            "margin indicator needs an authoritative margin field (display only)",
         ],
     }
 
@@ -341,16 +374,22 @@ def _po_urgent(po_doc: dict[str, Any]) -> bool:
 
 
 def assert_no_invented_machine_enforcement(advisory: dict[str, Any]) -> None:
-    """Test helper: machine/urgent enforcement must stay off while inputs incomplete."""
+    """Test helper: machine/urgent/margin/auto-reschedule enforcement stay off."""
     enf = advisory.get("enforcement") or {}
+    assert advisory.get("advisory_only") is True
+    assert advisory.get("mode") == "INFORMATIONAL"
     assert enf.get("machine_shift_capacity") is False
     assert enf.get("urgent_quota") is False
     assert enf.get("urgent_margin_restriction") is False
     assert enf.get("auto_reschedule") is False
+    assert enf.get("auto_urgent_override") is False
     mc = advisory.get("machine_capacity") or {}
     assert mc.get("enforcement_active") is False
+    uq = advisory.get("urgent_quota") or {}
+    assert uq.get("enforcement_active") is False
     assert mc.get("status") in {
         STATUS_INSUFFICIENT_DATA,
         STATUS_POLICY_NOT_CONFIGURED,
         STATUS_UNKNOWN,
     }
+    assert "policy_holds" not in advisory
