@@ -1,11 +1,13 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
   createAllocations,
+  fetchCapacityAdvisory,
   fetchPoSchedule,
   fetchSchedulingOperators,
   reviseAllocationQty,
   SchedulingApiError,
   type Allocation,
+  type CapacityAdvisory,
   type LineSchedule,
   type ScreenKind,
 } from "../api/scheduling";
@@ -122,6 +124,8 @@ export function TeamTaskSchedulingForm({
   /** Mobile: form collapsed until shortcut / validation needs it. */
   const [allocFormOpen, setAllocFormOpen] = useState(false);
   const allocFormRef = useRef<HTMLDivElement | null>(null);
+  const [capacityAdvisory, setCapacityAdvisory] =
+    useState<CapacityAdvisory | null>(null);
 
   const poId = task.ref.accurate_po_id;
 
@@ -175,6 +179,28 @@ export function TeamTaskSchedulingForm({
     const found = lines.find((l) => l.accurate_line_id === lineId) || null;
     if (found) setLine(found);
   }, [lines, lineId]);
+
+  useEffect(() => {
+    if (!poId || !lineId) {
+      setCapacityAdvisory(null);
+      return;
+    }
+    let cancelled = false;
+    void fetchCapacityAdvisory({
+      accuratePoId: poId,
+      accurateLineId: lineId,
+      scheduleDate: scheduleDate || undefined,
+    })
+      .then((adv) => {
+        if (!cancelled) setCapacityAdvisory(adv);
+      })
+      .catch(() => {
+        if (!cancelled) setCapacityAdvisory(null);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [poId, lineId, scheduleDate, lines]);
 
   useEffect(() => {
     if (!canAllocate && !canRevise) {
@@ -452,6 +478,38 @@ export function TeamTaskSchedulingForm({
         <p className="ep-error" role="alert">
           {loadError}
         </p>
+      ) : null}
+      {capacityAdvisory ? (
+        <div
+          className="ep-notice ep-notice-compact"
+          data-testid="sched-capacity-advisory"
+          role="status"
+        >
+          <span>
+            Kapasitas mesin:{" "}
+            <strong>{capacityAdvisory.machine_capacity.status}</strong>
+            {capacityAdvisory.machine_capacity.available_capacity == null
+              ? " — data tidak cukup (tidak memakai angka default)"
+              : ` — ${qty(capacityAdvisory.machine_capacity.available_capacity)} pcs/shift`}
+          </span>
+          {" · "}
+          <span>
+            Kuota urgent:{" "}
+            <strong>{capacityAdvisory.urgent_quota.status}</strong>
+            {capacityAdvisory.urgent_eligibility?.urgent_flag
+              ? " · flag urgent PO aktif"
+              : ""}
+          </span>
+          {" · "}
+          <span>
+            Utilisasi line:{" "}
+            {capacityAdvisory.line_reservation?.projected_utilization == null
+              ? "—"
+              : `${Math.round(
+                  capacityAdvisory.line_reservation.projected_utilization * 100,
+                )}%`}
+          </span>
+        </div>
       ) : null}
       {lines.length > 0 || line ? (
         <>

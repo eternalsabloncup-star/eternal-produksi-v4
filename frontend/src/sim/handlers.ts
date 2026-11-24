@@ -613,6 +613,56 @@ export function handleSimRequest(
       ],
     });
   }
+  if (path === "/api/scheduling/capacity-advisory" && method === "GET") {
+    return json({
+      milestone: "M8_3_URGENT_SCHEDULING_MACHINE_CAPACITY",
+      advisory_only: true,
+      enforcement: {
+        line_qty_reservation: true,
+        machine_shift_capacity: false,
+        urgent_quota: false,
+        urgent_margin_restriction: false,
+        auto_reschedule: false,
+        auto_urgent_override: false,
+      },
+      line_reservation: {
+        status: "OK",
+        unit: "pcs",
+        qty_target: 5000,
+        reserved_capacity: 2500,
+        remaining_capacity: 2500,
+        projected_utilization: 0.5,
+        enforcement_active: true,
+      },
+      machine_capacity: {
+        status: "INSUFFICIENT_DATA",
+        unit: "pcs_per_shift",
+        available_capacity: null,
+        reserved_capacity: null,
+        remaining_capacity: null,
+        active_machine_count: 0,
+        active_shift_count: 0,
+        enforcement_active: false,
+        gaps: ["sim: master machines empty"],
+      },
+      urgent_quota: {
+        status: "POLICY_NOT_CONFIGURED",
+        urgent_daily_quota: null,
+        urgent_remaining: null,
+        sales_owner: null,
+        enforcement_active: false,
+        gaps: ["sim: urgent policy not configured"],
+      },
+      urgent_eligibility: {
+        urgent_flag: false,
+        sales_owner: null,
+        margin_status: "INSUFFICIENT_DATA",
+        eligible_for_urgent_priority: null,
+        enforcement_active: false,
+      },
+      policy_holds: ["sim advisory"],
+    });
+  }
   if (path === "/api/scheduling/board" && method === "GET") {
     const cetak = SIM_SCHEDULE_LINES.lines.filter(
       (l) => (l as { process_kind?: string }).process_kind === "Cetak",

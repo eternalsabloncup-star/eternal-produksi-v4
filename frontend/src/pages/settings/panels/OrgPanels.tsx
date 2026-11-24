@@ -228,10 +228,24 @@ export function BranchesPanel({
   );
 }
 
+type MachineForm = {
+  code: string;
+  label: string;
+  branch_code: string;
+  machine_type: string;
+  output_per_shift_pcs: string;
+};
+
 type MachineProps = {
-  machines: Array<{ code: string; label: string; branch_code?: string }>;
-  newMachine: { code: string; label: string; branch_code: string };
-  setNewMachine: (v: { code: string; label: string; branch_code: string }) => void;
+  machines: Array<{
+    code: string;
+    label: string;
+    branch_code?: string;
+    machine_type?: string | null;
+    output_per_shift_pcs?: number | null;
+  }>;
+  newMachine: MachineForm;
+  setNewMachine: (v: MachineForm) => void;
   branches: SettingsBranch[];
   savingOrg: boolean;
   onSave: (e: FormEvent) => void;
@@ -287,6 +301,34 @@ export function MachinesPanel({
               ))}
             </select>
           </label>
+          <label className="ep-settings-field">
+            <span className="ep-settings-field-label">Tipe mesin (opsional)</span>
+            <input
+              value={newMachine.machine_type}
+              onChange={(e) =>
+                setNewMachine({ ...newMachine, machine_type: e.target.value })
+              }
+              placeholder="mis. Automatic / Semi-automatic"
+            />
+          </label>
+          <label className="ep-settings-field">
+            <span className="ep-settings-field-label">
+              Output / shift pcs (opsional)
+            </span>
+            <input
+              type="number"
+              min={1}
+              step={1}
+              value={newMachine.output_per_shift_pcs}
+              onChange={(e) =>
+                setNewMachine({
+                  ...newMachine,
+                  output_per_shift_pcs: e.target.value,
+                })
+              }
+              placeholder="Kosong = data belum lengkap"
+            />
+          </label>
           <div className="ep-settings-actions">
             <button
               type="submit"
@@ -324,12 +366,14 @@ export function MachinesPanel({
                 <th style={{ width: 120 }}>Kode</th>
                 <th>Nama</th>
                 <th style={{ width: 140 }}>Cabang</th>
+                <th style={{ width: 140 }}>Tipe</th>
+                <th style={{ width: 140 }}>Output/shift</th>
               </tr>
             </thead>
             <tbody>
               {filtered.length === 0 ? (
                 <tr>
-                  <td colSpan={3}>
+                  <td colSpan={5}>
                     <div className="ep-settings-empty">
                       Belum ada mesin, atau Anda tidak punya hak mengaksesnya.
                     </div>
@@ -341,6 +385,12 @@ export function MachinesPanel({
                     <td>{m.code}</td>
                     <td>{m.label}</td>
                     <td>{m.branch_code || "—"}</td>
+                    <td>{m.machine_type || "—"}</td>
+                    <td>
+                      {m.output_per_shift_pcs != null
+                        ? `${Number(m.output_per_shift_pcs).toLocaleString("id-ID")} pcs`
+                        : "—"}
+                    </td>
                   </tr>
                 ))
               )}

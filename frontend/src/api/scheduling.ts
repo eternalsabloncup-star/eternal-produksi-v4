@@ -203,6 +203,77 @@ export async function fetchSchedulingOperators(): Promise<{
   return request("/api/scheduling/operators");
 }
 
+/** M8.3 read-only capacity / urgent advisory — never invents capacity defaults. */
+export type CapacityAdvisory = {
+  milestone: string;
+  advisory_only: boolean;
+  enforcement: {
+    line_qty_reservation: boolean;
+    machine_shift_capacity: boolean;
+    urgent_quota: boolean;
+    urgent_margin_restriction: boolean;
+    auto_reschedule: boolean;
+    auto_urgent_override: boolean;
+  };
+  line_reservation: {
+    status: string;
+    unit: string;
+    qty_target: number;
+    reserved_capacity: number;
+    remaining_capacity: number;
+    projected_utilization: number | null;
+    enforcement_active: boolean;
+  } | null;
+  machine_capacity: {
+    status: string;
+    unit: string;
+    available_capacity: number | null;
+    reserved_capacity: number | null;
+    remaining_capacity: number | null;
+    active_machine_count: number;
+    active_shift_count: number;
+    enforcement_active: boolean;
+    gaps?: string[];
+  };
+  urgent_quota: {
+    status: string;
+    urgent_daily_quota: number | null;
+    urgent_remaining: number | null;
+    sales_owner: string | null;
+    enforcement_active: boolean;
+    gaps?: string[];
+  };
+  urgent_eligibility: {
+    urgent_flag: boolean;
+    sales_owner: string | null;
+    margin_status: string;
+    eligible_for_urgent_priority: boolean | null;
+    enforcement_active: boolean;
+  } | null;
+  policy_holds: string[];
+};
+
+export async function fetchCapacityAdvisory(opts?: {
+  accuratePoId?: string;
+  accurateLineId?: string;
+  branchCode?: string;
+  scheduleDate?: string;
+  shiftCode?: string;
+  requestedQty?: number;
+}): Promise<CapacityAdvisory> {
+  const params = new URLSearchParams();
+  if (opts?.accuratePoId) params.set("accuratePoId", opts.accuratePoId);
+  if (opts?.accurateLineId) params.set("accurateLineId", opts.accurateLineId);
+  if (opts?.branchCode) params.set("branchCode", opts.branchCode);
+  if (opts?.scheduleDate) params.set("scheduleDate", opts.scheduleDate);
+  if (opts?.shiftCode) params.set("shiftCode", opts.shiftCode);
+  if (opts?.requestedQty != null) {
+    params.set("requestedQty", String(opts.requestedQty));
+  }
+  const qs = params.toString();
+  return request(`/api/scheduling/capacity-advisory${qs ? `?${qs}` : ""}`);
+}
+
 export async function createAllocations(
   accuratePoId: string,
   lineId: string,
