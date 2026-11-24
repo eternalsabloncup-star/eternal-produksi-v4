@@ -756,6 +756,8 @@ def assign_loading_sj_task(
     if note is None:
         raise LookupError(f"Surat Jalan tidak ditemukan: {accurate_sj_id}")
     assert_branch_access(user, scope_object=note)
+    # Assignment is an operational mutation — same Accepted gate as Loading confirm.
+    _require_accepted_po_for_note(db, note)
     email = assigned_user_email.strip().lower()
     if not email or "@" not in email:
         raise ValueError("assigned_user_email wajib email valid.")
@@ -824,6 +826,14 @@ def reject_loading_mismatch(
     # Paksa mismatch path: raise_quantity_discrepancy menolak jika all_matched.
     # Jika validasi ternyata cocok, tetap buat catatan "Tidak Sesuai" via context.
     validation = validate_loading(db, accurate_sj_id, user=user)
+    disc_key = build_task_key(LOADING_TASK, "delivery_note", _sj_ref(note_scope))
+    existing_disc = tasks.get_task(db, disc_key)
+    if existing_disc is not None:
+        return {
+            "discrepancy_task": existing_disc,
+            "validation": validation,
+            "duplicate": True,
+        }
     if validation.get("all_matched"):
         # Owner: user menyatakan Tidak Sesuai — catat discrepancy dengan alasan manual.
         note = deliveries.get_delivery_note(db, accurate_sj_id)
@@ -892,10 +902,16 @@ def confirm_loading(
     _assert_loading_assignee(db, user, accurate_sj_id)
     assigned_role = _prepare_delivery_txn(db)
 
+    note = deliveries.get_delivery_note(db, accurate_sj_id)
+    if note is None:
+        raise LookupError(f"Surat Jalan tidak ditemukan: {accurate_sj_id}")
+    # Branch + Accepted before idempotent early-return — no cross-branch leak.
+    assert_branch_access(user, scope_object=note)
+    _require_accepted_po_for_note(db, note)
+
     existing = deliveries.get_loading_event(db, accurate_sj_id)
     if existing is not None:
-        note_now = deliveries.get_delivery_note(db, accurate_sj_id) or {}
-        if note_now.get("revision_status") == deliveries.REVISION_NEEDS_RELOADING:
+        if note.get("revision_status") == deliveries.REVISION_NEEDS_RELOADING:
             raise LoadingValidationError(
                 "Surat Jalan direvisi: batalkan Loading lama terlebih dahulu "
                 "sebelum Loading ulang."
@@ -903,19 +919,10 @@ def confirm_loading(
         return {
             "loading": existing,
             "driver_task_key": build_task_key(
-                DRIVER_TASK, "delivery_note", _sj_ref(note_now)
-            )
-            if note_now
-            else None,
+                DRIVER_TASK, "delivery_note", _sj_ref(note)
+            ),
             "duplicate": True,
         }
-
-    note = deliveries.get_delivery_note(db, accurate_sj_id)
-    if note is None:
-        raise LookupError(f"Surat Jalan tidak ditemukan: {accurate_sj_id}")
-    assert_branch_access(user, scope_object=note)
-    # Owner: Loading baru hanya setelah Accepted — sebelum validasi/mutasi/stok.
-    _require_accepted_po_for_note(db, note)
 
     validation = validate_loading(db, accurate_sj_id)
     if not validation["all_matched"]:
@@ -1179,6 +1186,7 @@ def cancel_loading(
     note = deliveries.get_delivery_note(db, accurate_sj_id)
     if note is None:
         raise LookupError(f"Surat Jalan tidak ditemukan: {accurate_sj_id}")
+    assert_branch_access(user, scope_object=note)
 
     loading = deliveries.get_loading_event(db, accurate_sj_id)
     if loading is None:
