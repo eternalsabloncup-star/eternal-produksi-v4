@@ -51,9 +51,19 @@ export type DeliveryNote = {
   superseded_by?: string | null;
 };
 
+export type DeliveryPrintStatus = {
+  state: "belum" | "proses" | "selesai" | "non_cetak" | "unavailable";
+  label: string;
+  qty_confirmed: number | null;
+  qty_reference: number | null;
+  unit: string | null;
+  percent: number | null;
+};
+
 export type DeliveryScheduleRow = DeliveryNote & {
   item_count: number;
   qty_by_unit: Record<string, number>;
+  print_status?: DeliveryPrintStatus;
   loaded: boolean;
   loaded_at?: string | null;
   loading_id?: string | null;

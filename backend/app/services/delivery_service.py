@@ -15,6 +15,7 @@ from app.repositories import task_repository as tasks
 from app.repositories.po_repository import get_by_accurate_id
 from app.services import production_service as production
 from app.services.audit_log import append_audit_event
+from app.services.delivery_print_status import apply_schedule_print_status
 from app.services.object_auth import (
     actor_email,
     assert_branch_access,
@@ -1844,6 +1845,7 @@ def delivery_schedule(
                 "recipient_name": (last_event or {}).get("recipient_name") or "",
             }
         )
+    apply_schedule_print_status(db, rows)
     return {
         "items": rows,
         "summary": {
