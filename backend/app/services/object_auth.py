@@ -208,7 +208,7 @@ def loading_sj_visible_to_actor(user: dict[str, Any], task: dict[str, Any]) -> b
 
 
 def is_actionable_open_task(task: dict[str, Any] | None) -> bool:
-    """Actionable = belum selesai dan bukan Loading yang dibatalkan."""
+    """Actionable = belum selesai dan bukan Loading yang dibatalkan/diarsip."""
     from app.repositories.task_repository import TASK_STATUS_DONE
 
     if not isinstance(task, dict):
@@ -217,6 +217,10 @@ def is_actionable_open_task(task: dict[str, Any] | None) -> bool:
         return False
     ctx = task.get("context") if isinstance(task.get("context"), dict) else {}
     if ctx.get("loading_cancelled") is True:
+        return False
+    # Policy A soft-archive: historical loading-sj not actionable until restored.
+    archive = ctx.get("loading_sj_archive")
+    if isinstance(archive, dict) and archive.get("archived") is True:
         return False
     # Preliminary: actionable sampai semua SJ terkait punya loading-sj.
     # SJ dokumen saja (tanpa loading-sj) tetap visible/actionable informatif.
@@ -324,6 +328,11 @@ def filter_tasks_for_actor(
     sj_cache: dict[str, dict[str, Any] | None] = {}
 
     for task in items:
+        # Soft-archived Loading SJ stay out of actor task lists until restored.
+        ctx = task.get("context") if isinstance(task.get("context"), dict) else {}
+        archive = ctx.get("loading_sj_archive")
+        if isinstance(archive, dict) and archive.get("archived") is True:
+            continue
         if not task_source_po_accepted(
             db, task, po_cache=po_cache, sj_cache=sj_cache
         ):

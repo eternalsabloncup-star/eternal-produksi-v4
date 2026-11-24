@@ -136,7 +136,7 @@ def _accept_po_under_writer_lease(
         sync_info = derived.get("design_gate_sync") or attempt_sync_design_gate_for_non_print_po(
             db, po_doc, actor_email=str(user.get("email_normalized") or "")
         )
-        return {
+        out = {
             "accurate_po_id": po_id,
             "duplicate": True,
             "acceptance": acceptance_block(po_doc),
@@ -144,6 +144,16 @@ def _accept_po_under_writer_lease(
             "design_gate_sync": sync_info,
             "po": po_doc,
         }
+        try:
+            from app.services.delivery_service import resume_loading_sj_tasks_for_accepted_po
+
+            out["loading_sj_resume_task_keys"] = resume_loading_sj_tasks_for_accepted_po(
+                db, po_id
+            )
+        except Exception as exc:  # noqa: BLE001
+            out["loading_sj_resume_task_keys"] = []
+            out["loading_sj_resume_error"] = str(exc)[:240]
+        return out
 
     actor = str(user.get("email_normalized") or "")
     now = datetime.now(timezone.utc)
@@ -253,6 +263,18 @@ def _accept_po_under_writer_lease(
     workflow["scheduling_unlocked"] = gates.both_gates_open(db, po_id_out)
     workflow["design_gate_sync"] = sync_info
     result["workflow"] = workflow
+
+    # F08 resume: create deferred Loading SJ tasks once parents are Accepted.
+    # Failures must not roll back acceptance (same posture as design-gate sync).
+    try:
+        from app.services.delivery_service import resume_loading_sj_tasks_for_accepted_po
+
+        result["loading_sj_resume_task_keys"] = resume_loading_sj_tasks_for_accepted_po(
+            db, po_id_out
+        )
+    except Exception as exc:  # noqa: BLE001 — acceptance remains authoritative
+        result["loading_sj_resume_task_keys"] = []
+        result["loading_sj_resume_error"] = str(exc)[:240]
     return result
 
 
