@@ -171,7 +171,13 @@ export function SettingsMasterPage() {
   const [savingEditUser, setSavingEditUser] = useState(false);
   const [newRole, setNewRole] = useState({ role_key: "", label: "" });
   const [newBranch, setNewBranch] = useState({ code: "", name: "" });
-  const [newMachine, setNewMachine] = useState({ code: "", label: "", branch_code: "" });
+  const [newMachine, setNewMachine] = useState({
+    code: "",
+    label: "",
+    branch_code: "",
+    machine_type: "",
+    output_per_shift_pcs: "",
+  });
   const [newShift, setNewShift] = useState({
     code: "",
     label: "",
@@ -395,7 +401,13 @@ export function SettingsMasterPage() {
         setMappingEditValue("");
         break;
       case "machines":
-        setNewMachine({ code: "", label: "", branch_code: "" });
+        setNewMachine({
+          code: "",
+          label: "",
+          branch_code: "",
+          machine_type: "",
+          output_per_shift_pcs: "",
+        });
         break;
       case "shifts":
         setNewShift({ code: "", label: "", start_time: "08:00", end_time: "16:00" });
@@ -1237,9 +1249,23 @@ export function SettingsMasterPage() {
                   e.preventDefault();
                   if (savingOrg) return;
                   setSavingOrg(true);
-                  void upsertMachine(newMachine)
+                  void upsertMachine({
+                    code: newMachine.code,
+                    label: newMachine.label,
+                    branch_code: newMachine.branch_code || undefined,
+                    machine_type: newMachine.machine_type || undefined,
+                    output_per_shift_pcs: newMachine.output_per_shift_pcs.trim()
+                      ? Number(newMachine.output_per_shift_pcs)
+                      : undefined,
+                  })
                     .then(async () => {
-                      setNewMachine({ code: "", label: "", branch_code: "" });
+                      setNewMachine({
+                        code: "",
+                        label: "",
+                        branch_code: "",
+                        machine_type: "",
+                        output_per_shift_pcs: "",
+                      });
                       showFeedback("success", "Berhasil", "Mesin berhasil disimpan.");
                       await loadSettings();
                     })

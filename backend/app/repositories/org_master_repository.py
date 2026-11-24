@@ -266,7 +266,16 @@ def upsert_machine(
     label: str,
     branch_code: str | None,
     is_active: bool = True,
+    machine_type: str | None = None,
+    output_per_shift_pcs: float | None = None,
+    clear_optional_capacity_fields: bool = False,
 ) -> dict[str, Any]:
+    """Upsert mesin.
+
+    Optional capacity fields (machine_type, output_per_shift_pcs) are additive only —
+    never defaulted. Omitted kwargs leave existing values untouched unless
+    clear_optional_capacity_fields=True. No invented 17000 pcs/shift default.
+    """
     require_org_master_indexes(db)
     c = code.strip().upper()
     if not c or not label.strip():
@@ -276,18 +285,41 @@ def upsert_machine(
     if branch:
         if _coll(db, BRANCHES).find_one({"code": branch}) is None:
             raise LookupError(f"Cabang tidak ditemukan: {branch}")
+    sets: dict[str, Any] = {
+        "code": c,
+        "label": label.strip(),
+        "branch_code": branch,
+        "is_active": is_active,
+        "updated_at": now,
+    }
+    unset: dict[str, str] = {}
+    if clear_optional_capacity_fields:
+        unset["machine_type"] = ""
+        unset["output_per_shift_pcs"] = ""
+    else:
+        if machine_type is not None:
+            mt = str(machine_type).strip()
+            if mt:
+                sets["machine_type"] = mt
+            else:
+                unset["machine_type"] = ""
+        if output_per_shift_pcs is not None:
+            try:
+                out_pcs = float(output_per_shift_pcs)
+            except (TypeError, ValueError) as exc:
+                raise ValueError("output_per_shift_pcs harus angka.") from exc
+            if out_pcs <= 0:
+                raise ValueError("output_per_shift_pcs harus > 0.")
+            sets["output_per_shift_pcs"] = out_pcs
+    update: dict[str, Any] = {
+        "$set": sets,
+        "$setOnInsert": {"created_at": now},
+    }
+    if unset:
+        update["$unset"] = unset
     doc = _coll(db, MACHINES).find_one_and_update(
         {"code": c},
-        {
-            "$set": {
-                "code": c,
-                "label": label.strip(),
-                "branch_code": branch,
-                "is_active": is_active,
-                "updated_at": now,
-            },
-            "$setOnInsert": {"created_at": now},
-        },
+        update,
         upsert=True,
         projection={"_id": 0},
         return_document=ReturnDocument.AFTER,

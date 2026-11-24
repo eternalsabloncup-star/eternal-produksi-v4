@@ -126,6 +126,86 @@ def _parse_board_column_filters(
     return out or None
 
 
+@router.get("/capacity-advisory")
+def get_capacity_advisory(
+    accurate_po_id: str | None = Query(None, alias="accuratePoId"),
+    accurate_line_id: str | None = Query(None, alias="accurateLineId"),
+    branch_code: str | None = Query(None, alias="branchCode"),
+    schedule_date: str | None = Query(None, alias="scheduleDate"),
+    shift_code: str | None = Query(None, alias="shiftCode"),
+    requested_qty: float | None = Query(None, alias="requestedQty", ge=0),
+    auth: AuthContext = Depends(require_session),
+) -> dict[str, Any]:
+    """M8.3 read-only machine capacity + urgent quota advisory.
+
+    Informational only — never mutates schedules; never enables machine/urgent
+    enforcement. Fail-closed: INSUFFICIENT_DATA / POLICY_NOT_CONFIGURED when
+    inputs incomplete. Branch-scoped even when accuratePoId is omitted.
+    """
+    from app.services import scheduling_capacity_advisory as advisory
+    from app.services.object_auth import bypasses_branch, user_branch_ids
+    from app.services.task_engine import can_act
+
+    db = get_db()
+    allowed = (
+        can_act(db, auth.user, task_type="penjadwalan", action="confirm")
+        or can_act(db, auth.user, task_type="penjadwalan", action="input")
+        or can_act(db, auth.user, task_type="penjadwalan", action="edit")
+        or can_act(db, auth.user, task_type="penjadwalan-ulang", action="edit")
+        or can_act(db, auth.user, task_type="penjadwalan-ulang", action="input")
+    )
+    if not allowed:
+        raise HTTPException(
+            status.HTTP_403_FORBIDDEN,
+            "Capacity advisory hanya untuk peran penjadwalan.",
+        )
+
+    elevated = bypasses_branch(auth.user)
+    branch_scope: set[str] | None = None if elevated else user_branch_ids(auth.user)
+    if not elevated:
+        if not branch_scope:
+            raise HTTPException(
+                status.HTTP_403_FORBIDDEN,
+                "Akun tanpa scope cabang yang valid — akses ditolak.",
+            )
+        requested_branch = (branch_code or "").strip().upper() or None
+        if requested_branch and requested_branch not in branch_scope:
+            raise HTTPException(
+                status.HTTP_403_FORBIDDEN,
+                "Cabang di luar scope akun — capacity advisory ditolak.",
+            )
+
+    po_doc: dict[str, Any] | None = None
+    qty_target: float | None = None
+    if accurate_po_id:
+        try:
+            po_doc = require_po_branch_access(db, auth.user, accurate_po_id)
+        except LookupError as exc:
+            raise HTTPException(status.HTTP_404_NOT_FOUND, str(exc)) from exc
+        except ObjectAuthError as exc:
+            raise HTTPException(status.HTTP_403_FORBIDDEN, str(exc)) from exc
+        if accurate_line_id:
+            from app.services.scheduling_service import _line_from_po
+
+            try:
+                line = _line_from_po(po_doc, accurate_line_id)
+            except LookupError as exc:
+                raise HTTPException(status.HTTP_404_NOT_FOUND, str(exc)) from exc
+            qty_target = float(line.get("qty") or 0)
+
+    return advisory.build_capacity_advisory(
+        db,
+        po_doc=po_doc,
+        accurate_line_id=accurate_line_id,
+        qty_target=qty_target,
+        branch_code=branch_code,
+        schedule_date=schedule_date,
+        shift_code=shift_code,
+        requested_qty=requested_qty,
+        allowed_branch_codes=branch_scope,
+    )
+
+
 @router.get("/board")
 def get_schedule_board(
     q: str | None = None,

@@ -576,13 +576,21 @@ def list_machines(db: Database, actor: dict[str, Any]) -> list[dict[str, Any]]:
 
 def save_machine(db: Database, actor: dict[str, Any], body: dict[str, Any]) -> dict[str, Any]:
     _require(actor, PERM_MANAGE_SETTINGS)
-    doc = org.upsert_machine(
-        db,
-        code=str(body["code"]),
-        label=str(body["label"]),
-        branch_code=body.get("branch_code"),
-        is_active=bool(body.get("is_active", True)),
-    )
+    # Optional capacity fields: only pass when key present — never invent defaults.
+    kwargs: dict[str, Any] = {
+        "code": str(body["code"]),
+        "label": str(body["label"]),
+        "branch_code": body.get("branch_code"),
+        "is_active": bool(body.get("is_active", True)),
+    }
+    if "machine_type" in body:
+        kwargs["machine_type"] = body.get("machine_type")
+    if "output_per_shift_pcs" in body:
+        raw = body.get("output_per_shift_pcs")
+        kwargs["output_per_shift_pcs"] = None if raw in (None, "") else raw
+    if body.get("clear_optional_capacity_fields") is True:
+        kwargs["clear_optional_capacity_fields"] = True
+    doc = org.upsert_machine(db, **kwargs)
     append_audit_event(
         db,
         action="settings.machine.upsert",

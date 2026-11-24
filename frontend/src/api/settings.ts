@@ -299,10 +299,28 @@ export async function upsertMachine(body: {
   code: string;
   label: string;
   branch_code?: string;
+  machine_type?: string;
+  output_per_shift_pcs?: number;
 }) {
+  const payload: Record<string, unknown> = {
+    code: body.code,
+    label: body.label,
+    is_active: true,
+  };
+  if (body.branch_code !== undefined) payload.branch_code = body.branch_code;
+  if (body.machine_type !== undefined && body.machine_type.trim()) {
+    payload.machine_type = body.machine_type.trim();
+  }
+  if (
+    body.output_per_shift_pcs !== undefined &&
+    Number.isFinite(body.output_per_shift_pcs) &&
+    body.output_per_shift_pcs > 0
+  ) {
+    payload.output_per_shift_pcs = body.output_per_shift_pcs;
+  }
   return request("/api/settings/machines", {
     method: "PUT",
-    body: JSON.stringify({ ...body, is_active: true }),
+    body: JSON.stringify(payload),
   });
 }
 

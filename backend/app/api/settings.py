@@ -103,6 +103,11 @@ class MachineBody(BaseModel):
     label: str
     branch_code: str | None = None
     is_active: bool = True
+    # Optional M8.3 capacity metadata — omitted leaves existing values unchanged.
+    # Never invent a default output; Owner must populate explicitly.
+    machine_type: str | None = None
+    output_per_shift_pcs: float | None = None
+    clear_optional_capacity_fields: bool = False
 
 
 class ShiftBody(BaseModel):
@@ -375,7 +380,10 @@ def put_machine(
     body: MachineBody, auth: AuthContext = Depends(require_csrf)
 ) -> dict[str, Any]:
     try:
-        return svc.save_machine(get_db(), auth.user, body.model_dump())
+        # exclude_unset: optional capacity fields only apply when client sends them.
+        return svc.save_machine(
+            get_db(), auth.user, body.model_dump(exclude_unset=True)
+        )
     except Exception as exc:  # noqa: BLE001
         raise _handle(exc) from exc
 
