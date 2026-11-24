@@ -563,7 +563,7 @@ def test_t24_m81_loading_assign_still_requires_accepted(
     _seed_po(db, accepted=False)
     boot.verify_loading_sj_contract(db)
     note = deliveries.upsert_delivery_note(db, _sj())["delivery_note"]
-    delivery.ensure_loading_sj_task(db, note)
+    assert delivery.ensure_loading_sj_task(db, note) is None
     with pytest.raises(PoAcceptanceError):
         delivery.assign_loading_sj_task(
             db, HEAD, accurate_sj_id=SJ_ID, assigned_user_email="helper@eternal.local"
