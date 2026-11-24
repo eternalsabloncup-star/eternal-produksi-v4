@@ -1459,16 +1459,9 @@ def confirm_delivery_success(
     note = deliveries.get_delivery_note(db, accurate_sj_id)
     if note is None:
         raise LookupError(f"Surat Jalan tidak ditemukan: {accurate_sj_id}")
+    # Branch + Accepted before idempotent early-return — no protected-data leak.
     assert_branch_access(user, scope_object=note)
-    _require_active_loading(db, accurate_sj_id)
-    if len(photos) < MIN_DELIVERY_PHOTOS:
-        raise DeliveryEvidenceError(
-            f"Konfirmasi pengiriman memerlukan minimal {MIN_DELIVERY_PHOTOS} foto."
-        )
-    if not signature or not signature[2]:
-        raise DeliveryEvidenceError("Tanda tangan penerima wajib diisi.")
-    if not recipient_name.strip():
-        raise DeliveryEvidenceError("Nama penerima wajib diisi.")
+    _require_accepted_po_for_note(db, note)
 
     # Idempotensi: sudah sukses → kembalikan event yang sama, tanpa bukti baru.
     existing_success = deliveries.delivery_events_collection(db).find_one(
@@ -1481,8 +1474,15 @@ def confirm_delivery_success(
     if existing_success is not None:
         return existing_success
 
-    # Owner: pengiriman baru hanya setelah Accepted — sebelum staging evidence.
-    _require_accepted_po_for_note(db, note)
+    _require_active_loading(db, accurate_sj_id)
+    if len(photos) < MIN_DELIVERY_PHOTOS:
+        raise DeliveryEvidenceError(
+            f"Konfirmasi pengiriman memerlukan minimal {MIN_DELIVERY_PHOTOS} foto."
+        )
+    if not signature or not signature[2]:
+        raise DeliveryEvidenceError("Tanda tangan penerima wajib diisi.")
+    if not recipient_name.strip():
+        raise DeliveryEvidenceError("Nama penerima wajib diisi.")
 
     courier = str(user.get("email_normalized") or "")
     recipient = recipient_name.strip()
