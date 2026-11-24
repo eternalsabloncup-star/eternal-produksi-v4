@@ -793,25 +793,52 @@ def resume_loading_sj_tasks_for_accepted_po(
     accurate_po_id: str,
     *,
     session: Any | None = None,
-) -> list[str]:
+) -> dict[str, Any]:
     """Idempotent: ensure Loading SJ for active notes linked to an accepted PO.
 
-    Called from PO acceptance transition (no new timer/worker). Multi-parent
-    SJ only create when *all* parents are accepted (same gate as ensure).
-    Soft-archived tasks remain untouched.
+    Called from PO acceptance transition *after* acceptance commits (no new
+    timer/worker). Multi-parent SJ only create when *all* parents are accepted.
+
+    Returns only task keys that are actually ready (accepted parents, not
+    soft-archived). Deferred multi-parent / gated notes are listed separately —
+    never reported as resumed.
     """
     from app.services.display_enrichment import list_active_delivery_notes_for_po
 
     po_id = str(accurate_po_id or "").strip()
     if not po_id:
-        return []
+        return {
+            "ok": True,
+            "task_keys": [],
+            "deferred_sj_ids": [],
+            "skipped_archived_sj_ids": [],
+        }
+
     keys: list[str] = []
+    deferred: list[str] = []
+    skipped_archived: list[str] = []
     for note in list_active_delivery_notes_for_po(db, po_id):
+        sj_id = str(note.get("accurate_sj_id") or "").strip()
         task = ensure_loading_sj_task(db, note, session=session)
-        key = str((task or {}).get("task_key") or "").strip()
+        if _loading_sj_soft_archived(task):
+            if sj_id and sj_id not in skipped_archived:
+                skipped_archived.append(sj_id)
+            continue
+        if task is None or not note_all_parent_pos_accepted(
+            db, note, session=session
+        ):
+            if sj_id and sj_id not in deferred:
+                deferred.append(sj_id)
+            continue
+        key = str(task.get("task_key") or "").strip()
         if key and key not in keys:
             keys.append(key)
-    return keys
+    return {
+        "ok": True,
+        "task_keys": keys,
+        "deferred_sj_ids": deferred,
+        "skipped_archived_sj_ids": skipped_archived,
+    }
 
 
 def assign_loading_sj_task(

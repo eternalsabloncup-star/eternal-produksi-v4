@@ -158,9 +158,16 @@ def test_f08_accept_po_resumes_deferred_task(
     # accept via service (uses operational.acceptance SoT)
     result = accept_po(db, HEAD, accurate_po_id=PO_ID)
     assert result.get("acceptance", {}).get("status") == ACCEPTANCE_ACCEPTED
+    assert result.get("loading_sj_resume_ok") is True
     keys = result.get("loading_sj_resume_task_keys") or []
     assert delivery.loading_sj_task_key(SJ_ID) in keys
     assert tasks.get_task(db, delivery.loading_sj_task_key(SJ_ID)) is not None
+
+    # Duplicate accept remains idempotent and does not invent extra tasks.
+    again = accept_po(db, HEAD, accurate_po_id=PO_ID)
+    assert again.get("duplicate") is True
+    assert again.get("loading_sj_resume_ok") is True
+    assert again.get("loading_sj_resume_task_keys") == keys
 
 
 def test_soft_archive_restore_visibility(

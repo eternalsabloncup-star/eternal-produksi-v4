@@ -86,6 +86,36 @@ def _acceptance_payload(*, actor_email: str, now: datetime) -> dict[str, Any]:
     }
 
 
+def _attach_loading_sj_resume(
+    db: Database, result: dict[str, Any], accurate_po_id: str
+) -> dict[str, Any]:
+    """Attach Loading SJ resume outcome without inventing a successful create.
+
+    Acceptance remains authoritative: resume errors never raise out of accept_po.
+    ``loading_sj_resume_ok`` is True only when ensure completed without error;
+    ``loading_sj_resume_task_keys`` lists only ready (accepted, non-archived) tasks.
+    """
+    try:
+        from app.services.delivery_service import resume_loading_sj_tasks_for_accepted_po
+
+        resume = resume_loading_sj_tasks_for_accepted_po(db, accurate_po_id)
+        result["loading_sj_resume_ok"] = bool(resume.get("ok"))
+        result["loading_sj_resume_task_keys"] = list(resume.get("task_keys") or [])
+        result["loading_sj_resume_deferred_sj_ids"] = list(
+            resume.get("deferred_sj_ids") or []
+        )
+        result["loading_sj_resume_skipped_archived_sj_ids"] = list(
+            resume.get("skipped_archived_sj_ids") or []
+        )
+    except Exception as exc:  # noqa: BLE001 — acceptance remains authoritative
+        result["loading_sj_resume_ok"] = False
+        result["loading_sj_resume_task_keys"] = []
+        result["loading_sj_resume_deferred_sj_ids"] = []
+        result["loading_sj_resume_skipped_archived_sj_ids"] = []
+        result["loading_sj_resume_error"] = str(exc)[:240]
+    return result
+
+
 def accept_po(
     db: Database,
     user: dict[str, Any],
@@ -144,16 +174,7 @@ def _accept_po_under_writer_lease(
             "design_gate_sync": sync_info,
             "po": po_doc,
         }
-        try:
-            from app.services.delivery_service import resume_loading_sj_tasks_for_accepted_po
-
-            out["loading_sj_resume_task_keys"] = resume_loading_sj_tasks_for_accepted_po(
-                db, po_id
-            )
-        except Exception as exc:  # noqa: BLE001
-            out["loading_sj_resume_task_keys"] = []
-            out["loading_sj_resume_error"] = str(exc)[:240]
-        return out
+        return _attach_loading_sj_resume(db, out, po_id)
 
     actor = str(user.get("email_normalized") or "")
     now = datetime.now(timezone.utc)
@@ -264,18 +285,9 @@ def _accept_po_under_writer_lease(
     workflow["design_gate_sync"] = sync_info
     result["workflow"] = workflow
 
-    # F08 resume: create deferred Loading SJ tasks once parents are Accepted.
+    # F08 resume runs AFTER acceptance txn commits (committed visibility).
     # Failures must not roll back acceptance (same posture as design-gate sync).
-    try:
-        from app.services.delivery_service import resume_loading_sj_tasks_for_accepted_po
-
-        result["loading_sj_resume_task_keys"] = resume_loading_sj_tasks_for_accepted_po(
-            db, po_id_out
-        )
-    except Exception as exc:  # noqa: BLE001 — acceptance remains authoritative
-        result["loading_sj_resume_task_keys"] = []
-        result["loading_sj_resume_error"] = str(exc)[:240]
-    return result
+    return _attach_loading_sj_resume(db, result, po_id_out)
 
 
 class DesignGateSyncError(RuntimeError):
