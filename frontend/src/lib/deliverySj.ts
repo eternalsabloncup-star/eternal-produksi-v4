@@ -155,6 +155,44 @@ export function deliveryStatusLabel(status: string): string {
   return "Menunggu Pengiriman";
 }
 
+export function printStatusFilterText(
+  status: DeliveryScheduleRow["print_status"] | null,
+): string {
+  const label = status?.label?.trim();
+  return label || "Belum tersedia";
+}
+
+/** Persen hanya untuk status yang angkanya sah. Kosong mengurut di akhir. */
+export function printStatusSortValue(
+  status: DeliveryScheduleRow["print_status"] | null,
+): number | null {
+  if (!status) return null;
+  if (status.state === "unavailable" || status.state === "non_cetak") return null;
+  if (status.percent == null || status.qty_confirmed == null || status.qty_reference == null) {
+    return null;
+  }
+  return status.percent;
+}
+
+export function printStatusHasNumbers(
+  status: DeliveryScheduleRow["print_status"] | null,
+): status is NonNullable<DeliveryScheduleRow["print_status"]> & {
+  qty_confirmed: number;
+  qty_reference: number;
+  unit: string;
+  percent: number;
+} {
+  return Boolean(
+    status &&
+      status.state !== "unavailable" &&
+      status.state !== "non_cetak" &&
+      status.qty_confirmed != null &&
+      status.qty_reference != null &&
+      status.percent != null &&
+      status.unit,
+  );
+}
+
 export function loadingStatusLabel(row: DeliveryScheduleRow): string {
   if (row.needs_reloading) return "Perlu Loading Ulang";
   return row.loaded ? "Sudah Loading" : "Belum Loading";

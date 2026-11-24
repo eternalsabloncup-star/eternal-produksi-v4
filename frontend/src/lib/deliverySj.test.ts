@@ -8,6 +8,9 @@ import {
   loadingStatusLabel,
   matchesSearch,
   matchesShipDate,
+  printStatusFilterText,
+  printStatusHasNumbers,
+  printStatusSortValue,
   qtyByUnit,
   revisionStatusLabel,
   rowTotalQtyDisplay,
@@ -200,6 +203,39 @@ describe("gabungan filter dan KPI", () => {
     );
     expect(filtered.sjCount).toBe(1);
     expect(filtered.qtyByUnit).toEqual({ PCS: 100 });
+  });
+});
+
+describe("status cetak", () => {
+  it("menyaring dan mengurutkan dari angka yang sah", () => {
+    const partial = row({
+      print_status: {
+        state: "proses",
+        label: "Proses Cetak",
+        qty_confirmed: 250,
+        qty_reference: 1000,
+        unit: "PCS",
+        percent: 25,
+      },
+    });
+    const missing = row({
+      print_status: {
+        state: "unavailable",
+        label: "Belum tersedia",
+        qty_confirmed: null,
+        qty_reference: null,
+        unit: null,
+        percent: null,
+      },
+    });
+    expect(printStatusFilterText(partial.print_status)).toBe("Proses Cetak");
+    expect(printStatusFilterText(missing.print_status)).toBe("Belum tersedia");
+    expect(printStatusFilterText(undefined)).toBe("Belum tersedia");
+    expect(printStatusSortValue(partial.print_status)).toBe(25);
+    expect(printStatusSortValue(missing.print_status)).toBeNull();
+    expect(printStatusHasNumbers(partial.print_status)).toBe(true);
+    expect(printStatusHasNumbers(missing.print_status)).toBe(false);
+    expect(filterDeliveryRows([partial, missing], { kind: "all" }, "Cup Test")).toHaveLength(2);
   });
 });
 

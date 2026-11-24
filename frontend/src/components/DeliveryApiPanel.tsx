@@ -21,6 +21,8 @@ import {
   filterDeliveryRows,
   formatQtyByUnit,
   loadingStatusLabel,
+  printStatusFilterText,
+  printStatusSortValue,
   rowTotalQtyDisplay,
   scheduleMetrics,
 } from "../lib/deliverySj";
@@ -37,6 +39,7 @@ import { DeliveryPeriodModal } from "./DeliveryPeriodModal";
 import { DeliverySjDetailModal } from "./DeliverySjDetailModal";
 import { KpiSummary, type KpiItem } from "./KpiSummary";
 import { ShipDateFilter } from "./ShipDateFilter";
+import { PrintStatusCell } from "./PrintStatusCell";
 import { SjApiLineItems } from "./SjApiLineItems";
 
 /** Kolom utama tetap ringkas; sisanya lewat Pengaturan Kolom. */
@@ -483,6 +486,17 @@ export function DeliveryApiPanel() {
         defaultWidth: 150,
         getFilterValue: (r) => rowTotalQtyDisplay(r),
         render: (r) => <b>{rowTotalQtyDisplay(r)}</b>,
+      },
+      {
+        id: "printStatus",
+        label: "Status Cetak",
+        hideable: true,
+        filterType: "text",
+        defaultWidth: 176,
+        minWidth: 148,
+        getFilterValue: (r) => printStatusFilterText(r.print_status),
+        getSortValue: (r) => printStatusSortValue(r.print_status),
+        render: (r) => <PrintStatusCell status={r.print_status} />,
       },
       {
         id: "loadingStatus",
