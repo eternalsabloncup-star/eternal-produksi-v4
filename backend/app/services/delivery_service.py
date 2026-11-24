@@ -83,6 +83,38 @@ def has_successful_delivery(
     return deliveries.has_successful_delivery_event(db, accurate_sj_id)
 
 
+def note_all_parent_pos_accepted(
+    db: Database,
+    note: dict[str, Any],
+    *,
+    session: Any | None = None,
+) -> bool:
+    """True iff every parent PO of the SJ is Accepted (fail-closed).
+
+    Empty/missing parent refs → False. Missing PO doc → False.
+    Sumber otoritatif: ``operational.acceptance.status == accepted`` via
+    ``is_po_accepted`` — tidak menduplikasi aturan acceptance.
+    """
+    from app.services.po_acceptance import is_po_accepted
+
+    parent_ids = deliveries.note_parent_po_ids(note)
+    if not parent_ids:
+        return False
+    for po_id in parent_ids:
+        po_doc = get_by_accurate_id(db, po_id, session=session)
+        if po_doc is None or not is_po_accepted(po_doc):
+            return False
+    return True
+
+
+def _loading_sj_soft_archived(task: dict[str, Any] | None) -> bool:
+    if not isinstance(task, dict):
+        return False
+    ctx = task.get("context") if isinstance(task.get("context"), dict) else {}
+    archive = ctx.get("loading_sj_archive")
+    return isinstance(archive, dict) and archive.get("archived") is True
+
+
 def _require_accepted_po_for_note(db: Database, note: dict[str, Any]) -> dict[str, Any]:
     """Fail-closed: Loading/pengiriman hanya setelah SEMUA parent PO Accepted.
 
@@ -700,6 +732,10 @@ def ensure_loading_sj_task(
 ) -> dict[str, Any] | None:
     """Idempotent: satu tugas loading-sj per SJ bila flag aktif + Master siap.
 
+    F08: create/upsert hanya bila SEMUA parent PO Accepted. SJ note tetap
+    independen — gate ini tidak menghapus note. Soft-archived tasks are never
+    recreated/unarchived here (Owner restore is separate).
+
     Resync/revisi SJ tidak menghapus ``assigned_user_email`` existing kecuali
     pemanggil mengirim assignee baru secara eksplisit (reassignment).
     """
@@ -714,6 +750,15 @@ def ensure_loading_sj_task(
     ref = _sj_ref(note)
     key = build_task_key(LOADING_SJ_TASK, "delivery_note", ref)
     existing = tasks.get_task(db, key, session=session)
+
+    # Soft-archive: preserve identity; do not auto-restore on reimport/ensure.
+    if _loading_sj_soft_archived(existing):
+        return existing
+
+    # Fail-closed create gate — keep existing historical task if present.
+    if not note_all_parent_pos_accepted(db, note, session=session):
+        return existing
+
     prev_ctx = dict((existing or {}).get("context") or {})
     parent_ids = deliveries.note_parent_po_ids(note)
     ctx: dict[str, Any] = {
@@ -742,6 +787,59 @@ def ensure_loading_sj_task(
     )
     _link_preliminary_loading_for_note(db, note, session=session)
     return task
+
+
+def resume_loading_sj_tasks_for_accepted_po(
+    db: Database,
+    accurate_po_id: str,
+    *,
+    session: Any | None = None,
+) -> dict[str, Any]:
+    """Idempotent: ensure Loading SJ for active notes linked to an accepted PO.
+
+    Called from PO acceptance transition *after* acceptance commits (no new
+    timer/worker). Multi-parent SJ only create when *all* parents are accepted.
+
+    Returns only task keys that are actually ready (accepted parents, not
+    soft-archived). Deferred multi-parent / gated notes are listed separately —
+    never reported as resumed.
+    """
+    from app.services.display_enrichment import list_active_delivery_notes_for_po
+
+    po_id = str(accurate_po_id or "").strip()
+    if not po_id:
+        return {
+            "ok": True,
+            "task_keys": [],
+            "deferred_sj_ids": [],
+            "skipped_archived_sj_ids": [],
+        }
+
+    keys: list[str] = []
+    deferred: list[str] = []
+    skipped_archived: list[str] = []
+    for note in list_active_delivery_notes_for_po(db, po_id):
+        sj_id = str(note.get("accurate_sj_id") or "").strip()
+        task = ensure_loading_sj_task(db, note, session=session)
+        if _loading_sj_soft_archived(task):
+            if sj_id and sj_id not in skipped_archived:
+                skipped_archived.append(sj_id)
+            continue
+        if task is None or not note_all_parent_pos_accepted(
+            db, note, session=session
+        ):
+            if sj_id and sj_id not in deferred:
+                deferred.append(sj_id)
+            continue
+        key = str(task.get("task_key") or "").strip()
+        if key and key not in keys:
+            keys.append(key)
+    return {
+        "ok": True,
+        "task_keys": keys,
+        "deferred_sj_ids": deferred,
+        "skipped_archived_sj_ids": skipped_archived,
+    }
 
 
 def assign_loading_sj_task(

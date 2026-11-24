@@ -166,7 +166,28 @@ def test_t01_t02_t20_non_accepted_hidden_and_excluded(
     db: Database, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     note = _prepare(db, monkeypatch, accepted=False)
-    task = delivery.ensure_loading_sj_task(db, note)
+    # F08: ensure must not create new loading-sj before parents Accepted.
+    assert delivery.ensure_loading_sj_task(db, note) is None
+    # Historical/orphan task (pre-F08) remains hidden from actor views/counts.
+    from app.domain.operational import TaskRef, build_task_key
+
+    tasks.upsert_task(
+        db,
+        task_type="loading-sj",
+        scope="delivery_note",
+        assigned_role="helper",
+        ref=TaskRef(accurate_delivery_note_id=SJ_ID, sj_no=str(note.get("sj_no") or "")),
+        label="Loading Surat Jalan",
+        context={"accurate_po_ids": [PO_ID]},
+    )
+    task = tasks.get_task(
+        db,
+        build_task_key(
+            "loading-sj",
+            "delivery_note",
+            TaskRef(accurate_delivery_note_id=SJ_ID, sj_no=str(note.get("sj_no") or "")),
+        ),
+    )
     assert task is not None
     assert task_source_po_accepted(db, task) is False
     visible = filter_tasks_for_actor(db, HELPER, [task])
@@ -435,7 +456,7 @@ def test_assign_blocked_before_po_accepted(
     db: Database, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     note = _prepare(db, monkeypatch, accepted=False)
-    delivery.ensure_loading_sj_task(db, note)
+    assert delivery.ensure_loading_sj_task(db, note) is None
     with pytest.raises(PoAcceptanceError, match="belum diterima"):
         delivery.assign_loading_sj_task(
             db,
@@ -444,8 +465,7 @@ def test_assign_blocked_before_po_accepted(
             assigned_user_email="helper@eternal.local",
         )
     task = tasks.get_task(db, delivery.loading_sj_task_key(SJ_ID))
-    assert task is not None
-    assert not (task.get("context") or {}).get("assigned_user_email")
+    assert task is None
 
 
 def test_confirm_duplicate_still_requires_branch(
