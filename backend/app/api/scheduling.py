@@ -10,7 +10,6 @@ from pydantic import BaseModel, Field
 from app.auth.deps import AuthContext, require_csrf, require_session
 from app.db import get_db
 from app.repositories import schedule_repository as schedules
-from app.repositories.po_repository import get_by_accurate_id
 from app.repositories import master_repository as master
 from app.services import scheduling_service
 from app.services.index_preflight import MissingRequiredIndexError
@@ -45,13 +44,6 @@ class ReviseAllocationRequest(BaseModel):
 
 class RescheduleScanRequest(BaseModel):
     as_of: str | None = None
-
-
-def _po_or_404(accurate_po_id: str) -> dict[str, Any]:
-    doc = get_by_accurate_id(get_db(), accurate_po_id)
-    if doc is None:
-        raise HTTPException(status.HTTP_404_NOT_FOUND, "PO Accurate tidak ditemukan")
-    return doc
 
 
 @router.get("/operators")
@@ -331,10 +323,12 @@ def post_allocations(
     body: CreateAllocationsRequest,
     auth: AuthContext = Depends(require_csrf),
 ) -> dict[str, Any]:
-    po_doc = _po_or_404(accurate_po_id)
+    db = get_db()
     try:
+        # Branch ACL before write — same fail-closed gate as GET schedule views.
+        po_doc = require_po_branch_access(db, auth.user, accurate_po_id)
         return scheduling_service.create_allocations(
-            get_db(),
+            db,
             auth.user,
             po_doc=po_doc,
             accurate_line_id=accurate_line_id,
@@ -342,6 +336,8 @@ def post_allocations(
             idempotency_key=body.idempotency_key,
             schedule_date=body.schedule_date,
         )
+    except ObjectAuthError as exc:
+        raise HTTPException(status.HTTP_403_FORBIDDEN, str(exc)) from exc
     except TaskPermissionError as exc:
         raise HTTPException(status.HTTP_403_FORBIDDEN, str(exc)) from exc
     except master.MissingMasterConfigError as exc:
@@ -374,11 +370,11 @@ def put_allocation_qty(
     auth: AuthContext = Depends(require_csrf),
 ) -> dict[str, Any]:
     db = get_db()
-    alloc = schedules.get_allocation(db, allocation_id)
-    if alloc is None:
-        raise HTTPException(status.HTTP_404_NOT_FOUND, "Alokasi tidak ditemukan")
-    po_doc = _po_or_404(str(alloc["accurate_po_id"]))
     try:
+        # Branch ACL before revise — mirrors GET allocation history gate.
+        _alloc, po_doc = require_allocation_branch_access(db, auth.user, allocation_id)
+        if po_doc is None:
+            raise LookupError(f"PO alokasi tidak ditemukan: {allocation_id}")
         return scheduling_service.revise_allocation_qty(
             db,
             auth.user,
@@ -387,6 +383,10 @@ def put_allocation_qty(
             qty=body.qty,
             reason=body.reason,
         )
+    except ObjectAuthError as exc:
+        raise HTTPException(status.HTTP_403_FORBIDDEN, str(exc)) from exc
+    except LookupError as exc:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, str(exc)) from exc
     except TaskPermissionError as exc:
         raise HTTPException(status.HTTP_403_FORBIDDEN, str(exc)) from exc
     except scheduling_service.AllocationBelowConfirmedPrintError as exc:
@@ -434,11 +434,16 @@ def post_reschedule_scan(
     body: RescheduleScanRequest,
     auth: AuthContext = Depends(require_csrf),
 ) -> dict[str, Any]:
-    po_doc = _po_or_404(accurate_po_id)
+    db = get_db()
     try:
+        po_doc = require_po_branch_access(db, auth.user, accurate_po_id)
         return scheduling_service.scan_reschedule(
-            get_db(), auth.user, po_doc=po_doc, as_of=body.as_of
+            db, auth.user, po_doc=po_doc, as_of=body.as_of
         )
+    except ObjectAuthError as exc:
+        raise HTTPException(status.HTTP_403_FORBIDDEN, str(exc)) from exc
+    except LookupError as exc:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, str(exc)) from exc
     except TaskPermissionError as exc:
         raise HTTPException(status.HTTP_403_FORBIDDEN, str(exc)) from exc
     except master.MissingMasterConfigError as exc:

@@ -181,6 +181,8 @@ def _board_kpi_from_light_rows(
 
     unlocked_pos: set[str] = set()
     if po_ids:
+        from app.repositories import gate_repository as gate_repo
+
         for doc in gates_collection(db).find(
             {"accurate_po_id": {"$in": po_ids}},
             {"_id": 0, "accurate_po_id": 1, "design": 1, "payment": 1},
@@ -190,9 +192,12 @@ def _board_kpi_from_light_rows(
             payment = (
                 doc.get("payment") if isinstance(doc.get("payment"), dict) else {}
             )
+            # KPI must match write-path SoT (both_gates_open / Policy A),
+            # not raw design.state alone — stale OPEN + unapproved latest ≠ unlocked.
             if (
                 design.get("state") == GATE_OPEN
                 and payment.get("state") == GATE_OPEN
+                and gate_repo.design_unlocks_scheduling(db, po_id)
             ):
                 unlocked_pos.add(po_id)
 
