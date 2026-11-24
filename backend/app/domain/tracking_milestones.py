@@ -67,11 +67,10 @@ CUSTOMER_MILESTONES: Final[tuple[MilestoneSpec, ...]] = (
         id="order_verified",
         seq=2,
         label="Verifikasi Pesanan",
-        backend_sources=("operational.verification",),
-        gap_note=(
-            "Belum ada event verifikasi PO eksplisit di main/PR#6; "
-            "tetap Pending sampai kontrak verifikasi tersedia."
-        ),
+        # SoT: Kepala Produksi accept_po → operational.acceptance.status=accepted.
+        # Bukan field Accurate terpisah; jangan diganti status order_verified baru.
+        backend_sources=("operational.acceptance.status=accepted",),
+        gap_note=None,
     ),
     MilestoneSpec(
         id="design_prep",

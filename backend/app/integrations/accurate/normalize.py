@@ -254,6 +254,11 @@ def normalize_sales_order(payload: dict[str, Any]) -> PoHeaderModel:
         meta["accurate_branch_id"] = str(branch_id_raw).strip()
         meta["accurate_branch_id_source"] = "branchId"
 
+    # M8.4: observe cancel/void/status candidates only — no Eternal cancel side effects.
+    from app.services.po_lifecycle_signals import extract_accurate_so_lifecycle_signals
+
+    meta["lifecycle_signals"] = extract_accurate_so_lifecycle_signals(payload)
+
     return PoHeaderModel(
         origin="accurate",
         source_po_id=source_po_id,
