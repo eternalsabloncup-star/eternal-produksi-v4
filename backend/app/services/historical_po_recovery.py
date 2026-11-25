@@ -37,6 +37,8 @@ BATCH_ID = "historical_po_recovery_20261121"
 DEFAULT_MANIFEST_NAME = "historical_po_recovery_20261121.json"
 P8C_BATCH_ID = "historical_parent_po_recovery_p8c"
 P8C_MANIFEST_NAME = "historical_parent_po_recovery_p8c.json"
+M924_BATCH_ID = "historical_po_recovery_m924_po_71100"
+M924_MANIFEST_NAME = "historical_po_recovery_m924_po_71100.json"
 ALLOWED_BRANCHES = frozenset({"50", "150"})
 SHA40_RE = re.compile(r"^[0-9a-f]{40}$")
 
@@ -67,6 +69,7 @@ class BatchSpec:
     require_id_list_sha256: bool
     require_customer_and_related_sj: bool
     maintenance_actor: str
+    require_po_no: bool = False
 
 
 BATCH_REGISTRY: dict[str, BatchSpec] = {
@@ -88,6 +91,16 @@ BATCH_REGISTRY: dict[str, BatchSpec] = {
         require_customer_and_related_sj=True,
         maintenance_actor=P8C_MAINTENANCE_ACTOR,
     ),
+    M924_BATCH_ID: BatchSpec(
+        batch_id=M924_BATCH_ID,
+        label=M924_BATCH_ID,
+        expected_po_count=1,
+        default_manifest_name=M924_MANIFEST_NAME,
+        require_id_list_sha256=True,
+        require_customer_and_related_sj=True,
+        maintenance_actor="historical_po_recovery_m924_po_71100_apply",
+        require_po_no=True,
+    ),
 }
 
 
@@ -106,6 +119,8 @@ class ManifestEntry:
     customer_id: str = ""
     related_sj_ids: tuple[str, ...] = ()
     line_ids_sha256: str = ""
+    po_no: str = ""
+    enforce_po_no: bool = False
 
 
 @dataclass(frozen=True)
@@ -149,6 +164,7 @@ class HistoricalFloorPermit:
     expected_trans_date: date
     manifest_sha256: str
     batch_id: str
+    expected_po_no: str = ""
 
     def permits(self, accurate_id: str, payload: Mapping[str, Any]) -> bool:
         if str(accurate_id) != self.accurate_id:
@@ -162,6 +178,10 @@ class HistoricalFloorPermit:
         br = normalize_branch_identity(payload.get("branchId"))
         if br != self.expected_branch_id:
             return False
+        if self.expected_po_no:
+            number = as_text(payload.get("number") or payload.get("po_no")).strip()
+            if number != self.expected_po_no:
+                return False
         return True
 
 
@@ -321,6 +341,7 @@ def load_sealed_manifest(path: Path | None = None) -> SealedManifest:
             str(x).strip() for x in related_raw if str(x).strip().isdigit()
         )
         line_ids_sha256 = str(item.get("line_ids_sha256") or "").strip().lower()
+        po_no = as_text(item.get("po_no") or item.get("number")).strip()
         if spec.require_customer_and_related_sj:
             if not customer_id.isdigit():
                 raise HistoricalRecoveryError(
@@ -337,6 +358,11 @@ def load_sealed_manifest(path: Path | None = None) -> SealedManifest:
                     f"line_ids_sha256 wajib untuk {aid}",
                     code="manifest_invalid_line_hash",
                 )
+        if spec.require_po_no and not po_no:
+            raise HistoricalRecoveryError(
+                f"po_no wajib untuk {aid}",
+                code="manifest_invalid_po_no",
+            )
         entries.append(
             ManifestEntry(
                 accurate_po_id=aid,
@@ -346,6 +372,8 @@ def load_sealed_manifest(path: Path | None = None) -> SealedManifest:
                 customer_id=customer_id,
                 related_sj_ids=related_sj_ids,
                 line_ids_sha256=line_ids_sha256,
+                po_no=po_no,
+                enforce_po_no=bool(spec.require_po_no),
             )
         )
 
@@ -400,6 +428,7 @@ def issue_floor_permit(
         expected_trans_date=entry.trans_date,
         manifest_sha256=manifest.manifest_sha256,
         batch_id=manifest.batch_id,
+        expected_po_no=entry.po_no if entry.enforce_po_no else "",
     )
 
 
@@ -583,6 +612,16 @@ def validate_payload_against_entry(
             "expected": entry.trans_date.isoformat(),
             "actual": parsed.isoformat(),
         }
+    if entry.enforce_po_no:
+        number = as_text(payload.get("number") or payload.get("po_no")).strip()
+        if not entry.po_no or number != entry.po_no:
+            return {
+                "ok": False,
+                "outcome": "ineligible",
+                "reason": "po_no_mismatch",
+                "expected": entry.po_no,
+                "actual": number,
+            }
     if parsed >= configured_date_floor():
         # Manifest historis; jika Accurate sekarang >= floor, exception tidak perlu —
         # tetapi tetap tolak exception path (bukan mode normal di sini).

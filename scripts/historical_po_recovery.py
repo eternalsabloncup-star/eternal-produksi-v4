@@ -38,7 +38,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         required=True,
         help=(
             "Exact sealed count: 80 untuk historical_po_recovery_20261121; "
-            "10 untuk historical_parent_po_recovery_p8c."
+            "10 untuk historical_parent_po_recovery_p8c; "
+            "1 untuk historical_po_recovery_m924_po_71100."
         ),
     )
     p.add_argument(
@@ -46,7 +47,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         default="historical_po_recovery_20261121",
         help=(
             "Batch id exact dari registry sealed "
-            "(historical_po_recovery_20261121 | historical_parent_po_recovery_p8c)."
+            "(historical_po_recovery_20261121 | historical_parent_po_recovery_p8c | "
+            "historical_po_recovery_m924_po_71100)."
         ),
     )
     p.add_argument(

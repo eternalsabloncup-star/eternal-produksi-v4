@@ -1,0 +1,42 @@
+{
+  "label": "historical_po_recovery_m924_po_71100",
+  "version": "2026-11-26-m924",
+  "batch_id": "historical_po_recovery_m924_po_71100",
+  "audit_date": "2026-11-26",
+  "audit_source": "m9_23_hold_pre_apply_accurate_ro",
+  "created_at_utc": "2026-11-25T18:17:06.460532+00:00",
+  "provenance": {
+    "source": "M9.23 Accurate RO + M9.22 quarantine 121064",
+    "owner_approval": "EXACT_PO_71100_ONLY",
+    "related_sj": "121064",
+    "note": "Single-PO sealed historical floor permit; does not change global date_floor."
+  },
+  "global_date_floor": "2026-11-01",
+  "allowed_branches": [
+    "50",
+    "150"
+  ],
+  "po_count": 1,
+  "id_list_sha256": "029f1e26b627fb9131da2767cbfd1acd4f63ee07363e360e8c8dab967c07dfc0",
+  "target_sj_ids": [
+    "121064"
+  ],
+  "excluded_sj_ids": [
+    "120851"
+  ],
+  "entries": [
+    {
+      "accurate_po_id": "71100",
+      "trans_date": "2026-02-16",
+      "branch_id": "50",
+      "sj_count": 1,
+      "customer_id": "36200",
+      "related_sj_ids": [
+        "121064"
+      ],
+      "line_ids_sha256": "1194663feee4e28b0e92f5b09ce268f813c8e8b326d4aa8f656e27aa82c7ce94",
+      "po_no": "PO/2026/02/16/000036"
+    }
+  ],
+  "manifest_sha256": "4a25b4935f51d8019afeb491536a46179e8fe9fb5fb8991c8df129081eca5fec"
+}
