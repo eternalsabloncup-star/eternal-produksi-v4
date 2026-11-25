@@ -16,8 +16,10 @@
 | --- | --- | --- |
 | `historical_po_recovery_20261121` | 80 | `backend/app/manifests/historical_po_recovery_20261121.json` |
 | `historical_parent_po_recovery_p8c` | 10 | `backend/app/manifests/historical_parent_po_recovery_p8c.json` |
+| `historical_po_recovery_m924_po_71100` | 1 | `backend/app/manifests/historical_po_recovery_m924_po_71100.json` |
 
-P6 behavior, checksum rules, and CLI defaults remain unchanged. P8C requires `--expect-id-list-sha256`.
+P6 behavior, checksum rules, and CLI defaults remain unchanged. P8C requires `--expect-id-list-sha256`.  
+M9.24 single-PO batch requires `--expect-id-list-sha256` and enforces exact `po_no` match for `71100` / `PO/2026/02/16/000036`. Global `date_floor` unchanged; ordinary PO auto-sync still excludes pre-floor IDs.
 
 ### Native multi-PO SJ replay (new batch; P7D untouched)
 
