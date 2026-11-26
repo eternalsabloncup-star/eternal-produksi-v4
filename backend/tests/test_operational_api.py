@@ -11,6 +11,7 @@ from app.domain.operational import TaskRef
 from app.models.user import normalize_email
 from app.repositories import master_repository as master
 from app.repositories import task_repository as tasks
+from tests.po_accept_helpers import mark_po_accepted
 
 PASSWORD = "password-kuat-123"
 BRANCH_HQ = "HQ"
@@ -48,6 +49,7 @@ def _seed_operational_user(
 
 
 def _seed_po(db: Database, po_id: str = PO_ID, branch_id: str = BRANCH_HQ) -> None:
+    """Seed PO yang sudah accepted — daftar tugas fail-closed tanpa acceptance."""
     db["accurate_sales_orders"].update_one(
         {"accurate_id": po_id},
         {
@@ -59,6 +61,7 @@ def _seed_po(db: Database, po_id: str = PO_ID, branch_id: str = BRANCH_HQ) -> No
         },
         upsert=True,
     )
+    mark_po_accepted(db, accurate_po_id=po_id)
 
 
 def _login(client: TestClient, email: str) -> str:
