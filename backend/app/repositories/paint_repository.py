@@ -147,12 +147,27 @@ def new_id(prefix: str) -> str:
     return f"{prefix}_{uuid4().hex}"
 
 
-def grams_to_mg(grams: float | int | str | Decimal) -> int:
+def grams_to_mg(
+    grams: float | int | str | Decimal,
+    *,
+    allow_zero: bool = False,
+) -> int:
+    """Convert grams to integer milligrams.
+
+    Default (transactions): strictly positive.
+    Stocktake physical counts: ``allow_zero=True`` permits 0 g.
+    Negative / non-finite / >3 decimal places always rejected.
+    """
     try:
         g = Decimal(str(grams))
     except (InvalidOperation, ValueError) as exc:
         raise PaintQuantityError("Berat gram tidak valid.") from exc
-    if g <= 0:
+    if not g.is_finite():
+        raise PaintQuantityError("Berat gram tidak valid (non-finite).")
+    if allow_zero:
+        if g < 0:
+            raise PaintQuantityError("Berat gram fisik tidak boleh negatif.")
+    elif g <= 0:
         raise PaintQuantityError("Berat gram harus lebih besar dari nol.")
     # Max 3 decimal places in grams.
     exp = g.as_tuple().exponent
@@ -160,6 +175,10 @@ def grams_to_mg(grams: float | int | str | Decimal) -> int:
         raise PaintQuantityError("Berat gram maksimal 3 angka di belakang koma.")
     mg = (g * G_TO_MG).quantize(MG_QUANT, rounding=ROUND_HALF_UP)
     value = int(mg)
+    if allow_zero:
+        if value < 0:
+            raise PaintQuantityError("Berat setelah konversi mg tidak boleh negatif.")
+        return value
     if value <= 0:
         raise PaintQuantityError("Berat setelah konversi mg harus positif.")
     return value

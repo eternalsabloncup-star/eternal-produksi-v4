@@ -11,11 +11,12 @@ import {
   fetchPaintReady,
   fetchPaintReport,
   fetchPaintStock,
+  createPaintStocktakeSession,
   finalizePaintStocktake,
   newPaintIdempotencyKey,
+  previewPaintStocktake,
   recordPaintWaste,
   softDeletePaintDocument,
-  startPaintStocktake,
   upsertPaintCatalog,
   upsertPaintPurpose,
   type PaintCatalogItem,
@@ -918,45 +919,97 @@ export function PaintApiPanel() {
         <section className="ep-settings-card">
           <h3 className="ep-settings-card-title">Stock Opname</h3>
           {can("paint.stocktake.run") ? (
-            <button
-              type="button"
-              className="ep-btn"
-              onClick={() =>
-                void runAction("Dry run stocktake dibuat.", async () => {
-                  if (!branchId) throw new Error("Pilih cabang terlebih dahulu.");
-                  const res = await startPaintStocktake({ branch_id: branchId });
-                  const st = res.stocktake as {
-                    stocktake_id: string;
-                    lines?: Array<{
-                      paint_id: string;
-                      system_g?: number;
-                      system_mg?: number;
-                    }>;
-                  };
-                  setStocktakeId(st.stocktake_id);
-                  setStocktakeLines(
-                    (st.lines || []).map((ln) => ({
-                      paint_id: ln.paint_id,
-                      system_g:
-                        ln.system_g ??
-                        (ln.system_mg != null ? ln.system_mg / 1000 : 0),
-                      counted_g: String(
-                        ln.system_g ??
+            <div className="ep-settings-toolbar" style={{ gap: "0.5rem" }}>
+              <button
+                type="button"
+                className="ep-btn"
+                onClick={() =>
+                  void runAction("Dry run (preview) — tanpa tulis DB.", async () => {
+                    if (!branchId) throw new Error("Pilih cabang terlebih dahulu.");
+                    const res = await previewPaintStocktake({
+                      branch_id: branchId,
+                    });
+                    const st = res.stocktake as {
+                      stocktake_id?: string;
+                      persisted?: boolean;
+                      lines?: Array<{
+                        paint_id: string;
+                        system_g?: number;
+                        system_mg?: number;
+                      }>;
+                    };
+                    setStocktakeId(null);
+                    setStocktakeLines(
+                      (st.lines || []).map((ln) => ({
+                        paint_id: ln.paint_id,
+                        system_g:
+                          ln.system_g ??
                           (ln.system_mg != null ? ln.system_mg / 1000 : 0),
-                      ),
-                    })),
-                  );
-                })
-              }
-            >
-              Mulai dry run
-            </button>
+                        counted_g: String(
+                          ln.system_g ??
+                            (ln.system_mg != null ? ln.system_mg / 1000 : 0),
+                        ),
+                      })),
+                    );
+                  })
+                }
+              >
+                Dry run (preview)
+              </button>
+              <button
+                type="button"
+                className="ep-btn"
+                onClick={() =>
+                  void runAction("Sesi stocktake disimpan.", async () => {
+                    if (!branchId) throw new Error("Pilih cabang terlebih dahulu.");
+                    const res = await createPaintStocktakeSession({
+                      branch_id: branchId,
+                      counts: stocktakeLines.map((ln) => ({
+                        paint_id: ln.paint_id,
+                        counted_g: Number(ln.counted_g),
+                      })),
+                    });
+                    const st = res.stocktake as {
+                      stocktake_id: string;
+                      lines?: Array<{
+                        paint_id: string;
+                        system_g?: number;
+                        system_mg?: number;
+                        counted_g?: number | null;
+                      }>;
+                    };
+                    setStocktakeId(st.stocktake_id);
+                    if (st.lines?.length) {
+                      setStocktakeLines(
+                        st.lines.map((ln) => ({
+                          paint_id: ln.paint_id,
+                          system_g:
+                            ln.system_g ??
+                            (ln.system_mg != null ? ln.system_mg / 1000 : 0),
+                          counted_g: String(
+                            ln.counted_g ??
+                              ln.system_g ??
+                              (ln.system_mg != null ? ln.system_mg / 1000 : 0),
+                          ),
+                        })),
+                      );
+                    }
+                  })
+                }
+              >
+                Buat sesi stocktake
+              </button>
+            </div>
           ) : (
             <p className="muted">Tidak berwenang menjalankan stocktake.</p>
           )}
-          {stocktakeId ? (
+          {stocktakeLines.length ? (
             <div style={{ marginTop: "1rem" }}>
-              <p className="muted">Stocktake: {stocktakeId} (dry run)</p>
+              <p className="muted">
+                {stocktakeId
+                  ? `Sesi tersimpan: ${stocktakeId}`
+                  : "Preview saja — belum ada sesi tersimpan. Buat sesi sebelum finalize."}
+              </p>
               <table className="ep-settings-data-table is-compact">
                 <thead>
                   <tr>
@@ -997,7 +1050,7 @@ export function PaintApiPanel() {
                   })}
                 </tbody>
               </table>
-              {can("paint.stocktake.finalize") ? (
+              {can("paint.stocktake.finalize") && stocktakeId ? (
                 <button
                   type="button"
                   className="ep-btn primary"

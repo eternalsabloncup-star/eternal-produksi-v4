@@ -83,8 +83,13 @@ def test_grams_mg_roundtrip() -> None:
     assert mg_to_grams(1500) == 1.5
     with pytest.raises(PaintQuantityError):
         grams_to_mg(0)
+    assert grams_to_mg(0, allow_zero=True) == 0
+    with pytest.raises(PaintQuantityError):
+        grams_to_mg(-1, allow_zero=True)
     with pytest.raises(PaintQuantityError):
         grams_to_mg(1.2345)
+    with pytest.raises(PaintQuantityError):
+        grams_to_mg(float("nan"), allow_zero=True)
 
 
 def test_m2_master_inbound_stock_branch_isolation(paint_env: Database) -> None:
@@ -385,6 +390,19 @@ def test_m4_soft_delete_and_reports(paint_env: Database) -> None:
     assert any(i.get("used_by") == "op@eternal.local" for i in report["items"])
 
 
+def _paint_collection_counts(db: Database) -> dict[str, int]:
+    from app.repositories import paint_repository as paint
+
+    return {
+        paint.STOCKTAKES: db[paint.STOCKTAKES].count_documents({}),
+        paint.PERIOD_LOCKS: db[paint.PERIOD_LOCKS].count_documents({}),
+        paint.DOCUMENTS: db[paint.DOCUMENTS].count_documents({}),
+        paint.LEDGER: db[paint.LEDGER].count_documents({}),
+        paint.BALANCES: db[paint.BALANCES].count_documents({}),
+        "audit_logs": db["audit_logs"].count_documents({}),
+    }
+
+
 def test_m5_stocktake_dry_run_and_finalize(paint_env: Database) -> None:
     db = paint_env
     ids = _seed_masters(db)
@@ -397,11 +415,25 @@ def test_m5_stocktake_dry_run_and_finalize(paint_env: Database) -> None:
         idempotency_key=_key(),
         physical_confirmed=True,
     )
-    dry = svc.start_stocktake_dry_run(db, KP, branch_id="50")
-    assert dry["status"] == "open_dry_run"
-    # dry run must not change balance
+    before = _paint_collection_counts(db)
+    dry = svc.preview_stocktake(db, KP, branch_id="50")
+    assert dry["status"] == "preview"
+    assert dry["persisted"] is False
+    assert "stocktake_id" not in dry
+    after_preview = _paint_collection_counts(db)
+    assert after_preview == before
+    # repeated preview still zero writes
+    svc.start_stocktake_dry_run(db, KP, branch_id="50")
+    assert _paint_collection_counts(db) == before
+
     bal = next(x for x in svc.list_stock(db, KP, branch_id="50") if x["paint_id"] == ids["white"])
     assert bal["qty_mg"] == 100_000
+
+    # explicit session persists snapshot
+    session = svc.create_stocktake_session(db, KP, branch_id="50")
+    assert session["status"] == "open"
+    assert session["stocktake_id"]
+    assert db["paint_stocktakes"].count_documents({"stocktake_id": session["stocktake_id"]}) == 1
 
     # concurrent inbound after snapshot → finalize rejects stale version
     svc.confirm_inbound(
@@ -417,16 +449,16 @@ def test_m5_stocktake_dry_run_and_finalize(paint_env: Database) -> None:
         svc.finalize_stocktake(
             db,
             KP,
-            stocktake_id=dry["stocktake_id"],
+            stocktake_id=session["stocktake_id"],
             idempotency_key=_key(),
             counts=[{"paint_id": ids["white"], "counted_g": 100}],
         )
 
-    dry2 = svc.start_stocktake_dry_run(db, KP, branch_id="50")
+    session2 = svc.create_stocktake_session(db, KP, branch_id="50")
     fin = svc.finalize_stocktake(
         db,
         KP,
-        stocktake_id=dry2["stocktake_id"],
+        stocktake_id=session2["stocktake_id"],
         idempotency_key=_key("fin"),
         counts=[{"paint_id": ids["white"], "counted_g": 90}],
     )
@@ -438,14 +470,13 @@ def test_m5_stocktake_dry_run_and_finalize(paint_env: Database) -> None:
     fin2 = svc.finalize_stocktake(
         db,
         KP,
-        stocktake_id=dry2["stocktake_id"],
+        stocktake_id=session2["stocktake_id"],
         idempotency_key=_key("fin2"),
         counts=[{"paint_id": ids["white"], "counted_g": 90}],
     )
     assert fin2.get("duplicate") is True
 
-    # period lock rejects backdated? new inbound after lock still allowed (open period)
-    # but effective_at now > period_end so OK
+    # period lock: new inbound after lock (effective_at now > period_end) still OK
     svc.confirm_inbound(
         db,
         KP,
@@ -454,6 +485,67 @@ def test_m5_stocktake_dry_run_and_finalize(paint_env: Database) -> None:
         qty_g=1,
         idempotency_key=_key(),
         physical_confirmed=True,
+    )
+
+
+def test_m5_stocktake_zero_physical_count(paint_env: Database) -> None:
+    db = paint_env
+    ids = _seed_masters(db)
+    svc.confirm_inbound(
+        db,
+        KP,
+        branch_id="50",
+        paint_id=ids["white"],
+        qty_g=1000,
+        idempotency_key=_key(),
+        physical_confirmed=True,
+    )
+    preview = svc.preview_stocktake(
+        db,
+        KP,
+        branch_id="50",
+        counts=[{"paint_id": ids["white"], "counted_g": 0}],
+    )
+    white_line = next(x for x in preview["lines"] if x["paint_id"] == ids["white"])
+    assert white_line["counted_mg"] == 0
+    assert white_line["delta_mg"] == -1_000_000
+
+    with pytest.raises(PaintQuantityError):
+        svc.preview_stocktake(
+            db,
+            KP,
+            branch_id="50",
+            counts=[{"paint_id": ids["white"], "counted_g": -1}],
+        )
+
+    session = svc.create_stocktake_session(db, KP, branch_id="50")
+    fin = svc.finalize_stocktake(
+        db,
+        KP,
+        stocktake_id=session["stocktake_id"],
+        idempotency_key=_key("fin0"),
+        counts=[{"paint_id": ids["white"], "counted_g": 0}],
+    )
+    assert fin["stocktake"]["status"] == "finalized"
+    bal = next(x for x in svc.list_stock(db, KP, branch_id="50") if x["paint_id"] == ids["white"])
+    assert bal["qty_mg"] == 0
+    # no double ledger on idempotent finalize
+    ledger_n = db["paint_ledger"].count_documents(
+        {"entry_type": "stocktake_adjustment", "paint_id": ids["white"]}
+    )
+    fin2 = svc.finalize_stocktake(
+        db,
+        KP,
+        stocktake_id=session["stocktake_id"],
+        idempotency_key=_key("fin0b"),
+        counts=[{"paint_id": ids["white"], "counted_g": 0}],
+    )
+    assert fin2.get("duplicate") is True
+    assert (
+        db["paint_ledger"].count_documents(
+            {"entry_type": "stocktake_adjustment", "paint_id": ids["white"]}
+        )
+        == ledger_n
     )
 
 

@@ -1238,14 +1238,52 @@ def paint_report(
 # ---------------------------------------------------------------------------
 
 
-def start_stocktake_dry_run(
+def _stocktake_count_map(
+    counts: list[dict[str, Any]] | None,
+) -> dict[str, int]:
+    """Physical counts — zero allowed; negative/nonfinite rejected."""
+    out: dict[str, int] = {}
+    for c in counts or []:
+        pid = _strip(c.get("paint_id"))
+        if not pid or "counted_g" not in c or c.get("counted_g") is None:
+            continue
+        out[pid] = paint.grams_to_mg(c.get("counted_g"), allow_zero=True)
+    return out
+
+
+def _build_stocktake_lines(
+    balances: list[dict[str, Any]],
+    count_map: dict[str, int],
+) -> list[dict[str, Any]]:
+    lines: list[dict[str, Any]] = []
+    for bal in balances:
+        pid = bal["paint_id"]
+        system_mg = int(bal.get("qty_mg") or 0)
+        counted = count_map.get(pid)
+        lines.append(
+            {
+                "paint_id": pid,
+                "system_mg": system_mg,
+                "system_g": paint.mg_to_grams(system_mg),
+                "balance_version": int(bal.get("version") or 0),
+                "counted_mg": counted,
+                "counted_g": paint.mg_to_grams(counted)
+                if counted is not None
+                else None,
+                "delta_mg": (counted - system_mg) if counted is not None else None,
+            }
+        )
+    return lines
+
+
+def preview_stocktake(
     db: Database,
     user: dict[str, Any],
     *,
     branch_id: str,
     counts: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
-    """Create dry-run stocktake snapshot. No ledger writes."""
+    """Read-only dry-run preview. Zero database writes (no stocktake/audit)."""
     require_paint_permission(user, PERM_PAINT_STOCKTAKE_RUN)
     paint.require_paint_indexes(db)
     bid = assert_paint_branch(user, branch_id)
@@ -1254,31 +1292,53 @@ def start_stocktake_dry_run(
     balances = list(
         paint.coll(db, paint.BALANCES).find({"branch_id": bid}, {"_id": 0})
     )
-    count_map = {
-        _strip(c.get("paint_id")): paint.grams_to_mg(c.get("counted_g"))
-        for c in (counts or [])
-        if _strip(c.get("paint_id"))
+    count_map = _stocktake_count_map(counts)
+    lines = _build_stocktake_lines(balances, count_map)
+    return {
+        "status": "preview",
+        "persisted": False,
+        "branch_id": bid,
+        "cutoff_at": now,
+        "lines": lines,
+        "line_count": len(lines),
+        "created_by": actor_email(user),
     }
-    lines = []
-    for bal in balances:
-        pid = bal["paint_id"]
-        system_mg = int(bal.get("qty_mg") or 0)
-        counted = count_map.get(pid)
-        line = {
-            "paint_id": pid,
-            "system_mg": system_mg,
-            "system_g": paint.mg_to_grams(system_mg),
-            "balance_version": int(bal.get("version") or 0),
-            "counted_mg": counted,
-            "counted_g": paint.mg_to_grams(counted) if counted is not None else None,
-            "delta_mg": (counted - system_mg) if counted is not None else None,
-        }
-        lines.append(line)
+
+
+def start_stocktake_dry_run(
+    db: Database,
+    user: dict[str, Any],
+    *,
+    branch_id: str,
+    counts: list[dict[str, Any]] | None = None,
+) -> dict[str, Any]:
+    """Alias for read-only preview (Owner dry-run contract)."""
+    return preview_stocktake(db, user, branch_id=branch_id, counts=counts)
+
+
+def create_stocktake_session(
+    db: Database,
+    user: dict[str, Any],
+    *,
+    branch_id: str,
+    counts: list[dict[str, Any]] | None = None,
+) -> dict[str, Any]:
+    """Persist an authorized stocktake snapshot for later finalize."""
+    require_paint_permission(user, PERM_PAINT_STOCKTAKE_RUN)
+    paint.require_paint_indexes(db)
+    bid = assert_paint_branch(user, branch_id)
+    _require_branch_exists(db, bid)
+    now = paint.now_utc()
+    balances = list(
+        paint.coll(db, paint.BALANCES).find({"branch_id": bid}, {"_id": 0})
+    )
+    count_map = _stocktake_count_map(counts)
+    lines = _build_stocktake_lines(balances, count_map)
     stocktake_id = paint.new_id("pst")
     doc = {
         "stocktake_id": stocktake_id,
         "branch_id": bid,
-        "status": "open_dry_run",
+        "status": "open",
         "cutoff_at": now,
         "lines": lines,
         "created_at": now,
@@ -1288,10 +1348,14 @@ def start_stocktake_dry_run(
     paint.coll(db, paint.STOCKTAKES).insert_one(dict(doc))
     append_audit_event(
         db,
-        action="paint.stocktake.dry_run",
+        action="paint.stocktake.session_create",
         actor_email=actor_email(user),
         target_email=None,
-        detail={"stocktake_id": stocktake_id, "branch_id": bid, "line_count": len(lines)},
+        detail={
+            "stocktake_id": stocktake_id,
+            "branch_id": bid,
+            "line_count": len(lines),
+        },
     )
     return _public_doc(doc)
 
@@ -1318,14 +1382,12 @@ def finalize_stocktake(
         raise PaintNotFoundError("Stocktake tidak ditemukan.")
     if st.get("status") == "finalized":
         return {"stocktake": st, "duplicate": True}
-    if st.get("status") != "open_dry_run":
-        raise PaintValidationError("Stocktake tidak dalam status dry-run.")
+    if st.get("status") != "open":
+        raise PaintValidationError(
+            "Stocktake harus berstatus open (sesi tersimpan) sebelum finalize."
+        )
     bid = assert_paint_branch(user, st["branch_id"])
-    count_map = {
-        _strip(c.get("paint_id")): paint.grams_to_mg(c.get("counted_g"))
-        for c in counts
-        if _strip(c.get("paint_id"))
-    }
+    count_map = _stocktake_count_map(counts)
     if not count_map:
         raise PaintValidationError("Hasil hitung fisik wajib diisi untuk finalize.")
 
@@ -1416,7 +1478,7 @@ def finalize_stocktake(
                 )
 
         finalized = paint.coll(db, paint.STOCKTAKES).find_one_and_update(
-            {"stocktake_id": stocktake_id, "status": "open_dry_run"},
+            {"stocktake_id": stocktake_id, "status": "open"},
             {
                 "$set": {
                     "status": "finalized",

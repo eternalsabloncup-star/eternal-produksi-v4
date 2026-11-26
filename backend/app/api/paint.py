@@ -362,14 +362,31 @@ def get_report(
         raise _handle(exc) from exc
 
 
-@router.post("/stocktakes")
-def post_stocktake_start(
+@router.post("/stocktakes/preview")
+def post_stocktake_preview(
     body: StocktakeStartBody,
     auth: AuthContext = Depends(require_csrf),
 ) -> dict[str, Any]:
+    """Read-only dry run — no stocktake/audit/ledger writes."""
     try:
         return {
-            "stocktake": svc.start_stocktake_dry_run(
+            "stocktake": svc.preview_stocktake(
+                get_db(), auth.user, branch_id=body.branch_id, counts=body.counts
+            )
+        }
+    except Exception as exc:  # noqa: BLE001
+        raise _handle(exc) from exc
+
+
+@router.post("/stocktakes")
+def post_stocktake_session(
+    body: StocktakeStartBody,
+    auth: AuthContext = Depends(require_csrf),
+) -> dict[str, Any]:
+    """Explicit session create — persists authorized snapshot for finalize."""
+    try:
+        return {
+            "stocktake": svc.create_stocktake_session(
                 get_db(), auth.user, branch_id=body.branch_id, counts=body.counts
             )
         }

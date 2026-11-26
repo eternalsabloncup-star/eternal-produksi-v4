@@ -293,7 +293,18 @@ export async function fetchPaintReport(
   }>(`/api/paint/reports/${encodeURIComponent(kind)}${qs ? `?${qs}` : ""}`);
 }
 
-export async function startPaintStocktake(body: {
+export async function previewPaintStocktake(body: {
+  branch_id: string;
+  counts?: Array<{ paint_id: string; counted_g: number }>;
+}) {
+  return request<{ stocktake: Record<string, unknown> }>(
+    "/api/paint/stocktakes/preview",
+    { method: "POST", body: JSON.stringify(body) },
+  );
+}
+
+/** Explicit authorized snapshot — persists for finalize. */
+export async function createPaintStocktakeSession(body: {
   branch_id: string;
   counts?: Array<{ paint_id: string; counted_g: number }>;
 }) {
@@ -301,6 +312,14 @@ export async function startPaintStocktake(body: {
     method: "POST",
     body: JSON.stringify(body),
   });
+}
+
+/** @deprecated Use previewPaintStocktake (read-only) or createPaintStocktakeSession. */
+export async function startPaintStocktake(body: {
+  branch_id: string;
+  counts?: Array<{ paint_id: string; counted_g: number }>;
+}) {
+  return previewPaintStocktake(body);
 }
 
 export async function finalizePaintStocktake(
