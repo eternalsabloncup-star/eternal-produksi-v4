@@ -5,8 +5,9 @@ import type {
   RoleActionGrant,
   TaskAction,
 } from "../../../api/operational";
-import type { SettingsUser } from "../../../api/settings";
+import type { SettingsBranch, SettingsUser } from "../../../api/settings";
 import { computeJobConfigStatus } from "../jobConfigStatus";
+import type { ResourceLoadState } from "../loadState";
 import { jobConfigStatusLabel, type SettingsTabId } from "../settingsNav";
 import { roleWorkLabel } from "../settingsLabels";
 import { OpsGrantsPanel } from "./OpsGrantsPanel";
@@ -32,6 +33,10 @@ type Props = {
   taskTypes: MasterTaskType[];
   rolesOps: OperationalRole[];
   users: SettingsUser[];
+  branches: SettingsBranch[];
+  usersLoad: ResourceLoadState;
+  grantsLoad: ResourceLoadState;
+  branchesLoad: ResourceLoadState;
   actions: TaskAction[];
   grants: RoleActionGrant[];
   draftGrants: RoleActionGrant[];
@@ -67,11 +72,18 @@ export function JobsBoardPanel(props: Props) {
   const [section, setSection] = useState<BoardSection>("status");
 
   const rows = useMemo(() => {
+    const load = {
+      usersLoad: props.usersLoad,
+      grantsLoad: props.grantsLoad,
+      branchesLoad: props.branchesLoad,
+    };
     return props.taskTypes.map((task) => {
       const status = computeJobConfigStatus({
         task,
         grants: props.grants,
         users: props.users,
+        branches: props.branches,
+        load,
       });
       const grant = props.grants.find(
         (g) => g.role === task.assigned_role && g.task_type === task.task_type,
@@ -90,7 +102,15 @@ export function JobsBoardPanel(props: Props) {
         actions: grant?.actions || [],
       };
     });
-  }, [props.taskTypes, props.grants, props.users]);
+  }, [
+    props.taskTypes,
+    props.grants,
+    props.users,
+    props.branches,
+    props.usersLoad,
+    props.grantsLoad,
+    props.branchesLoad,
+  ]);
 
   return (
     <>
@@ -162,7 +182,14 @@ export function JobsBoardPanel(props: Props) {
                       <td>{row.actions.length ? row.actions.join(", ") : "—"}</td>
                       <td className="is-status">
                         <span
-                          className={`ep-settings-status-pill is-${row.status === "SIAP" ? "ok" : "warn"}`}
+                          className={`ep-settings-status-pill is-${
+                            row.status === "SIAP" ? "ok" : "warn"
+                          }`}
+                          title={
+                            row.status === "BELUM_TERVERIFIKASI"
+                              ? "Data muat gagal atau cakupan cabang belum terbukti"
+                              : undefined
+                          }
                         >
                           {jobConfigStatusLabel(row.status)}
                         </span>

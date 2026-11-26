@@ -10,6 +10,7 @@ import {
 import type { MasterTaskType, RoleActionGrant } from "../api/operational";
 import { computeJobConfigStatus } from "./settings/jobConfigStatus";
 import { classifyListResult } from "./settings/loadState";
+import { jobConfigStatusLabel } from "./settings/settingsNav";
 
 describe("Settings Center V2 navigation", () => {
   it("exposes five groups including jobs-board hub", () => {
@@ -144,6 +145,10 @@ describe("Settings Center V2 navigation", () => {
         ],
       }),
     ).toBe("SIAP");
+  });
+
+  it("labels BELUM_TERVERIFIKASI for incomplete evidence", () => {
+    expect(jobConfigStatusLabel("BELUM_TERVERIFIKASI")).toBe("Belum terverifikasi");
   });
 
   it("classifies empty vs failed load states distinctly", () => {

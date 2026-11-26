@@ -4346,6 +4346,13 @@
   color: var(--ep-muted);
 }
 
+.ep-settings-perm-split {
+  display: grid;
+  gap: 12px;
+  grid-template-columns: repeat(auto-fit, minmax(14rem, 1fr));
+  margin-top: 6px;
+}
+
 .ep-settings-confirm-modal {
   width: min(440px, calc(100vw - 24px));
 }

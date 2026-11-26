@@ -194,7 +194,8 @@ export type JobConfigStatus =
   | "SIAP"
   | "BELUM_ADA_PENANGGUNG_JAWAB"
   | "IZIN_BELUM_LENGKAP"
-  | "BELUM_ADA_PENGGUNA_AKTIF";
+  | "BELUM_ADA_PENGGUNA_AKTIF"
+  | "BELUM_TERVERIFIKASI";
 
 export function jobConfigStatusLabel(status: JobConfigStatus): string {
   switch (status) {
@@ -206,5 +207,7 @@ export function jobConfigStatusLabel(status: JobConfigStatus): string {
       return "Izin belum lengkap";
     case "BELUM_ADA_PENGGUNA_AKTIF":
       return "Belum ada pengguna aktif";
+    case "BELUM_TERVERIFIKASI":
+      return "Belum terverifikasi";
   }
 }

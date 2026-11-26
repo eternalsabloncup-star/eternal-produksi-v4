@@ -862,6 +862,7 @@ export function SettingsMasterPage() {
                 roles={roles}
                 rolesOps={rolesOps}
                 branches={branches}
+                policyGrants={policyGrants}
                 newUser={newUser}
                 setNewUser={setNewUser}
                 editingUser={editingUser}
@@ -1159,6 +1160,10 @@ export function SettingsMasterPage() {
                 taskTypes={taskTypes}
                 rolesOps={rolesOps}
                 users={users}
+                branches={branches}
+                usersLoad={resourceLoad.users || "idle"}
+                grantsLoad={resourceLoad.masterJobs || "idle"}
+                branchesLoad={resourceLoad.branches || "idle"}
                 actions={actions}
                 grants={grants}
                 draftGrants={draftGrants}
