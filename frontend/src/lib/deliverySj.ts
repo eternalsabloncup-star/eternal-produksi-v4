@@ -215,3 +215,50 @@ export function loadingEventStatusLabel(status: string): string {
 export function absentFieldCount(row: DeliveryNote): number {
   return row.source_meta?.absent_fields?.length ?? 0;
 }
+
+/** Non-Cetak: Loading langsung — bukan Packing Ledger. */
+export function isNonCetakLoadingItem(processKind: string | null | undefined): boolean {
+  return (processKind || "").trim() === "Non-Cetak";
+}
+
+/**
+ * Label kolom qty sekunder pada validasi Loading.
+ * Cetak = Packing tersedia; Non-Cetak = target SJ (bukan stok confirmed).
+ */
+export function loadingQtySecondaryLabel(
+  processKind: string | null | undefined,
+): string {
+  return isNonCetakLoadingItem(processKind)
+    ? "Qty Target SJ"
+    : "Qty Packing tersedia";
+}
+
+/** Nilai kolom sekunder: Non-Cetak pakai target SJ; Cetak pakai packing available. */
+export function loadingQtySecondaryValue(item: {
+  process_kind?: string | null;
+  qty?: number;
+  qty_available?: number;
+  qty_sj_target?: number | null;
+}): number {
+  if (isNonCetakLoadingItem(item.process_kind)) {
+    const target = item.qty_sj_target;
+    if (target != null && Number.isFinite(Number(target))) return Number(target);
+    return Number(item.qty || 0);
+  }
+  return Number(item.qty_available || 0);
+}
+
+/** Status teks validasi Loading per item. */
+export function loadingItemStatusLabel(item: {
+  process_kind?: string | null;
+  matched?: boolean;
+  reason?: string | null;
+}): string {
+  if (item.matched) {
+    return isNonCetakLoadingItem(item.process_kind)
+      ? "Siap verifikasi fisik"
+      : "Cocok";
+  }
+  const reason = (item.reason || "").trim();
+  return reason || "Tidak cocok";
+}

@@ -107,10 +107,11 @@ def _sj(*, items: list[dict] | None = None) -> dict:
     }
 
 
-def test_t2_legacy_non_cetak_self_compare_when_flag_off(
+def test_t2_non_cetak_direct_physical_regardless_of_ledger_flag(
     db: Database, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    _env(monkeypatch, V4_LOADING_PACKING_LEDGER_ENFORCED=False)
+    """Owner: Non-Cetak never requires Packing Ledger (flag ON or OFF)."""
+    _env(monkeypatch, V4_LOADING_PACKING_LEDGER_ENFORCED=True)
     _seed_accepted(db)
     deliveries.upsert_delivery_note(db, _sj(items=[
         {
@@ -121,20 +122,16 @@ def test_t2_legacy_non_cetak_self_compare_when_flag_off(
             "itemUnitName": "PACK",
         }
     ]))
-    # Driver needs pengiriman confirm
-    master.set_role_actions(
-        db, role="driver", task_type="pengiriman",
-        actions=["view", "input", "confirm", "manage_evidence", "cancel"],
-    )
     v = delivery.validate_loading(db, SJ_ID)
     assert v["all_matched"] is True
-    assert v["items"][0]["ledger_mode"] == "legacy_sj_self"
+    assert v["items"][0]["ledger_mode"] == "direct_physical"
+    assert v["items"][0]["physical_verification_required"] is True
 
 
-def test_t2_enforced_rejects_without_packing_ledger(
+def test_t2_flag_off_also_direct_physical(
     db: Database, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    _env(monkeypatch, V4_LOADING_PACKING_LEDGER_ENFORCED=True)
+    _env(monkeypatch, V4_LOADING_PACKING_LEDGER_ENFORCED=False)
     _seed_accepted(db)
     deliveries.upsert_delivery_note(db, _sj(items=[
         {
@@ -146,30 +143,23 @@ def test_t2_enforced_rejects_without_packing_ledger(
         }
     ]))
     v = delivery.validate_loading(db, SJ_ID)
-    assert v["all_matched"] is False
-    assert v["items"][0]["ledger_mode"] == "packing_required"
+    assert v["all_matched"] is True
+    assert v["items"][0]["ledger_mode"] == "direct_physical"
 
 
-def test_t2_enforced_mixed_sj_consumes_non_cetak_packing(
+def test_t2_mixed_sj_consumes_cetak_packing_only(
     db: Database, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     _env(
         monkeypatch,
         V4_LOADING_PACKING_LEDGER_ENFORCED=True,
+        V4_LOADING_SJ_TASK_ENABLED=True,
         V4_NON_CETAK_PACKING_ACTIVATED_AT=ACTIVATION,
     )
     po = _seed_accepted(db)
     po_tasks.derive_tasks_for_po(db, po)
-    # Pack Non-Cetak
-    prod.confirm_qc_packing(
-        db,
-        HELPER,
-        accurate_po_id=PO_ID,
-        accurate_line_id=LINE_NC,
-        qty=30,
-        idempotency_key="nc-pack-t2",
-    )
-    # Minimal Cetak packing: create qc task manually with confirmed
+    assert tasks.get_task(db, prod.qc_task_key(PO_ID, LINE_NC)) is None
+    # Cetak packing only
     tasks.upsert_task(
         db,
         task_type="qc-packing",
@@ -184,20 +174,36 @@ def test_t2_enforced_mixed_sj_consumes_non_cetak_packing(
         {"$set": {"qty_confirmed": 100}},
     )
     master.set_role_actions(
+        db, role="helper", task_type="loading-sj",
+        actions=["view", "confirm", "edit"],
+    )
+    master.set_role_actions(
         db, role="driver", task_type="pengiriman",
         actions=["view", "input", "confirm", "manage_evidence", "cancel"],
     )
-    deliveries.upsert_delivery_note(db, _sj())
+    master.set_role_actions(
+        db, role="production-head", task_type="loading-sj",
+        actions=["view", "confirm", "edit"],
+    )
+    note = deliveries.upsert_delivery_note(db, _sj())["delivery_note"]
     v = delivery.validate_loading(db, SJ_ID)
     assert v["all_matched"] is True
+    delivery.ensure_loading_sj_task(db, note)
+    delivery.assign_loading_sj_task(
+        db, HEAD, accurate_sj_id=SJ_ID, assigned_user_email="helper@eternal.local"
+    )
     result = delivery.confirm_loading(
-        db, DRIVER, accurate_sj_id=SJ_ID, idempotency_key="load-t2-mix"
+        db, HELPER, accurate_sj_id=SJ_ID, idempotency_key="load-t2-mix"
     )
     assert result["duplicate"] is False
-    nc = tasks.get_task(db, prod.qc_task_key(PO_ID, LINE_NC))
-    assert float(nc.get("qty_consumed") or 0) == 20
+    assert tasks.get_task(db, prod.qc_task_key(PO_ID, LINE_NC)) is None
     cetak = tasks.get_task(db, prod.qc_task_key(PO_ID, LINE_PRINT))
     assert float(cetak.get("qty_consumed") or 0) == 10
+    nc_item = next(
+        i for i in result["loading"]["items"] if i["accurate_line_id"] == LINE_NC
+    )
+    assert nc_item["packing_consumed"] is False
+    assert nc_item["physical_verified"] is True
 
 
 def test_t3_loading_sj_task_assign_and_assignee_gate(
@@ -273,12 +279,12 @@ def test_t5_completion_incomplete_without_delivery(db: Database) -> None:
     assert result["reasons"]
 
 
-def test_t6_non_cetak_packing_membership(
+def test_t6_non_cetak_no_packing_stage_block(
     db: Database, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    """Owner direct Loading: derive tidak buat Packing NC → packing N/A / tidak memblokir."""
     _env(monkeypatch, V4_NON_CETAK_PACKING_ACTIVATED_AT=ACTIVATION)
     po = _seed_accepted(db)
-    # Open gates so membership exits design/payment
     from app.repositories import gate_repository as gates
 
     gates.set_gate(
@@ -287,9 +293,11 @@ def test_t6_non_cetak_packing_membership(
     gates.set_gate(
         db, accurate_po_id=PO_ID, gate="payment", state=gates.GATE_OPEN, reason="t"
     )
-    po_tasks.derive_tasks_for_po(db, po)
+    derived = po_tasks.derive_tasks_for_po(db, po)
+    assert derived["non_cetak_packing_eligible"] is False
+    assert tasks.get_task(db, prod.qc_task_key(PO_ID, LINE_NC)) is None
     flow = read_models.production_flow_state(db, get_by_accurate_id(db, PO_ID))
-    assert "flow-packing" in (flow.get("active_stages") or []) or any(
-        n["id"] == "flow-packing" and n["status"] != "tidak_berlaku"
-        for n in flow["nodes"]
-    )
+    # Mixed PO: packing node tetap untuk jalur Cetak; NC tidak menambah remaining packing.
+    packing = next(n for n in flow["nodes"] if n["id"] == "flow-packing")
+    assert "Non-Cetak" not in str(packing.get("detail") or packing.get("note") or "")
+    assert tasks.get_task(db, prod.qc_task_key(PO_ID, LINE_NC)) is None

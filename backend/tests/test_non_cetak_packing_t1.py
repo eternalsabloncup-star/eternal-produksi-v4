@@ -1,15 +1,20 @@
-"""T1 Packing Non-Cetak — derive, confirm, activation boundary, D1 resync."""
+"""T1 Packing Non-Cetak — superseded by Owner direct Loading (2026-11-27).
+
+New qc-packing Non-Cetak tasks are NOT created. Historical tasks (if seeded)
+remain usable for confirm/idempotency regressions without being regenerated.
+"""
 
 from __future__ import annotations
 
 import copy
 from concurrent.futures import ThreadPoolExecutor
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 
 import pytest
 from pymongo.database import Database
 
 from app.config import clear_settings_cache
+from app.domain.operational import TaskRef
 from app.integrations.accurate.normalize import normalize_sales_order
 from app.integrations.accurate.sample_payload import SAMPLE_SALES_ORDER_STRUCTURE
 from app.repositories import task_repository as tasks
@@ -63,6 +68,24 @@ def _set_accepted_at(db: Database, when: datetime) -> None:
     )
 
 
+def _seed_historical_nc_packing(db: Database, *, qty_target: float = 50) -> dict:
+    """Manual histori task — derive tidak lagi membuat ini."""
+    return tasks.upsert_task(
+        db,
+        task_type="qc-packing",
+        scope="po_line",
+        assigned_role="helper",
+        ref=TaskRef(
+            accurate_po_id=PO_ID,
+            accurate_line_id=LINE_NC,
+            process_kind="Non-Cetak",
+        ),
+        qty_target=qty_target,
+        label="QC Packing Non-Cetak (histori)",
+        context={"packing_kind": "non-cetak", "historical": True},
+    )
+
+
 def test_activation_unset_means_feature_off(monkeypatch: pytest.MonkeyPatch) -> None:
     _clear_activation(monkeypatch)
     assert po_tasks.non_cetak_packing_activation_at() is None
@@ -78,26 +101,19 @@ def test_pending_non_cetak_no_task(
     assert tasks.get_task(db, prod.qc_task_key(PO_ID, LINE_NC)) is None
 
 
-def test_accepted_after_activation_creates_task(
+def test_accepted_after_activation_no_new_task(
     db: Database, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    """Owner direct Loading: activation + accepted TIDAK membuat packing NC baru."""
     _set_activation(monkeypatch, ACTIVATION)
     po = _seed_po(db)
     _set_accepted_at(db, datetime(2026, 11, 20, 12, 0, tzinfo=timezone.utc))
     po = get_by_accurate_id(db, PO_ID)
     derived = po_tasks.derive_tasks_for_po(db, po)
-    assert derived["non_cetak_packing_eligible"] is True
-    task = tasks.get_task(db, prod.qc_task_key(PO_ID, LINE_NC))
-    assert task is not None
-    assert task["task_type"] == "qc-packing"
-    assert task["assigned_role"] == "helper"
-    assert float(task["qty_target"]) == 50  # sample Non-Cetak qty
-    assert task["ref"].get("process_kind") == "Non-Cetak"
+    assert derived["non_cetak_packing_eligible"] is False
+    assert "qc-packing:non-cetak:owner-direct-loading" in derived["skipped"]
+    assert tasks.get_task(db, prod.qc_task_key(PO_ID, LINE_NC)) is None
     assert tasks.get_task(db, prod.qc_task_key(PO_ID, LINE_CETAK)) is None
-    assert all(
-        "line:106318" not in k or "qc-packing" not in k
-        for k in derived["created_task_keys"]
-    )
 
 
 def test_accepted_before_activation_no_task(
@@ -111,44 +127,43 @@ def test_accepted_before_activation_no_task(
     assert tasks.get_task(db, prod.qc_task_key(PO_ID, LINE_NC)) is None
 
 
-def test_equal_activation_timestamp_eligible(
+def test_equal_activation_timestamp_still_ineligible(
     db: Database, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     _set_activation(monkeypatch, ACTIVATION)
     po = _seed_po(db)
     _set_accepted_at(db, datetime(2026, 11, 20, 10, 0, tzinfo=timezone.utc))
     po = get_by_accurate_id(db, PO_ID)
-    assert po_tasks.is_non_cetak_packing_eligible(po) is True
+    assert po_tasks.is_non_cetak_packing_eligible(po) is False
     po_tasks.derive_tasks_for_po(db, po)
-    assert tasks.get_task(db, prod.qc_task_key(PO_ID, LINE_NC)) is not None
+    assert tasks.get_task(db, prod.qc_task_key(PO_ID, LINE_NC)) is None
 
 
 def test_resync_old_accepted_still_ineligible(
     db: Database, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Resync mengubah header tetapi accepted_at lama → tetap tidak eligible."""
     _set_activation(monkeypatch, ACTIVATION)
     po = _seed_po(db)
     old = datetime(2026, 11, 1, 8, 0, tzinfo=timezone.utc)
     _set_accepted_at(db, old)
-    # Simulasi resync: ubah qty Non-Cetak, accepted_at tetap.
     payload = copy.deepcopy(SAMPLE_SALES_ORDER_STRUCTURE)
     payload["detailItem"][1]["quantity"] = 80
     upsert_sales_order(db, normalize_sales_order(payload))
-    _set_accepted_at(db, old)  # pastikan tidak tertimpa
+    _set_accepted_at(db, old)
     po = get_by_accurate_id(db, PO_ID)
     assert po_tasks.is_non_cetak_packing_eligible(po) is False
     po_tasks.derive_tasks_for_po(db, po)
     assert tasks.get_task(db, prod.qc_task_key(PO_ID, LINE_NC)) is None
 
 
-def test_no_duplicate_task_on_rederive(
+def test_rederive_preserves_historical_nc_packing(
     db: Database, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     _set_activation(monkeypatch, ACTIVATION)
     po = _seed_po(db)
     _set_accepted_at(db, datetime(2026, 11, 21, tzinfo=timezone.utc))
     po = get_by_accurate_id(db, PO_ID)
+    _seed_historical_nc_packing(db, qty_target=50)
     po_tasks.derive_tasks_for_po(db, po)
     po_tasks.derive_tasks_for_po(db, po)
     keys = [
@@ -157,24 +172,21 @@ def test_no_duplicate_task_on_rederive(
         if t["ref"].get("accurate_line_id") == LINE_NC
     ]
     assert len(keys) == 1
+    assert float(tasks.get_task(db, keys[0])["qty_target"]) == 50
 
 
-def test_partial_then_complete_packing(
+def test_historical_partial_then_complete_packing(
     db: Database, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     _set_activation(monkeypatch, ACTIVATION)
     po = _seed_po(db)
     _set_accepted_at(db, datetime(2026, 11, 21, tzinfo=timezone.utc))
-    po = get_by_accurate_id(db, PO_ID)
-    po_tasks.derive_tasks_for_po(db, po)
-
-    # Naikkan target ke 5000 lewat update line qty untuk skenario Owner 3000/5000
+    # Naikkan qty PO-line Non-Cetak agar remaining = 5000 (confirm syncs dari line).
     db["accurate_sales_orders"].update_one(
         {"accurate_id": PO_ID, "header.items.accurate_line_id": LINE_NC},
         {"$set": {"header.items.$.qty": 5000}},
     )
-    po = get_by_accurate_id(db, PO_ID)
-    po_tasks.derive_tasks_for_po(db, po)
+    _seed_historical_nc_packing(db, qty_target=5000)
 
     first = prod.confirm_qc_packing(
         db,
@@ -203,14 +215,13 @@ def test_partial_then_complete_packing(
     assert task["status"] == tasks.TASK_STATUS_DONE
 
 
-def test_over_target_rejected(
+def test_historical_over_target_rejected(
     db: Database, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     _set_activation(monkeypatch, ACTIVATION)
     po = _seed_po(db)
     _set_accepted_at(db, datetime(2026, 11, 21, tzinfo=timezone.utc))
-    po = get_by_accurate_id(db, PO_ID)
-    po_tasks.derive_tasks_for_po(db, po)
+    _seed_historical_nc_packing(db, qty_target=50)
     with pytest.raises(prod.ProductionQuantityError):
         prod.confirm_qc_packing(
             db,
@@ -224,14 +235,13 @@ def test_over_target_rejected(
     assert float(task["qty_confirmed"]) == 0
 
 
-def test_idempotent_duplicate(
+def test_historical_idempotent_duplicate(
     db: Database, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     _set_activation(monkeypatch, ACTIVATION)
     po = _seed_po(db)
     _set_accepted_at(db, datetime(2026, 11, 21, tzinfo=timezone.utc))
-    po = get_by_accurate_id(db, PO_ID)
-    po_tasks.derive_tasks_for_po(db, po)
+    _seed_historical_nc_packing(db, qty_target=50)
     a = prod.confirm_qc_packing(
         db,
         HELPER,
@@ -254,15 +264,13 @@ def test_idempotent_duplicate(
     assert float(task["qty_confirmed"]) == 10
 
 
-def test_concurrent_no_overshoot(
+def test_historical_concurrent_no_overshoot(
     db: Database, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     _set_activation(monkeypatch, ACTIVATION)
     po = _seed_po(db)
     _set_accepted_at(db, datetime(2026, 11, 21, tzinfo=timezone.utc))
-    po = get_by_accurate_id(db, PO_ID)
-    po_tasks.derive_tasks_for_po(db, po)
-    # Target 50; dua konfirmasi 40 paralel → hanya satu yang boleh menang total ≤50
+    _seed_historical_nc_packing(db, qty_target=50)
     errors: list[BaseException] = []
 
     def _go(key: str) -> None:
@@ -286,14 +294,13 @@ def test_concurrent_no_overshoot(
     assert len(errors) >= 1
 
 
-def test_d1_qty_down_keeps_history_blocks_extra(
+def test_historical_d1_qty_down_keeps_history_blocks_extra(
     db: Database, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     _set_activation(monkeypatch, ACTIVATION)
     po = _seed_po(db)
     _set_accepted_at(db, datetime(2026, 11, 21, tzinfo=timezone.utc))
-    po = get_by_accurate_id(db, PO_ID)
-    po_tasks.derive_tasks_for_po(db, po)
+    _seed_historical_nc_packing(db, qty_target=50)
     prod.confirm_qc_packing(
         db,
         HELPER,
@@ -302,18 +309,14 @@ def test_d1_qty_down_keeps_history_blocks_extra(
         qty=40,
         idempotency_key="nc-before-rev",
     )
-    # Accurate qty turun ke 30 (< confirmed 40) — sync diterima
     payload = copy.deepcopy(SAMPLE_SALES_ORDER_STRUCTURE)
     payload["detailItem"][1]["quantity"] = 30
     upsert_sales_order(db, normalize_sales_order(payload))
     _set_accepted_at(db, datetime(2026, 11, 21, tzinfo=timezone.utc))
-    po = get_by_accurate_id(db, PO_ID)
-    # History tetap
     task = tasks.get_task(db, prod.qc_task_key(PO_ID, LINE_NC))
     assert float(task["qty_confirmed"]) == 40
     confs = tasks.list_confirmations(db, prod.qc_task_key(PO_ID, LINE_NC))
     assert len(confs) == 1
-    # Confirm tambahan ditolak
     with pytest.raises(prod.ProductionQuantityError):
         prod.confirm_qc_packing(
             db,
@@ -328,14 +331,13 @@ def test_d1_qty_down_keeps_history_blocks_extra(
     assert float(task.get("qty_consumed") or 0) == 0
 
 
-def test_d1_qty_up_allows_remaining(
+def test_historical_d1_qty_up_allows_remaining(
     db: Database, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     _set_activation(monkeypatch, ACTIVATION)
     po = _seed_po(db)
     _set_accepted_at(db, datetime(2026, 11, 21, tzinfo=timezone.utc))
-    po = get_by_accurate_id(db, PO_ID)
-    po_tasks.derive_tasks_for_po(db, po)
+    _seed_historical_nc_packing(db, qty_target=50)
     prod.confirm_qc_packing(
         db,
         HELPER,
@@ -348,6 +350,7 @@ def test_d1_qty_up_allows_remaining(
     payload["detailItem"][1]["quantity"] = 70
     upsert_sales_order(db, normalize_sales_order(payload))
     _set_accepted_at(db, datetime(2026, 11, 21, tzinfo=timezone.utc))
+    # confirm_qc_packing syncs qty_target dari qty PO-line terkini.
     prod.confirm_qc_packing(
         db,
         HELPER,
@@ -358,7 +361,6 @@ def test_d1_qty_up_allows_remaining(
     )
     task = tasks.get_task(db, prod.qc_task_key(PO_ID, LINE_NC))
     assert float(task["qty_confirmed"]) == 70
-    assert float(task["qty_target"]) == 70
 
 
 def test_invalid_activation_treated_as_off(monkeypatch: pytest.MonkeyPatch) -> None:

@@ -12,6 +12,11 @@ import {
   type LoadingValidation,
 } from "../api/delivery";
 import {
+  loadingItemStatusLabel,
+  loadingQtySecondaryLabel,
+  loadingQtySecondaryValue,
+} from "../lib/deliverySj";
+import {
   confirmProductionQty,
   confirmSampleSubmission,
   decideSample,
@@ -1997,20 +2002,20 @@ export function TeamTaskApiPanel({
                                   }
                                 />
                                 <WorkSheetStackRow
-                                  label="Qty Packing tersedia"
+                                  label={loadingQtySecondaryLabel(
+                                    it.process_kind,
+                                  )}
                                   value={
                                     <span className="ep-num">
-                                      {formatQty(Number(it.qty_available))}
+                                      {formatQty(
+                                        loadingQtySecondaryValue(it),
+                                      )}
                                     </span>
                                   }
                                 />
                                 <WorkSheetStackRow
                                   label="Status"
-                                  value={
-                                    it.matched
-                                      ? "Cocok"
-                                      : it.reason || "Tidak cocok"
-                                  }
+                                  value={loadingItemStatusLabel(it)}
                                   danger={!it.matched}
                                 />
                               </WorkSheetKvGroup>
@@ -2025,7 +2030,7 @@ export function TeamTaskApiPanel({
                             <tr>
                               <th>Nama Barang</th>
                               <th className="ep-num">Qty SJ</th>
-                              <th className="ep-num">Qty Packing tersedia</th>
+                              <th className="ep-num">Qty Packing / Target</th>
                               <th>Status</th>
                             </tr>
                           </thead>
@@ -2045,18 +2050,17 @@ export function TeamTaskApiPanel({
                                     <span className="ep-sched-item-name">
                                       {name}
                                     </span>
+                                    <div className="ep-muted">
+                                      {loadingQtySecondaryLabel(it.process_kind)}
+                                    </div>
                                   </td>
                                   <td className="ep-num">
                                     {formatQty(Number(it.qty))}
                                   </td>
                                   <td className="ep-num">
-                                    {formatQty(Number(it.qty_available))}
+                                    {formatQty(loadingQtySecondaryValue(it))}
                                   </td>
-                                  <td>
-                                    {it.matched
-                                      ? "Cocok"
-                                      : it.reason || "Tidak cocok"}
-                                  </td>
+                                  <td>{loadingItemStatusLabel(it)}</td>
                                 </tr>
                               );
                             })}
@@ -2066,7 +2070,8 @@ export function TeamTaskApiPanel({
                     )
                   ) : null}
                   <p className="ep-notice">
-                    Pilih Sesuai atau Tidak Sesuai, tanpa menginput ulang Qty SJ.
+                    Cetak: cocokkan Qty Packing. Non-Cetak: Qty SJ adalah target —
+                    konfirmasi fisik lewat Sesuai / Tidak Sesuai (bukan Packing).
                   </p>
                   {(canAct("loading-sj", "confirm") ||
                     canAct(DRIVER_TASK, "confirm")) &&
@@ -2079,7 +2084,17 @@ export function TeamTaskApiPanel({
                       <button
                         type="button"
                         className="ep-btn primary"
-                        disabled={busy}
+                        disabled={
+                          busy ||
+                          Boolean(
+                            loadingValidation && !loadingValidation.all_matched,
+                          )
+                        }
+                        title={
+                          loadingValidation && !loadingValidation.all_matched
+                            ? "Gate item belum terpenuhi — cek Qty Packing Cetak / mapping SJ"
+                            : undefined
+                        }
                         onClick={() => void onLoadingMatch()}
                       >
                         {busy ? "Menyimpan…" : "Sesuai"}

@@ -58,10 +58,20 @@ describe("DeliverySjDetailModal UI contract (Owner revision)", () => {
   it("provides mobile compact lists for revisi and validasi", () => {
     expect(source).toContain('data-testid="sj-revision-list-mobile"');
     expect(source).toContain('data-testid="sj-validation-list-mobile"');
-    expect(source).toContain("Tidak Cocok");
+    expect(source).toContain("loadingItemStatusLabel(item)");
     expect(source).toContain("Qty SJ:");
-    expect(source).toContain("Qty Tersedia:");
+    expect(source).toContain("loadingQtySecondaryLabel(item.process_kind)");
+    expect(source).toContain("loadingQtySecondaryValue(item)");
     expect(source).toContain("ep-sj-desk-only");
+  });
+
+  it("uses Non-Cetak direct-loading labels instead of missing Packing Ledger error", () => {
+    expect(source).toContain("Qty Packing / Target");
+    expect(source).toContain("physical_verification_required");
+    expect(source).toContain(
+      "Menunggu verifikasi fisik Helper (Sesuai/Tidak Sesuai)",
+    );
+    expect(source).not.toContain("Ledger Packing Non-Cetak belum ada");
   });
 
   it("provides mobile compact lists for loading and delivery history", () => {
