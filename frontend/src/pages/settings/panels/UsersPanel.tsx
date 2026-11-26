@@ -45,6 +45,8 @@ type Props = {
   onActivate: (u: SettingsUser) => void;
   onResetPassword: (u: SettingsUser) => void;
   onManageSessions: (u: SettingsUser) => void;
+  /** Optional: open Hak Akses Menu for the selected system role. */
+  onOpenModulePerms?: (roleKey: string) => void;
 };
 
 export function UsersPanel({
@@ -66,6 +68,7 @@ export function UsersPanel({
   onActivate,
   onResetPassword,
   onManageSessions,
+  onOpenModulePerms,
 }: Props) {
   const [q, setQ] = useState("");
   const [roleFilter, setRoleFilter] = useState("");
@@ -73,6 +76,16 @@ export function UsersPanel({
   const [showCreate, setShowCreate] = useState(false);
 
   const assignableBranches = useMemo(() => activeBranchOptions(branches), [branches]);
+
+  const editRoleDoc = useMemo(
+    () => roles.find((r) => r.role_key === editUserForm.role),
+    [roles, editUserForm.role],
+  );
+  const effectivePerms = useMemo(() => {
+    const fromUser = editingUser?.effective_module_permissions;
+    if (fromUser && fromUser.length > 0) return fromUser;
+    return editRoleDoc?.module_permissions || [];
+  }, [editingUser, editRoleDoc]);
 
   const editBranchOptions = useMemo(() => {
     const selected = new Set((editUserForm.branch_ids || []).map((c) => c.toUpperCase()));
@@ -197,6 +210,27 @@ export function UsersPanel({
 
   return (
     <>
+      <section className="ep-settings-card">
+        <h3 className="ep-settings-card-title">Alur sederhana</h3>
+        <p className="ep-settings-card-note">
+          Pilih pengguna → pilih peran sistem → pilih cabang → lihat akses efektif →
+          simpan. Permission baru tidak diberikan otomatis (default deny).
+        </p>
+        <div className="ep-settings-glossary">
+          <div>
+            <strong>Peran sistem</strong>
+            <p>Hak membuka dan mengelola fitur aplikasi (menu, pengaturan, laporan).</p>
+          </div>
+          <div>
+            <strong>Peran kerja</strong>
+            <p>
+              Jenis pekerjaan produksi yang dapat ditangani (designer, operator, helper,
+              dll). Tidak digabung dengan peran sistem di database.
+            </p>
+          </div>
+        </div>
+      </section>
+
       <section className="ep-settings-card">
         <div className="ep-settings-card-head">
           <h3 className="ep-settings-card-title">Daftar pengguna</h3>
@@ -534,6 +568,37 @@ export function UsersPanel({
                 true,
               )}
             </fieldset>
+            <div className="ep-settings-field ep-settings-field-span">
+              <span className="ep-settings-field-label">Ringkasan izin efektif</span>
+              <p className="ep-settings-card-note">
+                Berasal dari peran sistem
+                {editRoleDoc ? ` “${editRoleDoc.label}”` : ""}
+                {editingUser?.effective_module_permissions?.length
+                  ? " (snapshot efektif pengguna)"
+                  : " (katalog peran)"}
+                . Tidak menambah izin baru otomatis.
+              </p>
+              {effectivePerms.length === 0 ? (
+                <p className="ep-settings-empty">Belum ada hak akses menu.</p>
+              ) : (
+                <ul className="ep-settings-effective-list">
+                  {effectivePerms.map((p) => (
+                    <li key={p}>
+                      <code>{p}</code>
+                    </li>
+                  ))}
+                </ul>
+              )}
+              {onOpenModulePerms && editUserForm.role ? (
+                <button
+                  type="button"
+                  className="ep-btn"
+                  onClick={() => onOpenModulePerms(editUserForm.role)}
+                >
+                  Kelola hak akses menu peran ini
+                </button>
+              ) : null}
+            </div>
           </form>
         ) : null}
       </DetailDrawer>

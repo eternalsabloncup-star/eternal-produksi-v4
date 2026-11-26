@@ -1,6 +1,6 @@
 import type { NavIconName } from "../../app/icons";
 
-/** Settings Center V2 — leaf tabs (Ringkasan = landing). */
+/** Settings Center — leaf tabs (fitur lama tetap ada sebagai sub-bagian). */
 export type SettingsTabId =
   | "overview"
   | "users"
@@ -9,6 +9,7 @@ export type SettingsTabId =
   | "ops-grants"
   | "task-types"
   | "task-assign"
+  | "jobs-board"
   | "branches"
   | "machines"
   | "shifts"
@@ -31,75 +32,91 @@ export type SettingsNavSection = {
   items: SettingsNavItem[];
 };
 
-/** Lima kelompok utama — leaf tetap transaksi terpisah. */
+/** Lima menu utama — leaf tetap ada untuk preservasi fitur. */
 export const SETTINGS_NAV_SECTIONS: SettingsNavSection[] = [
   {
     id: "access",
-    label: "Pengguna & Hak Akses",
+    label: "Pengguna & Akses",
     items: [
       {
         id: "overview",
         label: "Ringkasan",
         icon: "layout-dashboard",
-        description: "Halaman awal pengaturan dan pintasan menu.",
+        description: "Gambaran cepat dan pintasan ke menu pengaturan.",
       },
       {
         id: "users",
         label: "Pengguna",
         icon: "users",
-        description: "Buat akun, ubah data, dan aktifkan atau nonaktifkan pengguna.",
+        description:
+          "Pilih pengguna → peran sistem → cabang → lihat akses efektif → simpan.",
       },
       {
         id: "roles-catalog",
         label: "Jabatan / Peran Sistem",
         icon: "shield-check",
-        description: "Tambah dan kelola peran sistem (bukan peran kerja produksi).",
+        description:
+          "Peran sistem = hak membuka dan mengelola fitur aplikasi (bukan peran kerja).",
       },
       {
         id: "module-perms",
         label: "Hak Akses Menu",
         icon: "shield-check",
-        description: "Tentukan menu dan fitur yang boleh diakses tiap peran sistem.",
+        description: "Centang menu/fitur per peran sistem. Default: tidak ada hak.",
+      },
+    ],
+  },
+  {
+    id: "jobs",
+    label: "Pekerjaan & Penugasan",
+    items: [
+      {
+        id: "jobs-board",
+        label: "Papan Konfigurasi",
+        icon: "clipboard-list",
+        description:
+          "Satu layar: jenis pekerjaan, penanggung jawab, izin, dan status kesiapan.",
+      },
+      {
+        id: "task-types",
+        label: "Jenis Pekerjaan",
+        icon: "clipboard-list",
+        description: "Daftar dan tambah jenis pekerjaan.",
+      },
+      {
+        id: "task-assign",
+        label: "Penanggung Jawab",
+        icon: "users",
+        description: "Peran kerja yang bertanggung jawab per jenis pekerjaan.",
       },
       {
         id: "ops-grants",
         label: "Izin Pekerjaan",
         icon: "clipboard-list",
-        description: "Tentukan aksi yang boleh dilakukan peran kerja pada jenis pekerjaan.",
+        description:
+          "Aksi yang boleh dilakukan peran kerja. Tidak otomatis mengubah penanggung jawab.",
       },
     ],
   },
   {
-    id: "ops",
-    label: "Pengaturan Operasional",
+    id: "org",
+    label: "Cabang & Produksi",
     items: [
-      {
-        id: "task-types",
-        label: "Jenis Pekerjaan",
-        icon: "clipboard-list",
-        description: "Daftar jenis pekerjaan dan penambahan jenis manual.",
-      },
-      {
-        id: "task-assign",
-        label: "Pembagian Tugas",
-        icon: "users",
-        description: "Tentukan peran kerja penanggung jawab tiap jenis pekerjaan.",
-      },
       {
         id: "branches",
         label: "Cabang",
         icon: "building-2",
-        description: "Master cabang dan tautan ke Accurate Online.",
+        description: "Master cabang dan tautan Accurate Online.",
       },
       {
         id: "machines",
         label: "Mesin",
         icon: "cog",
-        description: "Master mesin produksi per cabang.",
+        description: "Mesin produksi per cabang (tanpa data dummy).",
       },
       {
         id: "shifts",
-        label: "Jam Kerja",
+        label: "Shift / Jam Kerja",
         icon: "clock-3",
         description: "Master shift dan jam kerja.",
       },
@@ -107,25 +124,25 @@ export const SETTINGS_NAV_SECTIONS: SettingsNavSection[] = [
   },
   {
     id: "products",
-    label: "Daftar Produk",
+    label: "Produk",
     items: [
       {
         id: "products",
-        label: "Produk",
+        label: "Master Produk",
         icon: "package",
-        description: "Daftar produk dari Master Produk yang sama.",
+        description: "Daftar produk dan atur ukuran screen di detail produk.",
       },
       {
         id: "product-screen",
         label: "Ukuran Screen",
         icon: "package",
-        description: "Atur ukuran screen pada data produk yang ada.",
+        description: "Form khusus ukuran screen (sama data Master Produk).",
       },
     ],
   },
   {
     id: "system",
-    label: "Koneksi & Aturan Sistem",
+    label: "Sistem & Riwayat",
     items: [
       {
         id: "accurate",
@@ -135,21 +152,15 @@ export const SETTINGS_NAV_SECTIONS: SettingsNavSection[] = [
       },
       {
         id: "workflow",
-        label: "Aturan Alur Kerja",
+        label: "Aturan Workflow",
         icon: "workflow",
         description: "Status aturan alur kerja (hanya tampilan).",
       },
-    ],
-  },
-  {
-    id: "history",
-    label: "Riwayat Perubahan",
-    items: [
       {
         id: "audit",
-        label: "Catatan Perubahan",
+        label: "Riwayat Perubahan",
         icon: "history",
-        description: "Riwayat perubahan pengaturan (hanya ditambah, tidak dihapus).",
+        description: "Catatan audit pengaturan (hanya ditambah).",
       },
     ],
   },
@@ -171,8 +182,29 @@ export const SETTINGS_DRAFT_TABS: SettingsTabId[] = [
   "ops-grants",
   "task-types",
   "task-assign",
+  "jobs-board",
   "branches",
   "machines",
   "shifts",
+  "products",
   "product-screen",
 ];
+
+export type JobConfigStatus =
+  | "SIAP"
+  | "BELUM_ADA_PENANGGUNG_JAWAB"
+  | "IZIN_BELUM_LENGKAP"
+  | "BELUM_ADA_PENGGUNA_AKTIF";
+
+export function jobConfigStatusLabel(status: JobConfigStatus): string {
+  switch (status) {
+    case "SIAP":
+      return "Siap";
+    case "BELUM_ADA_PENANGGUNG_JAWAB":
+      return "Belum ada penanggung jawab";
+    case "IZIN_BELUM_LENGKAP":
+      return "Izin belum lengkap";
+    case "BELUM_ADA_PENGGUNA_AKTIF":
+      return "Belum ada pengguna aktif";
+  }
+}

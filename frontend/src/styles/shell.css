@@ -3698,6 +3698,11 @@
 }
 
 .ep-settings-alert {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px 12px;
   margin: 0 0 10px;
   padding: 8px 10px;
   border: 1px solid #f0c2b8;
@@ -3705,6 +3710,11 @@
   background: #fff6f4;
   color: #7a2e28;
   font-size: 11px;
+}
+
+.ep-settings-alert > p {
+  margin: 0;
+  flex: 1 1 12rem;
 }
 
 .ep-settings-notice {
@@ -4237,6 +4247,103 @@
   border-color: #e2c48a;
   background: #fff8ea;
   color: #6a5010;
+}
+
+.ep-settings-load-banner {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px 12px;
+  margin: 0 0 10px;
+  padding: 8px 10px;
+  border-radius: var(--ep-radius);
+  font-size: 11px;
+}
+
+.ep-settings-load-banner.is-error {
+  border: 1px solid #f0c2b8;
+  background: #fff6f4;
+  color: #7a2e28;
+}
+
+.ep-settings-load-banner p {
+  margin: 0;
+  flex: 1 1 12rem;
+}
+
+.ep-settings-glossary {
+  display: grid;
+  gap: 10px;
+  grid-template-columns: repeat(auto-fit, minmax(14rem, 1fr));
+  margin-top: 8px;
+}
+
+.ep-settings-glossary strong {
+  display: block;
+  font-size: 12px;
+  color: var(--ep-ink);
+}
+
+.ep-settings-glossary p {
+  margin: 4px 0 0;
+  font-size: 11px;
+  line-height: 1.45;
+  color: var(--ep-muted);
+}
+
+.ep-settings-subtabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 10px;
+}
+
+.ep-settings-subtab {
+  appearance: none;
+  border: 1px solid var(--ep-line);
+  border-radius: 6px;
+  background: #f7faf8;
+  color: var(--ep-ink);
+  font: inherit;
+  font-size: 12px;
+  font-weight: 600;
+  padding: 6px 10px;
+  cursor: pointer;
+}
+
+.ep-settings-subtab.is-active {
+  border-color: #2f6b52;
+  background: #e8f3ee;
+  color: #1a4d3e;
+}
+
+.ep-settings-status-pill {
+  display: inline-block;
+  padding: 2px 8px;
+  border-radius: 999px;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  white-space: nowrap;
+}
+
+.ep-settings-status-pill.is-ok {
+  background: #e7f5ee;
+  color: #1a5c40;
+}
+
+.ep-settings-status-pill.is-warn {
+  background: #fff3df;
+  color: #7a5310;
+}
+
+.ep-settings-effective-list {
+  margin: 6px 0 0;
+  padding-left: 18px;
+  font-size: 11px;
+  line-height: 1.45;
+  color: var(--ep-muted);
 }
 
 .ep-settings-confirm-modal {

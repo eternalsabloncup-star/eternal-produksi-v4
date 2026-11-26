@@ -77,6 +77,14 @@ import {
   OverviewPanel,
   WorkflowPanel,
 } from "./settings/panels/SystemPanels";
+import { JobsBoardPanel } from "./settings/panels/JobsBoardPanel";
+import { OrgReadinessBanner } from "./settings/panels/OrgReadinessBanner";
+import {
+  classifyListResult,
+  loadStateMessage,
+  type ResourceLoadState,
+  type SettingsResourceKey,
+} from "./settings/loadState";
 
 export type { SettingsTabId };
 export {
@@ -113,6 +121,9 @@ export function SettingsMasterPage() {
   const [error, setError] = useState<string | null>(null);
   const [errorKind, setErrorKind] = useState<LoadErrorKind>(null);
   const [feedback, setFeedback] = useState<FeedbackState | null>(null);
+  const [resourceLoad, setResourceLoad] = useState<
+    Partial<Record<SettingsResourceKey, ResourceLoadState>>
+  >({});
 
   const [taskTypes, setTaskTypes] = useState<MasterTaskType[]>([]);
   const [rolesOps, setRolesOps] = useState<OperationalRole[]>([]);
@@ -210,6 +221,7 @@ export function SettingsMasterPage() {
 
   const loadMaster = useCallback(async () => {
     setMasterLoading(true);
+    setResourceLoad((prev) => ({ ...prev, masterJobs: "loading" }));
     try {
       const [types, roleActions] = await Promise.all([
         fetchTaskTypes(),
@@ -221,7 +233,12 @@ export function SettingsMasterPage() {
       setGrants(roleActions.items);
       setDraftGrants(roleActions.items.map((g) => ({ ...g, actions: [...g.actions] })));
       setDraftAssignments(assignmentsFromTaskTypes(types.items));
+      setResourceLoad((prev) => ({
+        ...prev,
+        masterJobs: classifyListResult(true, types.items.length),
+      }));
     } catch (err) {
+      setResourceLoad((prev) => ({ ...prev, masterJobs: "LOAD_FAILED" }));
       reportError(
         err instanceof Error ? err.message : "Gagal memuat data master pekerjaan.",
         "load",
@@ -240,29 +257,64 @@ export function SettingsMasterPage() {
       setSensitivePerms(cat.sensitive_module_permissions);
       setPolicyGrants(cat.policy_grants ?? {});
       setPolicies(cat.workflow_policies.items);
+
+      type Bag<T> = { ok: true; items: T[]; forbidden?: boolean } | { ok: false; items: T[]; forbidden?: boolean };
+
+      const wrap = async <T,>(
+        p: Promise<{ items: T[] }>,
+      ): Promise<Bag<T>> => {
+        try {
+          const res = await p;
+          return { ok: true, items: res.items };
+        } catch (err) {
+          const forbidden =
+            err instanceof SettingsApiError && err.status === 403;
+          return { ok: false, items: [], forbidden };
+        }
+      };
+
       const [u, r, b, m, s, a, acc] = await Promise.all([
-        fetchSettingsUsers().catch((err: unknown) => {
-          if (err instanceof SettingsApiError && err.status === 403) return { items: [] as SettingsUser[], _forbidden: true };
-          return { items: [] as SettingsUser[] };
-        }),
-        fetchSettingsRoles().catch(() => ({ items: [] as SettingsRole[] })),
-        fetchBranches().catch(() => ({ items: [] as SettingsBranch[] })),
-        fetchMachines().catch(() => ({ items: [] })),
-        fetchShifts().catch(() => ({ items: [] })),
-        fetchAuditLog({ module: "settings", limit: 50 }).catch(() => ({
-          items: [] as AuditItem[],
-          total: 0,
-        })),
-        fetchAccurateStatus().catch(() => null),
+        wrap(fetchSettingsUsers()),
+        wrap(fetchSettingsRoles()),
+        wrap(fetchBranches()),
+        wrap(fetchMachines()),
+        wrap(fetchShifts()),
+        wrap(fetchAuditLog({ module: "settings", limit: 50 })),
+        fetchAccurateStatus()
+          .then((v) => ({ ok: true as const, value: v }))
+          .catch(() => ({ ok: false as const, value: null })),
       ]);
-      setUsers(u.items);
-      setRoles(r.items);
-      setSelectedRole((prev) => prev || (r.items[0]?.role_key ?? ""));
-      setBranches(b.items);
-      setMachines(m.items);
-      setShifts(s.items);
-      setAudits(a.items);
-      setAccurate(acc);
+
+      // Jangan hapus data sukses sebelumnya bila request gagal.
+      if (u.ok) setUsers(u.items);
+      if (r.ok) {
+        setRoles(r.items);
+        setSelectedRole((prev) => prev || (r.items[0]?.role_key ?? ""));
+      }
+      if (b.ok) setBranches(b.items);
+      if (m.ok) setMachines(m.items);
+      if (s.ok) setShifts(s.items);
+      if (a.ok) setAudits(a.items);
+      if (acc.ok) setAccurate(acc.value);
+
+      setResourceLoad((prev) => ({
+        ...prev,
+        users: classifyListResult(u.ok, u.items.length, Boolean(u.forbidden)),
+        roles: classifyListResult(r.ok, r.items.length, Boolean(r.forbidden)),
+        branches: classifyListResult(b.ok, b.items.length, Boolean(b.forbidden)),
+        machines: classifyListResult(m.ok, m.items.length, Boolean(m.forbidden)),
+        shifts: classifyListResult(s.ok, s.items.length, Boolean(s.forbidden)),
+        audits: classifyListResult(a.ok, a.items.length, Boolean(a.forbidden)),
+        accurate: acc.ok ? (acc.value ? "SUCCESS" : "DATA_EMPTY") : "LOAD_FAILED",
+      }));
+
+      const failed = [u, r, b, m, s, a].filter((x) => !x.ok);
+      if (failed.length > 0 && failed.length < 6) {
+        setErrorKind("partial");
+        setError("Sebagian data pengaturan gagal dimuat. Tombol Muat Ulang tersedia per bagian.");
+      } else if (failed.length === 6) {
+        reportError("Gagal memuat Pengaturan.", "load");
+      }
     } catch (err) {
       reportError(
         err instanceof Error ? err.message : "Gagal memuat Pengaturan.",
@@ -346,7 +398,8 @@ export function SettingsMasterPage() {
       case "module-perms":
         return modulePermsDirty;
       case "ops-grants":
-        return opsGrantsDirty;
+      case "jobs-board":
+        return opsGrantsDirty || assignmentsDirty || formDirtyManual;
       case "task-types":
         return formDirtyManual;
       case "task-assign":
@@ -357,6 +410,7 @@ export function SettingsMasterPage() {
         return formDirtyMachine;
       case "shifts":
         return formDirtyShift;
+      case "products":
       case "product-screen":
         return productsDirty;
       default:
@@ -389,11 +443,19 @@ export function SettingsMasterPage() {
       case "ops-grants":
         setDraftGrants(grants.map((g) => ({ ...g, actions: [...g.actions] })));
         break;
+      case "jobs-board":
+        setDraftGrants(grants.map((g) => ({ ...g, actions: [...g.actions] })));
+        setDraftAssignments(assignmentsFromTaskTypes(taskTypes));
+        setManualTask({ task_type: "", label: "", assigned_role: "helper" });
+        break;
       case "task-types":
         setManualTask({ task_type: "", label: "", assigned_role: "helper" });
         break;
       case "task-assign":
         setDraftAssignments(assignmentsFromTaskTypes(taskTypes));
+        break;
+      case "products":
+        setProductsDirty(false);
         break;
       case "branches":
         setNewBranch({ code: "", name: "" });
@@ -714,20 +776,70 @@ export function SettingsMasterPage() {
           </header>
 
           {error ? (
-            <p
+            <div
               className={`ep-settings-alert${errorKind === "partial" ? " is-partial" : ""}`}
               role="alert"
             >
-              {errorKind === "conflict"
-                ? "Konflik perubahan — "
-                : errorKind === "partial"
-                  ? "Sebagian berhasil — "
-                  : errorKind === "forbidden"
-                    ? "Akses ditolak — "
-                    : ""}
-              {error}
-            </p>
+              <p>
+                {errorKind === "conflict"
+                  ? "Konflik perubahan — "
+                  : errorKind === "partial"
+                    ? "Sebagian berhasil — "
+                    : errorKind === "forbidden"
+                      ? "Akses ditolak — "
+                      : errorKind === "load"
+                        ? "Gagal memuat — "
+                        : ""}
+                {error}
+              </p>
+              {errorKind === "load" || errorKind === "partial" ? (
+                <button
+                  type="button"
+                  className="ep-btn"
+                  onClick={() => {
+                    void loadMaster();
+                    void loadSettings();
+                  }}
+                >
+                  Muat ulang
+                </button>
+              ) : null}
+            </div>
           ) : null}
+
+          {(["users", "roles", "branches", "machines", "shifts", "masterJobs"] as SettingsResourceKey[]).map(
+            (key) => {
+              const st = resourceLoad[key];
+              if (st !== "LOAD_FAILED" && st !== "FORBIDDEN") return null;
+              const label =
+                key === "masterJobs"
+                  ? "master pekerjaan"
+                  : key === "users"
+                    ? "pengguna"
+                    : key === "roles"
+                      ? "peran"
+                      : key === "branches"
+                        ? "cabang"
+                        : key === "machines"
+                          ? "mesin"
+                          : "shift";
+              return (
+                <div key={key} className="ep-settings-load-banner is-error" role="status">
+                  <p>{loadStateMessage(st, label)}</p>
+                  <button
+                    type="button"
+                    className="ep-btn"
+                    onClick={() => {
+                      if (key === "masterJobs") void loadMaster();
+                      else void loadSettings();
+                    }}
+                  >
+                    Muat ulang
+                  </button>
+                </div>
+              );
+            },
+          )}
 
           <div className="ep-settings-body">
             {tab === "overview" ? (
@@ -899,6 +1011,10 @@ export function SettingsMasterPage() {
                     }
                   })();
                 }}
+                onOpenModulePerms={(roleKey) => {
+                  setSelectedRole(roleKey);
+                  void requestTab("module-perms");
+                }}
               />
             ) : null}
 
@@ -1038,6 +1154,87 @@ export function SettingsMasterPage() {
               />
             ) : null}
 
+            {tab === "jobs-board" ? (
+              <JobsBoardPanel
+                taskTypes={taskTypes}
+                rolesOps={rolesOps}
+                users={users}
+                actions={actions}
+                grants={grants}
+                draftGrants={draftGrants}
+                setDraftGrants={setDraftGrants}
+                draftAssignments={draftAssignments}
+                setDraftAssignments={setDraftAssignments}
+                assignmentDirtyCount={assignmentDirtyCount}
+                masterLoading={masterLoading}
+                savingAssignments={savingAssignments}
+                savingOpsGrants={savingOpsGrants}
+                savingCreate={savingCreate}
+                manualTask={manualTask}
+                setManualTask={setManualTask}
+                onCreateType={(e) => {
+                  e.preventDefault();
+                  if (savingCreate) return;
+                  setSavingCreate(true);
+                  void createManualTaskType({
+                    task_type: manualTask.task_type,
+                    label: manualTask.label,
+                    scope: "po",
+                    assigned_role: manualTask.assigned_role,
+                  })
+                    .then(async () => {
+                      setManualTask({
+                        task_type: "",
+                        label: "",
+                        assigned_role: "helper",
+                      });
+                      showFeedback("success", "Berhasil", "Jenis pekerjaan ditambahkan.");
+                      await loadMaster();
+                    })
+                    .catch((err: unknown) => {
+                      const msg =
+                        err instanceof Error
+                          ? err.message
+                          : "Gagal menambah jenis pekerjaan.";
+                      reportError(msg);
+                      showFeedback("error", "Gagal", msg);
+                    })
+                    .finally(() => setSavingCreate(false));
+                }}
+                onDeactivateType={(t) => {
+                  void (async () => {
+                    const res = await confirm.ask({
+                      title: "Nonaktifkan jenis pekerjaan?",
+                      message: `Nonaktifkan "${t.label}"?`,
+                      requireReason: true,
+                      reasonLabel: "Alasan",
+                      confirmLabel: "Nonaktifkan",
+                      tone: "danger",
+                    });
+                    if (!res.ok) return;
+                    try {
+                      await deactivateTaskType(t.task_type, res.reason);
+                      showFeedback("success", "Berhasil", "Jenis pekerjaan dinonaktifkan.");
+                      await loadMaster();
+                    } catch (err) {
+                      const msg =
+                        err instanceof Error
+                          ? err.message
+                          : "Gagal menonaktifkan jenis pekerjaan.";
+                      reportError(msg);
+                      showFeedback("error", "Gagal", msg);
+                    }
+                  })();
+                }}
+                onSaveAssignments={() => void saveTaskAssignments()}
+                onDiscardAssignments={() => discardDraftsForTab("task-assign")}
+                onSaveGrants={() => void saveOperationalGrants()}
+                onDiscardGrants={() => discardDraftsForTab("ops-grants")}
+                askConfirm={confirm.ask}
+                onOpenLeaf={(id) => void requestTab(id)}
+              />
+            ) : null}
+
             {tab === "ops-grants" ? (
               <OpsGrantsPanel
                 rolesOps={rolesOps}
@@ -1129,6 +1326,14 @@ export function SettingsMasterPage() {
                 onSave={() => void saveTaskAssignments()}
                 onDiscard={() => discardDraftsForTab("task-assign")}
                 askConfirm={confirm.ask}
+              />
+            ) : null}
+
+            {tab === "branches" || tab === "machines" || tab === "shifts" ? (
+              <OrgReadinessBanner
+                branches={branches}
+                machines={machines}
+                shifts={shifts}
               />
             ) : null}
 
@@ -1313,7 +1518,11 @@ export function SettingsMasterPage() {
             ) : null}
 
             {tab === "products" ? (
-              <ProductsListPanel onError={(msg) => (msg ? reportError(msg) : setError(null))} />
+              <ProductsListPanel
+                onError={(msg) => (msg ? reportError(msg) : setError(null))}
+                onDirtyChange={setProductsDirty}
+                onFeedback={showFeedback}
+              />
             ) : null}
 
             {tab === "product-screen" ? (
