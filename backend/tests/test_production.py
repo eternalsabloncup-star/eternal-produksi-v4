@@ -681,7 +681,8 @@ def test_production_actions_are_audited(db: Database) -> None:
     )
 
     actions = {e["action"] for e in db["audit_logs"].find({})}
-    assert "production.sample.upload" in actions
+    # Draft upload uses production.sample.draft_upload (confirm is separate).
+    assert "production.sample.draft_upload" in actions
     assert "production.sample.approve" in actions
     assert "task.confirm.cetak" in actions
     assert "task.confirm.persiapan-cup" in actions

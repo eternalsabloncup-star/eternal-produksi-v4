@@ -8,6 +8,8 @@ Invarian:
 
 from __future__ import annotations
 
+import random
+import time
 from datetime import datetime, timezone
 from typing import Any
 
@@ -321,14 +323,19 @@ def find_confirmation(db: Database, idempotency_key: str) -> dict[str, Any] | No
     )
 
 
-def run_in_transaction(db: Database, operation: Any, *, attempts: int = 5) -> Any:
+def run_in_transaction(db: Database, operation: Any, *, attempts: int = 12) -> Any:
     """Jalankan operasi dalam transaksi replica set dengan retry transien.
 
     Transaksi memastikan pemesanan kuota dan penulisan ledger commit bersama,
     sehingga proses yang mati tidak meninggalkan kuota terpakai.
+
+    Retry TransientTransactionError (WriteConflict) with short backoff so
+    concurrent confirms on the same line can succeed up to remaining quota
+    instead of exhausting retries while capacity remains.
     """
     last_error: Exception | None = None
-    for _ in range(max(1, attempts)):
+    total = max(1, attempts)
+    for attempt in range(total):
         try:
             with db.client.start_session() as session:
                 with session.start_transaction():
@@ -336,6 +343,9 @@ def run_in_transaction(db: Database, operation: Any, *, attempts: int = 5) -> An
         except (ConnectionFailure, OperationFailure) as exc:
             if exc.has_error_label("TransientTransactionError"):
                 last_error = exc
+                if attempt + 1 < total:
+                    # Jittered backoff; keep short for interactive confirm paths.
+                    time.sleep(0.005 + random.random() * 0.02 * (attempt + 1))
                 continue
             raise
     raise last_error if last_error else RuntimeError("Transaksi gagal tanpa detail.")
