@@ -54,6 +54,8 @@ describe("resolveInboxPoSourceMode", () => {
     expect(resolveShellDataMode("/app/settings", "demo")).toBe("api");
     expect(resolveShellDataMode("/app/buffer-stock", "api")).toBe("api");
     expect(resolveShellDataMode("/app/buffer-stock", "demo")).toBe("demo");
+    expect(resolveShellDataMode("/app/paint", "api")).toBe("api");
+    expect(resolveShellDataMode("/app/paint", "demo")).toBe("api");
     expect(resolveShellDataMode("/app/delivery", "api")).toBe("api");
     expect(resolveShellDataMode("/app/delivery", "demo")).toBe("demo");
     expect(resolveShellDataMode("/app/dashboard", "api")).toBe("api");

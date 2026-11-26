@@ -8,6 +8,7 @@ export type AppNavId =
   | "tracking"
   | "tasks"
   | "buffer-stock"
+  | "paint"
   | "qc"
   | "delivery"
   | "reports"
@@ -158,6 +159,14 @@ export const APP_NAV: AppNavItem[] = [
     label: "Buffer Stock",
     box: "#4A3F2A",
     fg: "#E2C98A",
+  },
+  {
+    id: "paint",
+    path: "/app/paint",
+    icon: "package",
+    label: "Manajemen Cat",
+    box: "#3F4A38",
+    fg: "#C5D6A8",
   },
   {
     id: "delivery",

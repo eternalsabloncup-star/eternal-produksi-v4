@@ -31,6 +31,10 @@ export function resolveShellDataMode(
   if (pathname.startsWith("/app/settings")) {
     return "api";
   }
+  // Manajemen Cat — REAL_API only (tidak ada fixture DEMO).
+  if (pathname.startsWith("/app/paint")) {
+    return "api";
+  }
   // Dashboard dan Laporan membaca read model MongoDB V4 pada kedua mode.
   if (pathname.startsWith("/app/dashboard") || pathname.startsWith("/app/reports")) {
     return "api";
