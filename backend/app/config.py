@@ -125,6 +125,14 @@ class Settings(BaseSettings):
             "LOADING_SJ_TASK_ENABLED",
         ),
     )
+    # M6 paint Accurate inbound — default OFF (dark adapter only).
+    paint_accurate_inbound_enabled: bool = Field(
+        default=False,
+        validation_alias=AliasChoices(
+            "V4_PAINT_ACCURATE_INBOUND_ENABLED",
+            "PAINT_ACCURATE_INBOUND_ENABLED",
+        ),
+    )
     # T5+: Selesai monitoring memakai checker fulfillment ketat.
     # Default OFF = membership Selesai mengikuti node status existing.
     strict_po_completion_enabled: bool = Field(
@@ -327,6 +335,9 @@ class Settings(BaseSettings):
                 self.loading_packing_ledger_enforced
             ),
             "loading_sj_task_enabled": bool(self.loading_sj_task_enabled),
+            "paint_accurate_inbound_enabled": bool(
+                self.paint_accurate_inbound_enabled
+            ),
             "strict_po_completion_enabled": bool(self.strict_po_completion_enabled),
             "po_auto_sync_enabled": bool(self.po_auto_sync_enabled),
             "receipt_auto_sync_enabled": bool(self.receipt_auto_sync_enabled),

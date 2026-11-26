@@ -37,6 +37,22 @@ PERM_EDIT_PO_BRANCH: Final = "po.branch.edit"
 # Read-only: lihat tugas seluruh role operasional (bukan alias operations.full).
 PERM_VIEW_ALL_TASKS: Final = "operations.tasks.view_all"
 
+# Manajemen Cat — granted via Settings; KP also gets operational defaults in paint_service.
+PERM_PAINT_VIEW: Final = "paint.module.view"
+PERM_PAINT_STOCK_VIEW: Final = "paint.stock.view"
+PERM_PAINT_INBOUND: Final = "paint.inbound.confirm"
+PERM_PAINT_WITHDRAW: Final = "paint.withdraw.create"
+PERM_PAINT_RETURN: Final = "paint.return.confirm"
+PERM_PAINT_CONVERSION: Final = "paint.conversion.confirm"
+PERM_PAINT_WASTE: Final = "paint.waste.record"
+PERM_PAINT_EDIT: Final = "paint.document.edit"
+PERM_PAINT_SOFT_DELETE: Final = "paint.document.soft_delete"
+PERM_PAINT_STOCKTAKE_RUN: Final = "paint.stocktake.run"
+PERM_PAINT_STOCKTAKE_FINALIZE: Final = "paint.stocktake.finalize"
+PERM_PAINT_MASTER: Final = "paint.master.manage"
+PERM_PAINT_REPORTS: Final = "paint.reports.view"
+PERM_PAINT_ACCURATE_MAP: Final = "paint.accurate.map"
+
 ALL_PERMISSIONS: Final[frozenset[str]] = frozenset(
     {
         PERM_ACCESS_ALL_MODULES,
@@ -50,6 +66,20 @@ ALL_PERMISSIONS: Final[frozenset[str]] = frozenset(
         PERM_BYPASS_PAYMENT,
         PERM_EDIT_PO_BRANCH,
         PERM_VIEW_ALL_TASKS,
+        PERM_PAINT_VIEW,
+        PERM_PAINT_STOCK_VIEW,
+        PERM_PAINT_INBOUND,
+        PERM_PAINT_WITHDRAW,
+        PERM_PAINT_RETURN,
+        PERM_PAINT_CONVERSION,
+        PERM_PAINT_WASTE,
+        PERM_PAINT_EDIT,
+        PERM_PAINT_SOFT_DELETE,
+        PERM_PAINT_STOCKTAKE_RUN,
+        PERM_PAINT_STOCKTAKE_FINALIZE,
+        PERM_PAINT_MASTER,
+        PERM_PAINT_REPORTS,
+        PERM_PAINT_ACCURATE_MAP,
     }
 )
 
@@ -128,6 +158,11 @@ SENSITIVE_MODULE_PERMISSIONS: Final[frozenset[str]] = frozenset(
         PERM_BYPASS_PAYMENT,
         PERM_EDIT_PO_BRANCH,
         PERM_VIEW_ALL_TASKS,
+        PERM_PAINT_EDIT,
+        PERM_PAINT_SOFT_DELETE,
+        PERM_PAINT_STOCKTAKE_FINALIZE,
+        PERM_PAINT_MASTER,
+        PERM_PAINT_ACCURATE_MAP,
     }
 )
 
