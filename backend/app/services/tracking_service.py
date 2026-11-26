@@ -525,6 +525,7 @@ def _build_invoice_items(
         if status_raw in {"void", "batal", "cancelled", "canceled"}:
             continue
         if _invoice_belongs_only_to_po(inv, po_id):
+            # Owner M12.1: PDF asli Accurate boleh untuk single-PO terverifikasi.
             items.append(
                 {
                     "id": inv_id,
@@ -533,8 +534,8 @@ def _build_invoice_items(
                     "status": inv.get("status") or "recorded",
                     "amount": inv.get("total_amount"),
                     "preview_allowed": True,
-                    "download_allowed": view == "internal",
-                    "file_available": False,
+                    "download_allowed": True,
+                    "file_available": True,
                     "summary": {
                         "line_count": len(inv.get("lines") or []),
                         "single_po": True,
@@ -1033,3 +1034,74 @@ def internal_tracking_view(
     )
     payload["links"] = links.list_links_for_po(db, str(po["accurate_id"]))
     return payload
+
+
+class TrackingUpstreamUnavailable(TrackingError):
+    def __init__(
+        self, message: str = "Dokumen PDF sementara tidak tersedia. Coba lagi nanti."
+    ) -> None:
+        super().__init__(message, code="upstream_unavailable")
+
+
+def resolve_public_invoice_pdf(
+    db: Database,
+    *,
+    customer_slug: str,
+    po_slug: str,
+    raw_token: str,
+    accurate_invoice_id: str,
+) -> tuple[bytes, str]:
+    """Ambil PDF Faktur Accurate untuk pemegang tracking token.
+
+    Fail-closed: token, slug, PO binding, single-PO invoice, non-REVIEW, non-void.
+    Tidak memakai PO id dari klien. Tidak menyimpan PDF. Tidak log token.
+    """
+    from app.integrations.accurate.client import AccurateReadClient
+    from app.repositories import invoice_repository as invoices
+
+    link = links.resolve_active_link(db, raw_token)
+    if link is None:
+        raise TrackingNotFound()
+    if link.get("customer_slug") != customer_slug or link.get("po_slug") != po_slug:
+        raise TrackingNotFound()
+
+    po = get_by_accurate_id(db, link["accurate_po_id"])
+    if po is None:
+        raise TrackingNotFound("Pesanan terkait tidak ditemukan.")
+    current_po_slug = slugify_po_reference(str(po.get("po_no") or ""))
+    if current_po_slug != po_slug:
+        raise TrackingNotFound()
+
+    po_id = str(po.get("accurate_id") or "").strip()
+    if not po_id or po_id != str(link.get("accurate_po_id") or "").strip():
+        raise TrackingNotFound()
+
+    inv_id = str(accurate_invoice_id or "").strip()
+    if not inv_id or "/" in inv_id or ".." in inv_id or len(inv_id) > 64:
+        raise TrackingForbidden("Faktur tidak diizinkan.")
+
+    inv = invoices.get_invoice(db, inv_id)
+    if inv is None:
+        raise TrackingNotFound("Faktur tidak ditemukan.")
+
+    status_raw = str(inv.get("status") or "").lower()
+    if status_raw in {"void", "batal", "cancelled", "canceled"}:
+        raise TrackingForbidden("Faktur tidak tersedia.")
+    if inv.get("void") is True or inv.get("is_void") is True:
+        raise TrackingForbidden("Faktur tidak tersedia.")
+    if not _invoice_belongs_only_to_po(inv, po_id):
+        raise TrackingForbidden("Faktur tidak diizinkan untuk pesanan ini.")
+
+    links.touch_access(db, link["token_hash"])
+    try:
+        client = AccurateReadClient.from_settings()
+        pdf = client.fetch_sales_invoice_pdf(inv_id)
+    except TimeoutError as exc:
+        raise TrackingUpstreamUnavailable() from exc
+    except Exception as exc:  # noqa: BLE001 — map all upstream to controlled unavailable
+        raise TrackingUpstreamUnavailable() from exc
+
+    filename = str(inv.get("invoice_no") or inv_id).replace('"', "").replace("/", "-")
+    if not filename.lower().endswith(".pdf"):
+        filename = f"{filename}.pdf"
+    return pdf, filename

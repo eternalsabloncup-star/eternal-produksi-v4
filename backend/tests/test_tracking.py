@@ -651,9 +651,14 @@ def test_public_documents_invoice_receipt_design_and_multi_sj(
 
     assert docs["sales_invoice"]["status"] == "available"
     inv_items = docs["sales_invoice"]["items"]
-    assert any(i["id"] == "INV-1" and i["preview_allowed"] for i in inv_items)
+    single = next(i for i in inv_items if i["id"] == "INV-1")
+    assert single["preview_allowed"] is True
+    assert single["file_available"] is True
+    assert single["download_allowed"] is True
     multi = next(i for i in inv_items if i["id"] == "INV-MULTI")
     assert multi["preview_allowed"] is False
+    assert multi["file_available"] is False
+    assert multi["download_allowed"] is False
     assert multi["amount"] is None
 
     assert docs["sales_receipt"]["status"] == "available"

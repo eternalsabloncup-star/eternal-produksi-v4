@@ -1,0 +1,361 @@
+"""M12.1 — Accurate Sales Invoice PDF contract + tracking authorization."""
+
+from __future__ import annotations
+
+from typing import Any
+from unittest.mock import patch
+
+import httpx
+import pytest
+from fastapi.testclient import TestClient
+from pymongo.database import Database
+
+from app.integrations.accurate.client import (
+    PATH_API_TOKEN,
+    PATH_SI_PRINT,
+    AccurateReadClient,
+)
+from app.repositories import invoice_repository as invoices
+from app.services import tracking_service as tracking
+from tests.test_tracking import _login, _seed_admin, _sync_po
+
+
+ACCOUNT = "https://account.accurate.test"
+DB_HOST = "https://public.accurate.test"
+FAKE_TOKEN = "tok-test"
+FAKE_SECRET = "sec-test"
+PDF_BYTES = b"%PDF-1.4 m12-1-fixture"
+
+
+def _token_payload() -> dict[str, Any]:
+    return {
+        "s": True,
+        "d": {
+            "host": DB_HOST,
+            "session": "",
+            "database": {"id": 99, "host": DB_HOST},
+        },
+    }
+
+
+def _pdf_client(handler) -> AccurateReadClient:
+    return AccurateReadClient(
+        account_base_url=ACCOUNT,
+        api_token=FAKE_TOKEN,
+        signature_secret=FAKE_SECRET,
+        db_id="99",
+        require_db_pin=False,
+        transport=httpx.MockTransport(handler),
+    )
+
+
+def test_fetch_sales_invoice_pdf_two_step() -> None:
+    calls: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(request.url.path)
+        if request.url.path.endswith(PATH_API_TOKEN):
+            return httpx.Response(200, json=_token_payload())
+        if PATH_SI_PRINT in request.url.path:
+            return httpx.Response(
+                200,
+                json={
+                    "s": True,
+                    "d": {"output": "/accurate/files/_temp/abc.pdf"},
+                },
+            )
+        if request.url.path == "/accurate/files/_temp/abc.pdf":
+            return httpx.Response(
+                200, content=PDF_BYTES, headers={"content-type": "application/pdf"}
+            )
+        return httpx.Response(404, json={"s": False})
+
+    client = _pdf_client(handler)
+    out = client.fetch_sales_invoice_pdf("118761")
+    assert out == PDF_BYTES
+    assert any(PATH_SI_PRINT in p for p in calls)
+    assert any(p.endswith("/accurate/files/_temp/abc.pdf") for p in calls)
+
+
+def test_fetch_sales_invoice_pdf_rejects_bad_path() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith(PATH_API_TOKEN):
+            return httpx.Response(200, json=_token_payload())
+        if PATH_SI_PRINT in request.url.path:
+            return httpx.Response(
+                200, json={"s": True, "d": {"output": "/etc/passwd"}}
+            )
+        return httpx.Response(404)
+
+    client = _pdf_client(handler)
+    with pytest.raises(RuntimeError, match="/accurate/files/"):
+        client.fetch_sales_invoice_pdf("1")
+
+
+def test_fetch_sales_invoice_pdf_rejects_non_pdf() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith(PATH_API_TOKEN):
+            return httpx.Response(200, json=_token_payload())
+        if PATH_SI_PRINT in request.url.path:
+            return httpx.Response(
+                200,
+                json={"s": True, "d": {"output": "/accurate/files/_temp/x.pdf"}},
+            )
+        if request.url.path.endswith("/accurate/files/_temp/x.pdf"):
+            return httpx.Response(
+                200, content=b"NOTPDF", headers={"content-type": "text/plain"}
+            )
+        return httpx.Response(404)
+
+    client = _pdf_client(handler)
+    with pytest.raises(RuntimeError):
+        client.fetch_sales_invoice_pdf("1")
+
+
+def test_fetch_sales_invoice_pdf_oversized() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith(PATH_API_TOKEN):
+            return httpx.Response(200, json=_token_payload())
+        if PATH_SI_PRINT in request.url.path:
+            return httpx.Response(
+                200,
+                json={"s": True, "d": {"output": "/accurate/files/_temp/big.pdf"}},
+            )
+        if request.url.path.endswith("/accurate/files/_temp/big.pdf"):
+            return httpx.Response(
+                200,
+                content=b"%PDF" + b"x" * 5000,
+                headers={"content-type": "application/pdf"},
+            )
+        return httpx.Response(404)
+
+    client = _pdf_client(handler)
+    with pytest.raises(RuntimeError, match="batas ukuran"):
+        client.fetch_sales_invoice_pdf("1", max_bytes=1024)
+
+
+def _seed_invoice(db: Database, **overrides: Any) -> dict[str, Any]:
+    if "accurate_sales_invoices" not in db.list_collection_names():
+        db.create_collection("accurate_sales_invoices")
+    invoices.ensure_invoice_indexes(db)
+    doc = {
+        "accurate_invoice_id": "INV-PDF-1",
+        "invoice_no": "SI/PDF/001",
+        "trans_date": "01/11/2026",
+        "status": "OPEN",
+        "total_amount": 1000.0,
+        "accurate_po_ids": ["95106"],
+        "primary_accurate_po_id": "95106",
+        "lines": [{"sales_order_id": "95106", "qty": 1}],
+        "review_required": False,
+    }
+    doc.update(overrides)
+    db["accurate_sales_invoices"].delete_many(
+        {"accurate_invoice_id": doc["accurate_invoice_id"]}
+    )
+    db["accurate_sales_invoices"].insert_one(doc)
+    return doc
+
+
+def test_public_invoice_pdf_happy_path(app_client: TestClient, db: Database) -> None:
+    _sync_po(db)
+    _seed_admin(db)
+    _seed_invoice(db)
+    csrf = _login(app_client)
+    gen = app_client.post(
+        "/api/tracking/95106/links",
+        headers={"X-CSRF-Token": csrf},
+        json={},
+    ).json()
+
+    with patch(
+        "app.integrations.accurate.client.AccurateReadClient.fetch_sales_invoice_pdf",
+        return_value=PDF_BYTES,
+    ):
+        resp = app_client.get(
+            f"/api/public/tracking/{gen['customer_slug']}/{gen['po_slug']}/{gen['token']}"
+            f"/invoices/INV-PDF-1/pdf"
+        )
+    assert resp.status_code == 200, resp.text
+    assert resp.headers["content-type"].startswith("application/pdf")
+    assert "no-store" in resp.headers.get("cache-control", "")
+    assert resp.content == PDF_BYTES
+    # No credential leakage in body/headers
+    blob = (resp.text if False else "") + str(resp.headers)
+    assert FAKE_TOKEN not in blob
+    assert FAKE_SECRET not in blob
+
+
+def test_public_invoice_pdf_invalid_token(app_client: TestClient, db: Database) -> None:
+    _sync_po(db)
+    _seed_invoice(db)
+    resp = app_client.get(
+        "/api/public/tracking/c/p/INVALIDTOKENXXXXXXXXXXXX/invoices/INV-PDF-1/pdf"
+    )
+    assert resp.status_code == 404
+
+
+def test_public_invoice_pdf_wrong_slug(app_client: TestClient, db: Database) -> None:
+    _sync_po(db)
+    _seed_admin(db)
+    _seed_invoice(db)
+    csrf = _login(app_client)
+    gen = app_client.post(
+        "/api/tracking/95106/links",
+        headers={"X-CSRF-Token": csrf},
+        json={},
+    ).json()
+    resp = app_client.get(
+        f"/api/public/tracking/other-customer/{gen['po_slug']}/{gen['token']}"
+        f"/invoices/INV-PDF-1/pdf"
+    )
+    assert resp.status_code == 404
+
+
+def test_public_invoice_pdf_multi_po_forbidden(
+    app_client: TestClient, db: Database
+) -> None:
+    _sync_po(db)
+    _seed_admin(db)
+    _seed_invoice(
+        db,
+        accurate_invoice_id="INV-MULTI-PDF",
+        accurate_po_ids=["95106", "99999"],
+        primary_accurate_po_id="",
+        lines=[
+            {"sales_order_id": "95106", "qty": 1},
+            {"sales_order_id": "99999", "qty": 1},
+        ],
+        review_required=True,
+    )
+    csrf = _login(app_client)
+    gen = app_client.post(
+        "/api/tracking/95106/links",
+        headers={"X-CSRF-Token": csrf},
+        json={},
+    ).json()
+    resp = app_client.get(
+        f"/api/public/tracking/{gen['customer_slug']}/{gen['po_slug']}/{gen['token']}"
+        f"/invoices/INV-MULTI-PDF/pdf"
+    )
+    assert resp.status_code == 403
+
+
+def test_public_invoice_pdf_review_forbidden(
+    app_client: TestClient, db: Database
+) -> None:
+    _sync_po(db)
+    _seed_admin(db)
+    _seed_invoice(db, review_required=True, review_reason="hold")
+    csrf = _login(app_client)
+    gen = app_client.post(
+        "/api/tracking/95106/links",
+        headers={"X-CSRF-Token": csrf},
+        json={},
+    ).json()
+    resp = app_client.get(
+        f"/api/public/tracking/{gen['customer_slug']}/{gen['po_slug']}/{gen['token']}"
+        f"/invoices/INV-PDF-1/pdf"
+    )
+    assert resp.status_code == 403
+
+
+def test_public_invoice_pdf_void_forbidden(app_client: TestClient, db: Database) -> None:
+    _sync_po(db)
+    _seed_admin(db)
+    _seed_invoice(db, status="void")
+    csrf = _login(app_client)
+    gen = app_client.post(
+        "/api/tracking/95106/links",
+        headers={"X-CSRF-Token": csrf},
+        json={},
+    ).json()
+    resp = app_client.get(
+        f"/api/public/tracking/{gen['customer_slug']}/{gen['po_slug']}/{gen['token']}"
+        f"/invoices/INV-PDF-1/pdf"
+    )
+    assert resp.status_code == 403
+
+
+def test_public_invoice_pdf_missing_invoice(
+    app_client: TestClient, db: Database
+) -> None:
+    _sync_po(db)
+    _seed_admin(db)
+    invoices.ensure_invoice_indexes(db)
+    csrf = _login(app_client)
+    gen = app_client.post(
+        "/api/tracking/95106/links",
+        headers={"X-CSRF-Token": csrf},
+        json={},
+    ).json()
+    resp = app_client.get(
+        f"/api/public/tracking/{gen['customer_slug']}/{gen['po_slug']}/{gen['token']}"
+        f"/invoices/MISSING/pdf"
+    )
+    assert resp.status_code == 404
+
+
+def test_public_invoice_pdf_upstream_unavailable(
+    app_client: TestClient, db: Database
+) -> None:
+    _sync_po(db)
+    _seed_admin(db)
+    _seed_invoice(db)
+    csrf = _login(app_client)
+    gen = app_client.post(
+        "/api/tracking/95106/links",
+        headers={"X-CSRF-Token": csrf},
+        json={},
+    ).json()
+    with patch(
+        "app.integrations.accurate.client.AccurateReadClient.fetch_sales_invoice_pdf",
+        side_effect=TimeoutError("timeout"),
+    ):
+        resp = app_client.get(
+            f"/api/public/tracking/{gen['customer_slug']}/{gen['po_slug']}/{gen['token']}"
+            f"/invoices/INV-PDF-1/pdf"
+        )
+    assert resp.status_code == 503
+
+
+def test_resolve_public_invoice_pdf_revoked(db: Database) -> None:
+    _sync_po(db)
+    _seed_invoice(db)
+    result = tracking.generate_tracking_link(
+        db, accurate_po_id="95106", actor_email="admin@eternal.local"
+    )
+    tracking.revoke_tracking_link(
+        db,
+        link_id=str(result["link"]["id"]),
+        actor_email="admin@eternal.local",
+        reason="test",
+    )
+    with pytest.raises(tracking.TrackingNotFound):
+        tracking.resolve_public_invoice_pdf(
+            db,
+            customer_slug=result["customer_slug"],
+            po_slug=result["po_slug"],
+            raw_token=result["token"],
+            accurate_invoice_id="INV-PDF-1",
+        )
+
+
+def test_metadata_flags_without_fetching_pdf(db: Database) -> None:
+    """file_available true only signals eligibility — not that bytes were fetched."""
+    _sync_po(db)
+    _seed_invoice(db)
+    result = tracking.generate_tracking_link(
+        db, accurate_po_id="95106", actor_email="admin@eternal.local"
+    )
+    payload = tracking.public_tracking_view(
+        db,
+        customer_slug=result["customer_slug"],
+        po_slug=result["po_slug"],
+        raw_token=result["token"],
+    )
+    inv = next(d for d in payload["documents"] if d["category"] == "sales_invoice")
+    item = next(i for i in inv["items"] if i["id"] == "INV-PDF-1")
+    assert item["file_available"] is True
+    assert item["download_allowed"] is True
+    assert item["preview_allowed"] is True

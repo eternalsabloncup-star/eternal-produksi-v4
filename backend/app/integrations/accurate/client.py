@@ -42,11 +42,16 @@ PATH_DO_DETAIL = "/accurate/api/delivery-order/detail.do"
 # Sales Invoice / Sales Receipt — GET only; path + shape diverifikasi live (read-only).
 PATH_SI_LIST = "/accurate/api/sales-invoice/list.do"
 PATH_SI_DETAIL = "/accurate/api/sales-invoice/detail.do"
+# Sales Invoice PDF — verified LIVE 2026-11-27 (print.do → temp path → PDF bytes).
+# Official OpenAPI omits print.do; contract proven by read-only live inspection.
+PATH_SI_PRINT = "/accurate/api/sales-invoice/print.do"
 PATH_SR_LIST = "/accurate/api/sales-receipt/list.do"
 PATH_SR_DETAIL = "/accurate/api/sales-receipt/detail.do"
 
 _MAX_ATTEMPTS = 3
 _RETRYABLE = {408, 425, 429, 500, 502, 503, 504}
+# Bound Accurate print temp PDF (LIVE sample ~0.6MB; keep headroom).
+MAX_SALES_INVOICE_PDF_BYTES = 15 * 1024 * 1024
 
 
 class AccurateReadStatus(str, Enum):
@@ -495,6 +500,146 @@ class AccurateReadClient:
             params={"id": str(accurate_id)},
         )
         return self._unwrap_detail(data)
+
+    def fetch_sales_invoice_pdf(
+        self,
+        accurate_id: str | int,
+        *,
+        max_bytes: int = MAX_SALES_INVOICE_PDF_BYTES,
+    ) -> bytes:
+        """Ambil PDF Faktur Penjualan resmi Accurate (dua langkah, GET).
+
+        1) ``GET /accurate/api/sales-invoice/print.do?id=`` → JSON
+           ``{s:true,d:{output:"/accurate/files/_temp/….pdf"}}``
+        2) ``GET`` path ``output`` dengan header signed → ``application/pdf``.
+
+        Membuat file temp di Accurate (print generation) — bukan mutasi dokumen
+        faktur. Tidak menyimpan PDF ke Mongo. Fail-closed bila bukan PDF valid.
+        """
+        bound = max(1024, min(int(max_bytes), MAX_SALES_INVOICE_PDF_BYTES))
+        print_payload = self._request_on_db_host(
+            "GET",
+            PATH_SI_PRINT,
+            params={"id": str(accurate_id)},
+        )
+        output: str | None = None
+        inner = print_payload.get("d")
+        if isinstance(inner, dict):
+            raw_out = inner.get("output") or inner.get("file") or inner.get("url")
+            if isinstance(raw_out, str) and raw_out.strip():
+                output = raw_out.strip()
+        elif isinstance(inner, str) and inner.strip():
+            output = inner.strip()
+        if not output:
+            raise RuntimeError("sales-invoice/print.do tidak mengembalikan path PDF.")
+        if output.startswith("http://") or output.startswith("https://"):
+            parsed = urlparse(output)
+            file_path = parsed.path or ""
+            if parsed.query:
+                # Tolak query string eksternal — hanya path temp Accurate.
+                raise RuntimeError("Path PDF Accurate tidak valid.")
+        else:
+            file_path = output if output.startswith("/") else f"/{output}"
+        if not file_path.startswith("/accurate/files/"):
+            raise RuntimeError("Path PDF Accurate di luar /accurate/files/.")
+        if ".." in file_path or "\\" in file_path:
+            raise RuntimeError("Path PDF Accurate tidak valid.")
+
+        pdf_bytes = self._request_bytes_on_db_host("GET", file_path)
+        if len(pdf_bytes) > bound:
+            raise RuntimeError("PDF Accurate melebihi batas ukuran.")
+        if not pdf_bytes.startswith(b"%PDF"):
+            raise RuntimeError("Respons Accurate bukan PDF valid.")
+        return pdf_bytes
+
+    def _request_bytes_on_db_host(self, method: str, path: str) -> bytes:
+        """GET/POST bytes mentah pada host DB (PDF temp files)."""
+        last_err: Exception | None = None
+        with self._http(follow_redirects=False) as http:
+            for attempt in range(1, _MAX_ATTEMPTS + 1):
+                try:
+                    db = self.ensure_db_session(http)
+                    url = f"{db.host.rstrip('/')}{path}"
+                    resp = http.request(
+                        method,
+                        url,
+                        headers=self._signed_request_headers(),
+                    )
+                except AccurateAuthError:
+                    raise
+                except httpx.TimeoutException as exc:
+                    raise TimeoutError(f"Timeout Accurate {path}") from exc
+                except httpx.HTTPError as exc:
+                    last_err = ConnectionError(
+                        f"Koneksi Accurate gagal: {exc.__class__.__name__}"
+                    )
+                    continue
+
+                if resp.status_code in {301, 302, 307, 308}:
+                    location = resp.headers.get("Location") or resp.headers.get(
+                        "location"
+                    )
+                    if not location:
+                        raise AccurateAuthError(
+                            f"HTTP {resp.status_code} tanpa Location",
+                            code="accurate_redirect_missing",
+                        )
+                    next_url = urljoin(str(resp.request.url), location)
+                    parsed = urlparse(next_url)
+                    if parsed.scheme and parsed.netloc:
+                        self._cached_host = normalize_host(
+                            f"{parsed.scheme}://{parsed.netloc}"
+                        )
+                    retry_url = (
+                        next_url
+                        if parsed.path and parsed.path != "/"
+                        else f"{self._cached_host}{path}"
+                    )
+                    try:
+                        resp = http.request(
+                            method,
+                            retry_url,
+                            headers=self._signed_request_headers(),
+                        )
+                    except httpx.TimeoutException as exc:
+                        raise TimeoutError(
+                            f"Timeout Accurate {path} setelah redirect"
+                        ) from exc
+                    except httpx.HTTPError as exc:
+                        last_err = ConnectionError(
+                            f"Koneksi Accurate gagal: {exc.__class__.__name__}"
+                        )
+                        continue
+
+                if resp.status_code == 401 and attempt < _MAX_ATTEMPTS:
+                    self.clear_session()
+                    continue
+                if resp.status_code in _RETRYABLE and attempt < _MAX_ATTEMPTS:
+                    last_err = ConnectionError(
+                        f"Accurate {path} error server HTTP {resp.status_code}"
+                    )
+                    continue
+                if resp.status_code >= 500:
+                    raise ConnectionError(
+                        f"Accurate {path} error server HTTP {resp.status_code}"
+                    )
+                if resp.status_code >= 400:
+                    raise AccurateAuthError(
+                        f"Accurate {path} HTTP {resp.status_code}",
+                        code="accurate_http_error",
+                    )
+                ctype = (resp.headers.get("content-type") or "").lower()
+                if "application/pdf" not in ctype and not resp.content.startswith(
+                    b"%PDF"
+                ):
+                    raise RuntimeError(
+                        f"{path} content-type bukan PDF ({ctype or 'missing'})."
+                    )
+                return bytes(resp.content)
+
+        if last_err:
+            raise last_err
+        raise ConnectionError(f"Accurate {path} gagal setelah retry")
 
     def fetch_sales_receipt_list(
         self,

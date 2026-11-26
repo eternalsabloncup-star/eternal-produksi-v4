@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
+from fastapi.responses import Response as FastAPIResponse
 from pydantic import BaseModel, Field
 
 from app.auth.deps import AuthContext, require_csrf, require_session
@@ -20,6 +21,7 @@ from app.services.tracking_service import (
     TrackingForbidden,
     TrackingLegacyUnrecoverable,
     TrackingNotFound,
+    TrackingUpstreamUnavailable,
 )
 from app.services.tracking_token_seal import (
     TrackingSealKeyInvalid,
@@ -172,6 +174,60 @@ def resolve_public_design_approval(
         raise HTTPException(status.HTTP_403_FORBIDDEN, "Akses ditolak")
     limiter.reset(key)
     return result
+
+
+@router.get(
+    "/api/public/tracking/{customer_slug}/{po_slug}/{token}/invoices/{invoice_id}/pdf"
+)
+def get_public_invoice_pdf(
+    customer_slug: str,
+    po_slug: str,
+    token: str,
+    invoice_id: str,
+    request: Request,
+) -> FastAPIResponse:
+    """PDF Faktur Accurate — server-side fetch; token-scoped; no-store."""
+    limiter = _limiter()
+    key = _client_key(request, token)
+    if limiter.is_blocked(key):
+        raise HTTPException(
+            status.HTTP_429_TOO_MANY_REQUESTS,
+            "Terlalu banyak percobaan. Coba lagi nanti.",
+        )
+    try:
+        pdf, filename = tracking.resolve_public_invoice_pdf(
+            get_db(),
+            customer_slug=customer_slug,
+            po_slug=po_slug,
+            raw_token=token,
+            accurate_invoice_id=invoice_id,
+        )
+    except MissingRequiredTrackingIndexError as exc:
+        raise _http_from_index_error(exc) from exc
+    except TrackingNotFound:
+        limiter.register_failure(key)
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Link pelacakan tidak valid.")
+    except TrackingForbidden:
+        limiter.register_failure(key)
+        raise HTTPException(status.HTTP_403_FORBIDDEN, "Akses ditolak")
+    except TrackingUpstreamUnavailable as exc:
+        raise HTTPException(
+            status.HTTP_503_SERVICE_UNAVAILABLE,
+            str(exc),
+        ) from exc
+    limiter.reset(key)
+    safe_name = filename.replace('"', "")
+    return FastAPIResponse(
+        content=pdf,
+        media_type="application/pdf",
+        headers={
+            "Content-Disposition": f'inline; filename="{safe_name}"',
+            "Cache-Control": "private, no-store, no-cache, must-revalidate",
+            "Pragma": "no-cache",
+            "Referrer-Policy": "no-referrer",
+            "X-Content-Type-Options": "nosniff",
+        },
+    )
 
 
 # —— Internal (session + ops) ——
