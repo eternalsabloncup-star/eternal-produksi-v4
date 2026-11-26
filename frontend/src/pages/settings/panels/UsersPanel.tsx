@@ -7,8 +7,10 @@ import {
   formatUserBranches,
   toggleBranchId,
 } from "../../settingsUsersUi";
+import { buildEffectivePermsView } from "../effectivePermsSummary";
 import { SettingsKelolaMenu } from "../SettingsKelolaMenu";
 import { roleWorkLabel } from "../settingsLabels";
+import type { PolicyGrant } from "../settingsDraftUtils";
 
 export type UserFormState = {
   email: string;
@@ -45,6 +47,10 @@ type Props = {
   onActivate: (u: SettingsUser) => void;
   onResetPassword: (u: SettingsUser) => void;
   onManageSessions: (u: SettingsUser) => void;
+  /** Optional: open Hak Akses Menu for the selected system role. */
+  onOpenModulePerms?: (roleKey: string) => void;
+  /** Policy grants per role — dipakai preview izin efektif (non-revocable). */
+  policyGrants?: Record<string, PolicyGrant[] | undefined>;
 };
 
 export function UsersPanel({
@@ -66,6 +72,8 @@ export function UsersPanel({
   onActivate,
   onResetPassword,
   onManageSessions,
+  onOpenModulePerms,
+  policyGrants = {},
 }: Props) {
   const [q, setQ] = useState("");
   const [roleFilter, setRoleFilter] = useState("");
@@ -73,6 +81,21 @@ export function UsersPanel({
   const [showCreate, setShowCreate] = useState(false);
 
   const assignableBranches = useMemo(() => activeBranchOptions(branches), [branches]);
+
+  const editRoleDoc = useMemo(
+    () => roles.find((r) => r.role_key === editUserForm.role),
+    [roles, editUserForm.role],
+  );
+  const permView = useMemo(
+    () =>
+      buildEffectivePermsView({
+        editingUser,
+        selectedRoleKey: editUserForm.role,
+        roles,
+        policyGrants,
+      }),
+    [editingUser, editUserForm.role, roles, policyGrants],
+  );
 
   const editBranchOptions = useMemo(() => {
     const selected = new Set((editUserForm.branch_ids || []).map((c) => c.toUpperCase()));
@@ -197,6 +220,27 @@ export function UsersPanel({
 
   return (
     <>
+      <section className="ep-settings-card">
+        <h3 className="ep-settings-card-title">Alur sederhana</h3>
+        <p className="ep-settings-card-note">
+          Pilih pengguna → pilih peran sistem → pilih cabang → lihat akses efektif →
+          simpan. Permission baru tidak diberikan otomatis (default deny).
+        </p>
+        <div className="ep-settings-glossary">
+          <div>
+            <strong>Peran sistem</strong>
+            <p>Hak membuka dan mengelola fitur aplikasi (menu, pengaturan, laporan).</p>
+          </div>
+          <div>
+            <strong>Peran kerja</strong>
+            <p>
+              Jenis pekerjaan produksi yang dapat ditangani (designer, operator, helper,
+              dll). Tidak digabung dengan peran sistem di database.
+            </p>
+          </div>
+        </div>
+      </section>
+
       <section className="ep-settings-card">
         <div className="ep-settings-card-head">
           <h3 className="ep-settings-card-title">Daftar pengguna</h3>
@@ -534,6 +578,75 @@ export function UsersPanel({
                 true,
               )}
             </fieldset>
+            <div className="ep-settings-field ep-settings-field-span">
+              <span className="ep-settings-field-label">Ringkasan izin efektif</span>
+              <p className="ep-settings-card-note">
+                Preview mengikuti peran sistem yang dipilih
+                {editRoleDoc ? ` (“${editRoleDoc.label}”)` : ""}. Snapshot lama tidak
+                dipakai sebagai izin peran baru. Policy grants non-revocable tetap
+                dihitung. Tidak menambah izin baru otomatis.
+              </p>
+              {permView.roleChanged ? (
+                <div className="ep-settings-perm-split">
+                  <div>
+                    <strong className="ep-settings-field-label">Izin saat ini (tersimpan)</strong>
+                    <p className="ep-settings-card-note">
+                      Snapshot pengguna untuk peran “{editingUser?.role || "—"}” — bukan
+                      preview peran baru.
+                    </p>
+                    {(editingUser?.effective_module_permissions || []).length === 0 ? (
+                      <p className="ep-settings-empty">Tidak ada snapshot tersimpan.</p>
+                    ) : (
+                      <ul className="ep-settings-effective-list">
+                        {(editingUser?.effective_module_permissions || []).map((p) => (
+                          <li key={`cur-${p}`}>
+                            <code>{p}</code>
+                          </li>
+                        ))}
+                      </ul>
+                    )}
+                  </div>
+                  <div>
+                    <strong className="ep-settings-field-label">
+                      Preview setelah disimpan
+                    </strong>
+                    <p className="ep-settings-card-note">
+                      Katalog peran “{permView.selectedRoleLabel}” + policy.
+                    </p>
+                    {permView.previewAfterSave.length === 0 ? (
+                      <p className="ep-settings-empty">Belum ada hak akses menu.</p>
+                    ) : (
+                      <ul className="ep-settings-effective-list">
+                        {permView.previewAfterSave.map((p) => (
+                          <li key={`prev-${p}`}>
+                            <code>{p}</code>
+                          </li>
+                        ))}
+                      </ul>
+                    )}
+                  </div>
+                </div>
+              ) : permView.previewAfterSave.length === 0 ? (
+                <p className="ep-settings-empty">Belum ada hak akses menu.</p>
+              ) : (
+                <ul className="ep-settings-effective-list">
+                  {permView.previewAfterSave.map((p) => (
+                    <li key={p}>
+                      <code>{p}</code>
+                    </li>
+                  ))}
+                </ul>
+              )}
+              {onOpenModulePerms && editUserForm.role ? (
+                <button
+                  type="button"
+                  className="ep-btn"
+                  onClick={() => onOpenModulePerms(editUserForm.role)}
+                >
+                  Kelola hak akses menu peran ini
+                </button>
+              ) : null}
+            </div>
           </form>
         ) : null}
       </DetailDrawer>
