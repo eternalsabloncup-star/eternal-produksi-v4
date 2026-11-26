@@ -241,6 +241,61 @@ export async function fetchPublicTracking(
   return (await response.json()) as TrackingPayload;
 }
 
+/** URL relatif PDF Faktur Accurate (token di path; jangan cache). */
+export function publicInvoicePdfUrl(
+  customerSlug: string,
+  poSlug: string,
+  token: string,
+  invoiceId: string,
+): string {
+  return `/api/public/tracking/${encodeURIComponent(customerSlug)}/${encodeURIComponent(poSlug)}/${encodeURIComponent(token)}/invoices/${encodeURIComponent(invoiceId)}/pdf`;
+}
+
+/** Buka PDF Faktur — fetch no-store, lalu object URL. Fail-closed bila bukan PDF. */
+export async function openPublicInvoicePdf(
+  customerSlug: string,
+  poSlug: string,
+  token: string,
+  invoiceId: string,
+): Promise<void> {
+  const response = await fetch(
+    publicInvoicePdfUrl(customerSlug, poSlug, token, invoiceId),
+    {
+      method: "GET",
+      credentials: "omit",
+      headers: { Accept: "application/pdf" },
+      cache: "no-store",
+    },
+  );
+  if (!response.ok) {
+    throw new Error(await parseError(response));
+  }
+  const ctype = (response.headers.get("content-type") || "").toLowerCase();
+  const buf = await response.arrayBuffer();
+  const head = new Uint8Array(buf.slice(0, 4));
+  const magicOk =
+    head.length >= 4 &&
+    head[0] === 0x25 &&
+    head[1] === 0x50 &&
+    head[2] === 0x44 &&
+    head[3] === 0x46; // %PDF
+  if (!magicOk && !ctype.includes("application/pdf")) {
+    throw new Error("Dokumen PDF tidak tersedia.");
+  }
+  const blob = new Blob([buf], { type: "application/pdf" });
+  const url = URL.createObjectURL(blob);
+  const opened = window.open(url, "_blank", "noopener,noreferrer");
+  if (!opened) {
+    // Popup blocked — fallback unduh/navigasi sama tab.
+    const a = document.createElement("a");
+    a.href = url;
+    a.target = "_blank";
+    a.rel = "noopener noreferrer";
+    a.click();
+  }
+  window.setTimeout(() => URL.revokeObjectURL(url), 60_000);
+}
+
 /** Resolve path /approval/:token — read-only; jangan hardcode URL. */
 export async function resolvePublicDesignApproval(
   customerSlug: string,

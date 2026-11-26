@@ -565,6 +565,14 @@
   margin: 16px 0 8px;
 }
 
+.elt-doc-pdf-actions {
+  margin-top: 0.5rem;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 0.25rem;
+}
+
 .elt-item-list,
 .elt-gap-list,
 .elt-event-list {

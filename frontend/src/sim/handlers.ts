@@ -1651,7 +1651,26 @@ export function handleSimRequest(
   if (path.startsWith("/api/public/tracking/") && method === "GET") {
     // DEV fixture only: reject obvious invalid/revoked dummy tokens.
     const parts = path.split("/").filter(Boolean);
-    // /api/public/tracking/:c/:po/:token[/design-approval]
+    // /api/public/tracking/:c/:po/:token[/design-approval|/invoices/:id/pdf]
+    if (parts[parts.length - 1] === "pdf" && parts[parts.length - 3] === "invoices") {
+      const tokenPart = (parts[parts.length - 4] || "").toUpperCase();
+      if (
+        tokenPart.includes("INVALID") ||
+        tokenPart.includes("REVOKED") ||
+        tokenPart.includes("EXPIRED")
+      ) {
+        return json({ detail: "Link pelacakan tidak valid." }, 404);
+      }
+      // Sim PDF bytes — DEV only; bukan Accurate production.
+      const body = new TextEncoder().encode("%PDF-1.4 sim-invoice");
+      return new Response(body, {
+        status: 200,
+        headers: {
+          "Content-Type": "application/pdf",
+          "Cache-Control": "private, no-store",
+        },
+      });
+    }
     const isResolve = parts[parts.length - 1] === "design-approval";
     const tokenPart = (
       isResolve ? parts[parts.length - 2] || "" : parts[parts.length - 1] || ""

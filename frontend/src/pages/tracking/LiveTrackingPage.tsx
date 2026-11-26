@@ -4,6 +4,7 @@ import {
   fetchPublicTracking,
   formatQty,
   formatTs,
+  openPublicInvoicePdf,
   resolvePublicDesignApproval,
   type TrackingDocumentCategory,
   type TrackingPayload,
@@ -37,6 +38,8 @@ const DOC_ICONS: Record<string, NavIconName> = {
 };
 
 type Panel = "main" | "detail" | "timeline" | "help" | "doc";
+
+type PdfUiState = { id: string; status: "loading" | "error"; message?: string };
 
 function ensureTrackingPwaMeta() {
   const head = document.head;
@@ -116,6 +119,7 @@ export function LiveTrackingPage() {
   const [dapResolving, setDapResolving] = useState(false);
   const [dapError, setDapError] = useState<string | null>(null);
   const [dapDismissTick, setDapDismissTick] = useState(0);
+  const [pdfUi, setPdfUi] = useState<PdfUiState | null>(null);
 
   useEffect(() => {
     ensureTrackingPwaMeta();
@@ -573,29 +577,75 @@ export function LiveTrackingPage() {
                   <ul className="elt-item-list">
                     {activeDocResolved.items
                       .filter((it) => it.preview_allowed === true)
-                      .map((it, idx) => (
-                        <li key={String(it.id || idx)}>
-                          <strong>{String(it.number || it.id || "Dokumen")}</strong>
-                          <span>
-                            {[
-                              it.date || it.confirmed_at || "",
-                              it.status ? `status: ${String(it.status)}` : "",
-                              it.qty != null ? `qty: ${String(it.qty)}` : "",
-                              it.amount != null ? `nominal: ${String(it.amount)}` : "",
-                              it.invoice_no ? `faktur: ${String(it.invoice_no)}` : "",
-                              it.recipient_name
-                                ? `penerima: ${String(it.recipient_name)}`
-                                : "",
-                              it.has_photo === true ? "foto ✓" : "",
-                              it.has_signature === true ? "ttd ✓" : "",
-                              it.note ? String(it.note) : "",
-                            ]
-                              .filter(Boolean)
-                              .map(String)
-                              .join(" · ")}
-                          </span>
-                        </li>
-                      ))}
+                      .map((it, idx) => {
+                        const invId = String(it.id || "");
+                        const showPdf =
+                          docKey === "invoice" &&
+                          it.file_available === true &&
+                          it.download_allowed === true &&
+                          Boolean(invId);
+                        const pdfBusy = pdfUi?.id === invId && pdfUi.status === "loading";
+                        const pdfErr =
+                          pdfUi?.id === invId && pdfUi.status === "error"
+                            ? pdfUi.message || "PDF tidak tersedia."
+                            : null;
+                        return (
+                          <li key={String(it.id || idx)}>
+                            <strong>{String(it.number || it.id || "Dokumen")}</strong>
+                            <span>
+                              {[
+                                it.date || it.confirmed_at || "",
+                                it.status ? `status: ${String(it.status)}` : "",
+                                it.qty != null ? `qty: ${String(it.qty)}` : "",
+                                it.amount != null ? `nominal: ${String(it.amount)}` : "",
+                                it.invoice_no ? `faktur: ${String(it.invoice_no)}` : "",
+                                it.recipient_name
+                                  ? `penerima: ${String(it.recipient_name)}`
+                                  : "",
+                                it.has_photo === true ? "foto ✓" : "",
+                                it.has_signature === true ? "ttd ✓" : "",
+                                it.note ? String(it.note) : "",
+                              ]
+                                .filter(Boolean)
+                                .map(String)
+                                .join(" · ")}
+                            </span>
+                            {showPdf ? (
+                              <div className="elt-doc-pdf-actions">
+                                <button
+                                  type="button"
+                                  className="elt-text-link"
+                                  disabled={pdfBusy}
+                                  onClick={() => {
+                                    setPdfUi({ id: invId, status: "loading" });
+                                    void openPublicInvoicePdf(
+                                      customerSlug,
+                                      poSlug,
+                                      token,
+                                      invId,
+                                    )
+                                      .then(() => setPdfUi(null))
+                                      .catch((err: unknown) => {
+                                        const msg =
+                                          err instanceof Error
+                                            ? err.message
+                                            : "Dokumen PDF sementara tidak tersedia.";
+                                        setPdfUi({
+                                          id: invId,
+                                          status: "error",
+                                          message: msg,
+                                        });
+                                      });
+                                  }}
+                                >
+                                  {pdfBusy ? "Memuat PDF…" : "Lihat Faktur PDF"}
+                                </button>
+                                {pdfErr ? <p className="elt-note">{pdfErr}</p> : null}
+                              </div>
+                            ) : null}
+                          </li>
+                        );
+                      })}
                   </ul>
                 )}
                 {activeDocResolved.items.some((it) => it.preview_allowed === false) ? (
