@@ -586,11 +586,14 @@ def test_14_four_flags_on_isolated_integration(
     assert task is not None
     assert task["task_type"] == "loading-sj"
     v = delivery.validate_loading(db, SJ_ID)
-    assert v["items"][0]["ledger_mode"] in {
-        "packing",
-        "packing_required",
-        "packing_ledger",
-    }
+    # Default SJ line = Cetak → packing ledger mode (fail-closed tanpa confirmed packing).
+    assert v["items"][0]["ledger_mode"] == "packing"
+    assert v["items"][0]["process_kind"] == "Cetak"
+    # Non-Cetak path (Owner direct Loading) tetap direct_physical.
+    deliveries.upsert_delivery_note(db, _sj(qty=5, line_id=LINE_NC))
+    v_nc = delivery.validate_loading(db, SJ_ID)
+    assert v_nc["items"][0]["ledger_mode"] == "direct_physical"
+    assert v_nc["all_matched"] is True
 
 
 def test_15_all_flags_off_legacy_regression(
@@ -624,7 +627,7 @@ def test_15_all_flags_off_legacy_regression(
     deliveries.upsert_delivery_note(db, _sj(qty=5, line_id=LINE_NC))
     v = delivery.validate_loading(db, SJ_ID)
     assert v["all_matched"] is True
-    assert v["items"][0]["ledger_mode"] == "legacy_sj_self"
+    assert v["items"][0]["ledger_mode"] == "direct_physical"
     assert delivery.ensure_loading_sj_task(db, deliveries.get_delivery_note(db, SJ_ID)) is None
 
 

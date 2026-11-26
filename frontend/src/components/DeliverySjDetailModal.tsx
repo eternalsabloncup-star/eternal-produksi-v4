@@ -9,6 +9,9 @@ import {
   display,
   formatQtyByUnit,
   loadingEventStatusLabel,
+  loadingItemStatusLabel,
+  loadingQtySecondaryLabel,
+  loadingQtySecondaryValue,
   loadingStatusLabel,
   qtyByUnit,
   qtyText,
@@ -509,8 +512,8 @@ export function DeliverySjDetailModal({
                       <th>Item Line</th>
                       <th>Proses</th>
                       <th>Qty SJ</th>
-                      <th>Qty Tersedia</th>
-                      <th>Cocok</th>
+                      <th>Qty Packing / Target</th>
+                      <th>Status</th>
                       <th>Keterangan</th>
                     </tr>
                   </thead>
@@ -523,9 +526,22 @@ export function DeliverySjDetailModal({
                         <td>{item.accurate_line_id}</td>
                         <td>{display(item.process_kind)}</td>
                         <td>{qtyText(item.qty)}</td>
-                        <td>{qtyText(item.qty_available)}</td>
-                        <td>{item.matched ? "Ya" : "Tidak"}</td>
-                        <td>{display(item.reason)}</td>
+                        <td>
+                          <span className="ep-sj-val-qty-label">
+                            {loadingQtySecondaryLabel(item.process_kind)}
+                          </span>
+                          {": "}
+                          {qtyText(loadingQtySecondaryValue(item))}
+                        </td>
+                        <td>{loadingItemStatusLabel(item)}</td>
+                        <td>
+                          {display(
+                            item.reason ||
+                              (item.physical_verification_required
+                                ? "Menunggu verifikasi fisik Helper (Sesuai/Tidak Sesuai)"
+                                : null),
+                          )}
+                        </td>
                       </tr>
                     ))}
                   </tbody>
@@ -536,7 +552,12 @@ export function DeliverySjDetailModal({
                 data-testid="sj-validation-list-mobile"
               >
                 {validation.items.map((item) => {
-                  const reason = (item.reason || "").trim();
+                  const reason = (
+                    item.reason ||
+                    (item.physical_verification_required
+                      ? "Menunggu verifikasi fisik Helper (Sesuai/Tidak Sesuai)"
+                      : "")
+                  ).trim();
                   const open = Boolean(openValidationReasons[item.sj_line_id]);
                   return (
                     <li
@@ -554,7 +575,7 @@ export function DeliverySjDetailModal({
                                 item.matched ? " is-ok" : " is-bad"
                               }`}
                             >
-                              {item.matched ? "Cocok" : "Tidak Cocok"}
+                              {loadingItemStatusLabel(item)}
                             </span>
                           </div>
                           <div className="ep-sj-mobile-row-meta">
@@ -562,8 +583,9 @@ export function DeliverySjDetailModal({
                           </div>
                           <div className="ep-sj-mobile-row-meta">
                             Qty SJ: {qtyText(item.qty)}
-                            {item.unit ? ` ${item.unit}` : ""} · Qty Tersedia:{" "}
-                            {qtyText(item.qty_available)}
+                            {item.unit ? ` ${item.unit}` : ""} ·{" "}
+                            {loadingQtySecondaryLabel(item.process_kind)}:{" "}
+                            {qtyText(loadingQtySecondaryValue(item))}
                             {item.unit ? ` ${item.unit}` : ""}
                           </div>
                         </div>

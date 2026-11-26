@@ -5,6 +5,10 @@ import {
   displayBoolean,
   filterDeliveryRows,
   formatQtyByUnit,
+  isNonCetakLoadingItem,
+  loadingItemStatusLabel,
+  loadingQtySecondaryLabel,
+  loadingQtySecondaryValue,
   loadingStatusLabel,
   matchesSearch,
   matchesShipDate,
@@ -255,5 +259,49 @@ describe("label status operasional", () => {
       "Perlu Koreksi Administrasi",
     );
     expect(revisionStatusLabel(undefined)).toBe("—");
+  });
+});
+
+describe("Non-Cetak direct Loading labels", () => {
+  it("membedakan label/qty Cetak vs Non-Cetak tanpa menyebut stok packing", () => {
+    expect(isNonCetakLoadingItem("Non-Cetak")).toBe(true);
+    expect(isNonCetakLoadingItem("Cetak")).toBe(false);
+    expect(loadingQtySecondaryLabel("Non-Cetak")).toBe("Qty Target SJ");
+    expect(loadingQtySecondaryLabel("Cetak")).toBe("Qty Packing tersedia");
+    expect(
+      loadingQtySecondaryValue({
+        process_kind: "Non-Cetak",
+        qty: 1000,
+        qty_available: 0,
+        qty_sj_target: 1000,
+      }),
+    ).toBe(1000);
+    expect(
+      loadingQtySecondaryValue({
+        process_kind: "Cetak",
+        qty: 1000,
+        qty_available: 1000,
+        qty_sj_target: 1000,
+      }),
+    ).toBe(1000);
+    expect(
+      loadingItemStatusLabel({
+        process_kind: "Non-Cetak",
+        matched: true,
+      }),
+    ).toBe("Siap verifikasi fisik");
+    expect(
+      loadingItemStatusLabel({
+        process_kind: "Cetak",
+        matched: true,
+      }),
+    ).toBe("Cocok");
+    expect(
+      loadingItemStatusLabel({
+        process_kind: "Non-Cetak",
+        matched: false,
+        reason: "Qty SJ Non-Cetak tidak valid.",
+      }),
+    ).toBe("Qty SJ Non-Cetak tidak valid.");
   });
 });

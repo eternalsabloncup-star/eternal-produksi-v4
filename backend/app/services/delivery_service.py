@@ -241,6 +241,11 @@ def _packing_available_for_line(
     return max(packed - used, 0.0), qc_task
 
 
+# Owner (2026-11-27): Non-Cetak = Accepted → Loading SJ → Delivery (tanpa Packing).
+# Ledger Packing Non-Cetak TIDAK lagi menjadi prasyarat Loading.
+NON_CETAK_LEDGER_MODE = "direct_physical"
+
+
 def _non_cetak_loading_check(
     db: Database,
     *,
@@ -249,69 +254,38 @@ def _non_cetak_loading_check(
     sj_qty: float,
     item: dict[str, Any],
 ) -> dict[str, Any]:
-    """Validasi Non-Cetak: ledger Packing bila enforced; legacy self-compare bila OFF."""
-    from app.config import get_settings
+    """Validasi Non-Cetak — direct Loading (tanpa Packing Ledger).
 
-    enforced = bool(get_settings().loading_packing_ledger_enforced)
-    available, qc_task = _packing_available_for_line(
-        db, accurate_po_id=accurate_po_id, accurate_line_id=line_id
-    )
-    if enforced:
-        if qc_task is None:
-            return {
-                **item,
-                "process_kind": "Non-Cetak",
-                "qty_available": 0.0,
-                "matched": False,
-                "ledger_mode": "packing_required",
-                "reason": (
-                    "Ledger Packing Non-Cetak belum ada — Loading jalur baru "
-                    "fail-closed (bukan menganggap qty tersedia)."
-                ),
-            }
-        matched = available >= sj_qty > 0
+    Qty SJ = target verifikasi fisik Helper (bukan stok tersedia).
+    ``matched=True`` hanya berarti dokumen/line valid untuk aksi Sesuai/Tidak Sesuai;
+    konfirmasi fisik tetap wajib lewat confirm_loading / mismatch KP.
+    ``db``/``accurate_po_id``/``line_id`` disediakan untuk simetri signature Cetak
+    dan audit call-site; packing ledger sengaja tidak dibaca.
+    """
+    del db, accurate_po_id, line_id  # Non-Cetak tidak memakai packing ledger.
+    if sj_qty <= 0:
         return {
             **item,
             "process_kind": "Non-Cetak",
-            "qty_available": available,
-            "matched": matched,
-            "ledger_mode": "packing",
-            "reason": (
-                None
-                if matched
-                else (
-                    f"Qty Packing Non-Cetak tersedia {available:g}, "
-                    f"Qty SJ {sj_qty:g}."
-                )
-            ),
-        }
-
-    # Legacy (flag OFF): self-compare SJ — tidak memperketat data historis.
-    # Jika ledger Packing sudah ada, pakai ledger (lebih ketat hanya bila data siap).
-    if qc_task is not None:
-        matched = available >= sj_qty > 0
-        return {
-            **item,
-            "process_kind": "Non-Cetak",
-            "qty_available": available,
-            "matched": matched,
-            "ledger_mode": "packing_optional",
-            "reason": (
-                None
-                if matched
-                else (
-                    f"Qty Packing Non-Cetak tersedia {available:g}, "
-                    f"Qty SJ {sj_qty:g}."
-                )
-            ),
+            "qty_available": 0.0,
+            "qty_sj_target": float(sj_qty),
+            "matched": False,
+            "ledger_mode": NON_CETAK_LEDGER_MODE,
+            "physical_verification_required": True,
+            "packing_required": False,
+            "reason": "Qty SJ Non-Cetak tidak valid.",
         }
     return {
         **item,
         "process_kind": "Non-Cetak",
-        "qty_available": sj_qty,
-        "matched": sj_qty > 0,
-        "ledger_mode": "legacy_sj_self",
-        "reason": None if sj_qty > 0 else "Qty SJ tidak valid.",
+        # Bukan stok packing — UI harus menampilkan sebagai target SJ.
+        "qty_available": 0.0,
+        "qty_sj_target": float(sj_qty),
+        "matched": True,
+        "ledger_mode": NON_CETAK_LEDGER_MODE,
+        "physical_verification_required": True,
+        "packing_required": False,
+        "reason": None,
     }
 
 
@@ -320,10 +294,10 @@ def validate_loading(
     accurate_sj_id: str,
     user: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """Cek setiap item SJ terhadap Qty Packing tersedia (Cetak + Non-Cetak).
+    """Validasi item SJ untuk Loading — per process_kind.
 
-    Non-Cetak: ledger Packing bila ``V4_LOADING_PACKING_LEDGER_ENFORCED`` atau
-    task packing sudah ada; legacy self-compare hanya saat flag OFF + tanpa ledger.
+    Cetak: Qty Packing terkonfirmasi harus ≥ Qty SJ.
+    Non-Cetak: target dari Qty SJ + verifikasi fisik Helper (tanpa Packing Ledger).
     """
     note = deliveries.get_delivery_note(db, accurate_sj_id)
     if note is None:
@@ -1047,11 +1021,8 @@ def confirm_loading(
 
         consumed_keys: set[tuple[str, str]] = set()
         for check in validation["items"]:
-            ledger_mode = str(check.get("ledger_mode") or "")
-            uses_packing = check["process_kind"] == "Cetak" or ledger_mode.startswith(
-                "packing"
-            )
-            if not uses_packing:
+            # Cetak saja yang mengonsumsi Packing Ledger. Non-Cetak = direct physical.
+            if check.get("process_kind") != "Cetak":
                 continue
             line_id = str(check["accurate_line_id"])
             item_po = str(
@@ -1081,33 +1052,42 @@ def confirm_loading(
             if deliveries.note_is_multi_po(note)
             else str(note.get("accurate_po_id") or (parent_ids[0] if parent_ids else ""))
         )
+        loading_items: list[dict[str, Any]] = []
+        for c in validation["items"]:
+            item_po = str(
+                c.get("accurate_po_id")
+                or deliveries.item_source_po_id(c, note)
+                or ""
+            )
+            is_nc = c.get("process_kind") == "Non-Cetak"
+            loading_items.append(
+                {
+                    "sj_line_id": c["sj_line_id"],
+                    "accurate_line_id": c["accurate_line_id"],
+                    "accurate_po_id": item_po,
+                    "item_code": c["item_code"],
+                    "qty": c["qty"],
+                    "unit": c["unit"],
+                    "process_kind": c["process_kind"],
+                    "ledger_mode": c.get("ledger_mode"),
+                    "qty_sj_target": (
+                        float(c.get("qty_sj_target") or c["qty"]) if is_nc else None
+                    ),
+                    "physical_verified": True if is_nc else False,
+                    "packing_consumed": (
+                        item_po,
+                        str(c["accurate_line_id"]),
+                    )
+                    in consumed_keys,
+                }
+            )
         loading = deliveries.insert_loading_event(
             db,
             accurate_sj_id=str(note["accurate_sj_id"]),
             accurate_po_id=loading_po_id,
             accurate_po_ids=parent_ids,
             sj_no=str(note["sj_no"]),
-            items=[
-                {
-                    "sj_line_id": c["sj_line_id"],
-                    "accurate_line_id": c["accurate_line_id"],
-                    "accurate_po_id": str(
-                        c.get("accurate_po_id")
-                        or deliveries.item_source_po_id(c, note)
-                        or ""
-                    ),
-                    "item_code": c["item_code"],
-                    "qty": c["qty"],
-                    "unit": c["unit"],
-                    "process_kind": c["process_kind"],
-                    "packing_consumed": (
-                        str(c.get("accurate_po_id") or deliveries.item_source_po_id(c, note) or ""),
-                        str(c["accurate_line_id"]),
-                    )
-                    in consumed_keys,
-                }
-                for c in validation["items"]
-            ],
+            items=loading_items,
             actor_email=actor,
             idempotency_key=idempotency_key,
             sj_version=int(note.get("sj_version") or 1),
@@ -1154,11 +1134,15 @@ def confirm_loading(
                 "sj_version": loading.get("sj_version"),
                 "loading_actor_email": actor,
                 "item_count": len(loading["items"]),
+                "physical_verification": "helper_sesuai",
                 "qty_by_line": [
                     {
                         "accurate_line_id": i["accurate_line_id"],
                         "qty": i["qty"],
                         "process_kind": i.get("process_kind"),
+                        "ledger_mode": i.get("ledger_mode"),
+                        "physical_verified": i.get("physical_verified"),
+                        "packing_consumed": i.get("packing_consumed"),
                     }
                     for i in loading["items"]
                 ],

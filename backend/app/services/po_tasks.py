@@ -4,7 +4,8 @@ Aturan terkunci:
 - PO dengan minimal satu item Cetak → satu tugas Designer per PO.
 - PO yang seluruh itemnya Non-Cetak → tanpa tugas Designer, Gate Design terpenuhi.
 - Penjadwalan hanya muncul jika Gate Design DAN Gate Payment terbuka.
-- Packing Non-Cetak (qc-packing): hanya PO accepted setelah activation boundary.
+- Packing Non-Cetak: DINONAKTIFKAN Owner 2026-11-27 — Non-Cetak langsung Loading SJ
+  (tidak membuat qc-packing baru; histori lama tetap).
 """
 
 from __future__ import annotations
@@ -84,18 +85,13 @@ def _coerce_accepted_at(value: Any) -> datetime | None:
 
 
 def is_non_cetak_packing_eligible(po_doc: dict[str, Any] | None) -> bool:
-    """Accepted setelah activation boundary — bukan resync, bukan page-open."""
-    from app.services.po_acceptance import acceptance_block, is_po_accepted
+    """Owner 2026-11-27: Non-Cetak tidak lagi melewati Packing → selalu False.
 
-    if not is_po_accepted(po_doc):
-        return False
-    activated = non_cetak_packing_activation_at()
-    if activated is None:
-        return False
-    accepted_at = _coerce_accepted_at(acceptance_block(po_doc).get("accepted_at"))
-    if accepted_at is None:
-        return False
-    return accepted_at >= activated
+    Fungsi + activation timestamp dipertahankan agar flag/env historis dan
+    tes konfigurasi tidak rusak; derive_tasks tidak membuat qc-packing baru.
+    """
+    del po_doc
+    return False
 
 
 def _assigned_role(
@@ -360,42 +356,11 @@ def _derive_tasks_under_writer_lease(
             )
             created.append(task["task_key"])
 
-        # Packing Non-Cetak: qc-packing per line — hanya accepted setelah activation.
+        # Owner: jangan buat Packing Non-Cetak baru (direct Loading).
+        # Task histori (jika ada) tidak dihapus/diubah di sini.
         nc_eligible = is_non_cetak_packing_eligible(po_doc)
-        if not nc_eligible:
-            if non_print_lines(po_doc):
-                skipped.append("qc-packing:non-cetak:not-eligible")
-        else:
-            qc_role = _assigned_role(db, QC_PACKING_TASK, "helper", session=sess)
-            for line in non_print_lines(po_doc):
-                line_id = str(line.get("accurate_line_id") or "").strip()
-                if not line_id:
-                    skipped.append("qc-packing:non-cetak:missing-line-id")
-                    continue
-                ref = TaskRef(
-                    accurate_po_id=accurate_po_id,
-                    po_no=po_no,
-                    accurate_line_id=line_id,
-                    item_code=str(line.get("item_code") or ""),
-                    process_kind=NON_PRINT_KIND,
-                )
-                packing = tasks.upsert_task(
-                    db,
-                    task_type=QC_PACKING_TASK,
-                    scope="po_line",
-                    assigned_role=qc_role,
-                    ref=ref,
-                    qty_target=float(line.get("qty") or 0),
-                    label="Packing Non-Cetak",
-                    context={
-                        "item_name": line.get("item_name"),
-                        "unit": line.get("unit"),
-                        "process_kind": NON_PRINT_KIND,
-                        "packing_kind": "non-cetak",
-                    },
-                    session=sess,
-                )
-                created.append(packing["task_key"])
+        if non_print_lines(po_doc):
+            skipped.append("qc-packing:non-cetak:owner-direct-loading")
 
         return {
             "accurate_po_id": accurate_po_id,

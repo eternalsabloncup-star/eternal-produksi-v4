@@ -103,6 +103,11 @@ export type LoadingValidation = {
     unit: string;
     process_kind: string | null;
     qty_available: number;
+    /** Non-Cetak: target Qty SJ untuk verifikasi fisik (bukan stok packing). */
+    qty_sj_target?: number | null;
+    ledger_mode?: string | null;
+    physical_verification_required?: boolean;
+    packing_required?: boolean;
     matched: boolean;
     reason: string | null;
   }[];
