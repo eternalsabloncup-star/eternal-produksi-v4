@@ -11,6 +11,7 @@ import { InboxPage } from "./pages/InboxPage";
 import { LoginPage } from "./pages/LoginPage";
 import { BufferStockPage } from "./pages/BufferStockPage";
 import { DeliveryPage } from "./pages/DeliveryPage";
+import { PaintPage } from "./pages/PaintPage";
 import { ProductionFlowPage } from "./pages/ProductionFlowPage";
 import { SettingsMasterPage } from "./pages/SettingsMasterPage";
 import { TeamTaskPage } from "./pages/TeamTaskPage";
@@ -103,6 +104,7 @@ export default function App() {
           />
         ))}
         <Route path="buffer-stock" element={<BufferStockPage />} />
+        <Route path="paint" element={<PaintPage />} />
         <Route
           path="samples"
           element={<Navigate to="/app/buffer-stock" replace />}

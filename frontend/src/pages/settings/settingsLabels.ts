@@ -35,6 +35,20 @@ export const MODULE_PERM_LABEL: Record<string, string> = {
   "payment.bypass": "Lewati pembayaran",
   "po.branch.edit": "Ubah cabang PO",
   "operations.tasks.view_all": "Lihat semua tugas",
+  "paint.module.view": "Manajemen Cat — lihat",
+  "paint.stock.view": "Manajemen Cat — lihat stok",
+  "paint.inbound.confirm": "Manajemen Cat — konfirmasi masuk",
+  "paint.withdraw.create": "Manajemen Cat — pengambilan",
+  "paint.return.confirm": "Manajemen Cat — pengembalian",
+  "paint.conversion.confirm": "Manajemen Cat — konversi Hitam",
+  "paint.waste.record": "Manajemen Cat — waste",
+  "paint.document.edit": "Manajemen Cat — koreksi transaksi",
+  "paint.document.soft_delete": "Manajemen Cat — soft delete",
+  "paint.stocktake.run": "Manajemen Cat — stock opname",
+  "paint.stocktake.finalize": "Manajemen Cat — finalize stock opname",
+  "paint.master.manage": "Manajemen Cat — master",
+  "paint.reports.view": "Manajemen Cat — laporan",
+  "paint.accurate.map": "Manajemen Cat — mapping Accurate",
 };
 
 export const SCOPE_LABEL: Record<string, string> = {

@@ -11,6 +11,7 @@ from app.api.analytics import router as analytics_router
 from app.api.delivery import router as delivery_router
 from app.api.health import router as health_router
 from app.api.operational import router as operational_router
+from app.api.paint import router as paint_router
 from app.api.po import router as po_router
 from app.api.production import router as production_router
 from app.api.scheduling import router as scheduling_router
@@ -59,6 +60,7 @@ def create_app() -> FastAPI:
     application.include_router(scheduling_router)
     application.include_router(production_router)
     application.include_router(delivery_router)
+    application.include_router(paint_router)
     application.include_router(analytics_router)
     application.include_router(tracking_router)
     return application
