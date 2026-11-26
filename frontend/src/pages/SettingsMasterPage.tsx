@@ -78,6 +78,7 @@ import {
   WorkflowPanel,
 } from "./settings/panels/SystemPanels";
 import { JobsBoardPanel } from "./settings/panels/JobsBoardPanel";
+import { GuidedSetupPanel } from "./settings/panels/GuidedSetupPanel";
 import { OrgReadinessBanner } from "./settings/panels/OrgReadinessBanner";
 import {
   classifyListResult,
@@ -85,6 +86,13 @@ import {
   type ResourceLoadState,
   type SettingsResourceKey,
 } from "./settings/loadState";
+import { computeJobConfigStatus } from "./settings/jobConfigStatus";
+import {
+  readSettingsUxMode,
+  writeSettingsUxMode,
+  settingsUxModeLabel,
+  type SettingsUxMode,
+} from "./settings/settingsUxMode";
 
 export type { SettingsTabId };
 export {
@@ -118,6 +126,7 @@ type LoadErrorKind = "empty" | "forbidden" | "load" | "conflict" | "partial" | n
 export function SettingsMasterPage() {
   const confirm = useSettingsConfirm();
   const [tab, setTab] = useState<SettingsTabId>("overview");
+  const [uxMode, setUxMode] = useState<SettingsUxMode>(() => readSettingsUxMode());
   const [error, setError] = useState<string | null>(null);
   const [errorKind, setErrorKind] = useState<LoadErrorKind>(null);
   const [feedback, setFeedback] = useState<FeedbackState | null>(null);
@@ -368,6 +377,23 @@ export function SettingsMasterPage() {
     return n;
   }, [draftAssignments, taskTypes]);
 
+  const jobStatusesForGuide = useMemo(() => {
+    const load = {
+      usersLoad: resourceLoad.users || "idle",
+      grantsLoad: resourceLoad.masterJobs || "idle",
+      branchesLoad: resourceLoad.branches || "idle",
+    };
+    return taskTypes.map((task) =>
+      computeJobConfigStatus({
+        task,
+        grants,
+        users,
+        branches,
+        load,
+      }),
+    );
+  }, [taskTypes, grants, users, branches, resourceLoad]);
+
   const formDirtyUsers =
     Boolean(newUser.email.trim()) ||
     Boolean(newUser.display_name.trim()) ||
@@ -500,6 +526,23 @@ export function SettingsMasterPage() {
     setError(null);
     setErrorKind(null);
     setTab(next);
+  }
+
+  async function requestUxMode(next: SettingsUxMode) {
+    if (next === uxMode) return;
+    if (isTabDirty(tab)) {
+      const res = await confirm.ask({
+        title: "Perubahan belum disimpan",
+        message:
+          "Ada draft yang belum disimpan. Ganti mode tampilan akan mempertahankan draft yang sama (satu sumber data). Lanjutkan?",
+        confirmLabel: "Ganti mode",
+        cancelLabel: "Batal",
+        tone: "danger",
+      });
+      if (!res.ok) return;
+    }
+    setUxMode(next);
+    writeSettingsUxMode(next);
   }
 
   async function saveModulePermissions() {
@@ -770,9 +813,30 @@ export function SettingsMasterPage() {
               <h2 className="ep-settings-title">{activeNav.label}</h2>
               <p className="ep-settings-desc">{activeNav.description}</p>
             </div>
+            <div className="ep-settings-ux-mode" role="group" aria-label="Mode tampilan">
+              <button
+                type="button"
+                className={`ep-btn ep-settings-ux-btn${uxMode === "simple" ? " is-active" : ""}`}
+                aria-pressed={uxMode === "simple"}
+                onClick={() => void requestUxMode("simple")}
+              >
+                Mode sederhana
+              </button>
+              <button
+                type="button"
+                className={`ep-btn ep-settings-ux-btn${uxMode === "advanced" ? " is-active" : ""}`}
+                aria-pressed={uxMode === "advanced"}
+                onClick={() => void requestUxMode("advanced")}
+              >
+                Mode lanjutan
+              </button>
+            </div>
             {isTabDirty(tab) ? (
               <span className="ep-settings-dirty-badge">Belum disimpan</span>
             ) : null}
+            <span className="ep-settings-ux-hint" title={settingsUxModeLabel(uxMode)}>
+              Mode tidak mengubah hak akses
+            </span>
           </header>
 
           {error ? (
@@ -843,17 +907,38 @@ export function SettingsMasterPage() {
 
           <div className="ep-settings-body">
             {tab === "overview" ? (
-              <OverviewPanel
-                counts={{
-                  users: users.length,
-                  roles: roles.length,
-                  taskTypes: taskTypes.length,
-                  branches: branches.length,
-                  machines: machines.length,
-                  shifts: shifts.length,
-                }}
-                onNavigate={(id) => void requestTab(id)}
-              />
+              <>
+                <GuidedSetupPanel
+                  rolesCount={roles.length}
+                  usersCount={users.length}
+                  usersWithBranch={
+                    users.filter((u) => (u.branch_ids || []).length > 0).length
+                  }
+                  machinesCount={machines.length}
+                  shiftsCount={shifts.length}
+                  jobStatuses={jobStatusesForGuide}
+                  load={{
+                    roles: resourceLoad.roles,
+                    users: resourceLoad.users,
+                    branches: resourceLoad.branches,
+                    machines: resourceLoad.machines,
+                    shifts: resourceLoad.shifts,
+                    masterJobs: resourceLoad.masterJobs,
+                  }}
+                  onNavigate={(id) => void requestTab(id)}
+                />
+                <OverviewPanel
+                  counts={{
+                    users: users.length,
+                    roles: roles.length,
+                    taskTypes: taskTypes.length,
+                    branches: branches.length,
+                    machines: machines.length,
+                    shifts: shifts.length,
+                  }}
+                  onNavigate={(id) => void requestTab(id)}
+                />
+              </>
             ) : null}
 
             {tab === "users" ? (
@@ -1016,6 +1101,7 @@ export function SettingsMasterPage() {
                   setSelectedRole(roleKey);
                   void requestTab("module-perms");
                 }}
+                uxMode={uxMode}
               />
             ) : null}
 
@@ -1237,6 +1323,7 @@ export function SettingsMasterPage() {
                 onDiscardGrants={() => discardDraftsForTab("ops-grants")}
                 askConfirm={confirm.ask}
                 onOpenLeaf={(id) => void requestTab(id)}
+                uxMode={uxMode}
               />
             ) : null}
 

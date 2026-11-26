@@ -8,8 +8,10 @@ import {
   toggleBranchId,
 } from "../../settingsUsersUi";
 import { buildEffectivePermsView } from "../effectivePermsSummary";
+import { modulePermLabel, roleWorkLabel } from "../settingsLabels";
+import { recommendSystemRoleForOps } from "../rolePairing";
+import type { SettingsUxMode } from "../settingsUxMode";
 import { SettingsKelolaMenu } from "../SettingsKelolaMenu";
-import { roleWorkLabel } from "../settingsLabels";
 import type { PolicyGrant } from "../settingsDraftUtils";
 
 export type UserFormState = {
@@ -51,6 +53,7 @@ type Props = {
   onOpenModulePerms?: (roleKey: string) => void;
   /** Policy grants per role — dipakai preview izin efektif (non-revocable). */
   policyGrants?: Record<string, PolicyGrant[] | undefined>;
+  uxMode?: SettingsUxMode;
 };
 
 export function UsersPanel({
@@ -74,11 +77,59 @@ export function UsersPanel({
   onManageSessions,
   onOpenModulePerms,
   policyGrants = {},
+  uxMode = "simple",
 }: Props) {
   const [q, setQ] = useState("");
   const [roleFilter, setRoleFilter] = useState("");
   const [statusFilter, setStatusFilter] = useState<"all" | "active" | "inactive">("all");
   const [showCreate, setShowCreate] = useState(false);
+  const [showAdvancedCreate, setShowAdvancedCreate] = useState(false);
+  const [showAdvancedEdit, setShowAdvancedEdit] = useState(false);
+  const [pairNote, setPairNote] = useState<string>("");
+  const [createNeedsExplicitRole, setCreateNeedsExplicitRole] = useState(false);
+  const [editNeedsExplicitRole, setEditNeedsExplicitRole] = useState(false);
+  const showCreateAdvanced =
+    uxMode === "advanced" || showAdvancedCreate || createNeedsExplicitRole;
+  const showEditAdvanced =
+    uxMode === "advanced" || showAdvancedEdit || editNeedsExplicitRole;
+
+  function applyOpsRoleToCreate(ops: string) {
+    const pairing = recommendSystemRoleForOps({
+      operationalRole: ops,
+      users,
+      roles,
+    });
+    if (pairing.kind === "recommend") {
+      setNewUser({ ...newUser, operational_role: ops, role: pairing.systemRole });
+      setPairNote(pairing.reason);
+      setCreateNeedsExplicitRole(false);
+    } else {
+      setNewUser({ ...newUser, operational_role: ops });
+      setPairNote(pairing.reason);
+      setCreateNeedsExplicitRole(Boolean(ops));
+    }
+  }
+
+  function applyOpsRoleToEdit(ops: string) {
+    const pairing = recommendSystemRoleForOps({
+      operationalRole: ops,
+      users,
+      roles,
+    });
+    if (pairing.kind === "recommend") {
+      setEditUserForm({
+        ...editUserForm,
+        operational_role: ops,
+        role: editingUser?.role === "super_admin" ? editUserForm.role : pairing.systemRole,
+      });
+      setPairNote(pairing.reason);
+      setEditNeedsExplicitRole(false);
+    } else {
+      setEditUserForm({ ...editUserForm, operational_role: ops });
+      setPairNote(pairing.reason);
+      setEditNeedsExplicitRole(Boolean(ops));
+    }
+  }
 
   const assignableBranches = useMemo(() => activeBranchOptions(branches), [branches]);
 
@@ -136,6 +187,9 @@ export function UsersPanel({
         id: "edit",
         label: "Edit",
         onSelect: () => {
+          setShowAdvancedEdit(false);
+          setEditNeedsExplicitRole(false);
+          setPairNote("");
           setEditingUser(u);
           setEditUserForm({
             display_name: u.display_name,
@@ -221,30 +275,42 @@ export function UsersPanel({
   return (
     <>
       <section className="ep-settings-card">
-        <h3 className="ep-settings-card-title">Alur sederhana</h3>
+        <h3 className="ep-settings-card-title">Setup karyawan</h3>
         <p className="ep-settings-card-note">
-          Pilih pengguna → pilih peran sistem → pilih cabang → lihat akses efektif →
-          simpan. Permission baru tidak diberikan otomatis (default deny).
+          Isi nama, email, jabatan/pekerjaan, dan cabang. Peran sistem disarankan hanya
+          dari bukti pairing pengguna aktif yang aman — tidak pernah otomatis memberi
+          super_admin atau izin sensitif. Default deny tetap berlaku.
         </p>
-        <div className="ep-settings-glossary">
-          <div>
-            <strong>Peran sistem</strong>
-            <p>Hak membuka dan mengelola fitur aplikasi (menu, pengaturan, laporan).</p>
+        {uxMode === "advanced" ? (
+          <div className="ep-settings-glossary">
+            <div>
+              <strong>Peran sistem</strong>
+              <p>Hak membuka dan mengelola fitur aplikasi (menu, pengaturan, laporan).</p>
+            </div>
+            <div>
+              <strong>Peran kerja</strong>
+              <p>
+                Jenis pekerjaan produksi (designer, operator, helper, dll). Tetap terpisah
+                dari peran sistem di backend.
+              </p>
+            </div>
           </div>
-          <div>
-            <strong>Peran kerja</strong>
-            <p>
-              Jenis pekerjaan produksi yang dapat ditangani (designer, operator, helper,
-              dll). Tidak digabung dengan peran sistem di database.
-            </p>
-          </div>
-        </div>
+        ) : null}
       </section>
 
       <section className="ep-settings-card">
         <div className="ep-settings-card-head">
           <h3 className="ep-settings-card-title">Daftar pengguna</h3>
-          <button type="button" className="ep-btn primary" onClick={() => setShowCreate(true)}>
+          <button
+            type="button"
+            className="ep-btn primary"
+            onClick={() => {
+              setShowAdvancedCreate(false);
+              setCreateNeedsExplicitRole(false);
+              setPairNote("");
+              setShowCreate(true);
+            }}
+          >
             Tambah pengguna
           </button>
         </div>
@@ -425,18 +491,18 @@ export function UsersPanel({
       >
         <form id="settings-create-user" className="ep-settings-form-grid" onSubmit={onCreate}>
           <label className="ep-settings-field">
-            <span className="ep-settings-field-label">Email</span>
-            <input
-              value={newUser.email}
-              onChange={(e) => setNewUser({ ...newUser, email: e.target.value })}
-              required
-            />
-          </label>
-          <label className="ep-settings-field">
             <span className="ep-settings-field-label">Nama</span>
             <input
               value={newUser.display_name}
               onChange={(e) => setNewUser({ ...newUser, display_name: e.target.value })}
+              required
+            />
+          </label>
+          <label className="ep-settings-field">
+            <span className="ep-settings-field-label">Email</span>
+            <input
+              value={newUser.email}
+              onChange={(e) => setNewUser({ ...newUser, email: e.target.value })}
               required
             />
           </label>
@@ -452,28 +518,13 @@ export function UsersPanel({
             />
           </label>
           <label className="ep-settings-field">
-            <span className="ep-settings-field-label">Peran sistem</span>
+            <span className="ep-settings-field-label">Jabatan / pekerjaan</span>
             <select
-              value={newUser.role}
-              onChange={(e) => setNewUser({ ...newUser, role: e.target.value })}
-            >
-              {roles.map((r) => (
-                <option key={r.role_key} value={r.role_key}>
-                  {r.label}
-                </option>
-              ))}
-            </select>
-          </label>
-          <label className="ep-settings-field">
-            <span className="ep-settings-field-label">Peran kerja</span>
-            <select
-              aria-label="Peran kerja"
+              aria-label="Jabatan pekerjaan"
               value={newUser.operational_role}
-              onChange={(e) =>
-                setNewUser({ ...newUser, operational_role: e.target.value })
-              }
+              onChange={(e) => applyOpsRoleToCreate(e.target.value)}
             >
-              <option value="">— Tidak ada —</option>
+              <option value="">— Pilih jabatan —</option>
               {rolesOps.map((r) => (
                 <option key={r} value={r}>
                   {roleWorkLabel(r)}
@@ -490,6 +541,69 @@ export function UsersPanel({
               }),
             )}
           </fieldset>
+          <div className="ep-settings-field ep-settings-field-span">
+            <span className="ep-settings-field-label">Ringkasan akses</span>
+            <p className="ep-settings-card-note">
+              Peran sistem saat ini:{" "}
+              <strong>
+                {roles.find((r) => r.role_key === newUser.role)?.label || newUser.role || "—"}
+              </strong>
+              . Hak menu mengikuti peran sistem (default deny). Izin lantai produksi
+              mengikuti jabatan + konfigurasi pekerjaan — bukan jaminan otomatis.
+            </p>
+            {pairNote ? <p className="ep-settings-hint">{pairNote}</p> : null}
+          </div>
+          <div className="ep-settings-field ep-settings-field-span">
+            <button
+              type="button"
+              className="ep-btn"
+              onClick={() => setShowAdvancedCreate((v) => !v)}
+            >
+              {showCreateAdvanced
+                ? "Sembunyikan detail lanjutan"
+                : "Tampilkan detail lanjutan"}
+            </button>
+          </div>
+          {showCreateAdvanced ? (
+            <>
+              <label className="ep-settings-field">
+                <span className="ep-settings-field-label">
+                  Peran sistem
+                  {createNeedsExplicitRole ? " (wajib dipilih)" : ""}
+                </span>
+                <select
+                  value={newUser.role}
+                  onChange={(e) => setNewUser({ ...newUser, role: e.target.value })}
+                  required={createNeedsExplicitRole}
+                >
+                  {roles.map((r) => (
+                    <option key={r.role_key} value={r.role_key}>
+                      {r.label}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              {uxMode === "advanced" || showAdvancedCreate ? (
+                <label className="ep-settings-field">
+                  <span className="ep-settings-field-label">Peran kerja (teknis)</span>
+                  <select
+                    aria-label="Peran kerja teknis"
+                    value={newUser.operational_role}
+                    onChange={(e) =>
+                      setNewUser({ ...newUser, operational_role: e.target.value })
+                    }
+                  >
+                    <option value="">— Tidak ada —</option>
+                    {rolesOps.map((r) => (
+                      <option key={r} value={r}>
+                        {roleWorkLabel(r)} ({r})
+                      </option>
+                    ))}
+                  </select>
+                </label>
+              ) : null}
+            </>
+          ) : null}
         </form>
       </DetailDrawer>
 
@@ -532,30 +646,11 @@ export function UsersPanel({
               />
             </label>
             <label className="ep-settings-field">
-              <span className="ep-settings-field-label">Peran sistem</span>
+              <span className="ep-settings-field-label">Jabatan / pekerjaan</span>
               <select
-                value={editUserForm.role}
-                onChange={(e) => setEditUserForm({ ...editUserForm, role: e.target.value })}
-                disabled={editingUser.role === "super_admin"}
-              >
-                {roles.map((r) => (
-                  <option key={r.role_key} value={r.role_key}>
-                    {r.label}
-                  </option>
-                ))}
-              </select>
-            </label>
-            <label className="ep-settings-field">
-              <span className="ep-settings-field-label">Peran kerja</span>
-              <select
-                aria-label="Peran kerja"
+                aria-label="Jabatan pekerjaan"
                 value={editUserForm.operational_role}
-                onChange={(e) =>
-                  setEditUserForm({
-                    ...editUserForm,
-                    operational_role: e.target.value,
-                  })
-                }
+                onChange={(e) => applyOpsRoleToEdit(e.target.value)}
               >
                 <option value="">— Tidak ada —</option>
                 {rolesOps.map((r) => (
@@ -579,74 +674,106 @@ export function UsersPanel({
               )}
             </fieldset>
             <div className="ep-settings-field ep-settings-field-span">
-              <span className="ep-settings-field-label">Ringkasan izin efektif</span>
+              <span className="ep-settings-field-label">Akses menu</span>
               <p className="ep-settings-card-note">
-                Preview mengikuti peran sistem yang dipilih
-                {editRoleDoc ? ` (“${editRoleDoc.label}”)` : ""}. Snapshot lama tidak
-                dipakai sebagai izin peran baru. Policy grants non-revocable tetap
-                dihitung. Tidak menambah izin baru otomatis.
+                CURRENT = snapshot tersimpan · PROPOSED = setelah disimpan (peran
+                {editRoleDoc ? ` “${editRoleDoc.label}”` : ""} + policy). Hak menu ≠ jaminan
+                bisa mengeksekusi tugas lantai produksi.
               </p>
-              {permView.roleChanged ? (
-                <div className="ep-settings-perm-split">
-                  <div>
-                    <strong className="ep-settings-field-label">Izin saat ini (tersimpan)</strong>
-                    <p className="ep-settings-card-note">
-                      Snapshot pengguna untuk peran “{editingUser?.role || "—"}” — bukan
-                      preview peran baru.
-                    </p>
-                    {(editingUser?.effective_module_permissions || []).length === 0 ? (
-                      <p className="ep-settings-empty">Tidak ada snapshot tersimpan.</p>
-                    ) : (
-                      <ul className="ep-settings-effective-list">
-                        {(editingUser?.effective_module_permissions || []).map((p) => (
-                          <li key={`cur-${p}`}>
-                            <code>{p}</code>
-                          </li>
-                        ))}
-                      </ul>
-                    )}
-                  </div>
-                  <div>
-                    <strong className="ep-settings-field-label">
-                      Preview setelah disimpan
-                    </strong>
-                    <p className="ep-settings-card-note">
-                      Katalog peran “{permView.selectedRoleLabel}” + policy.
-                    </p>
-                    {permView.previewAfterSave.length === 0 ? (
-                      <p className="ep-settings-empty">Belum ada hak akses menu.</p>
-                    ) : (
-                      <ul className="ep-settings-effective-list">
-                        {permView.previewAfterSave.map((p) => (
-                          <li key={`prev-${p}`}>
-                            <code>{p}</code>
-                          </li>
-                        ))}
-                      </ul>
-                    )}
-                  </div>
+              {pairNote ? <p className="ep-settings-hint">{pairNote}</p> : null}
+              <div className="ep-settings-perm-split">
+                <div>
+                  <strong className="ep-settings-field-label">CURRENT ACCESS</strong>
+                  {(editingUser.effective_module_permissions || []).length === 0 ? (
+                    <p className="ep-settings-empty">NOT YET CONFIGURED / kosong</p>
+                  ) : (
+                    <ul className="ep-settings-effective-list">
+                      {(editingUser.effective_module_permissions || []).map((p) => (
+                        <li key={`cur-${p}`}>{modulePermLabel(p)}</li>
+                      ))}
+                    </ul>
+                  )}
                 </div>
-              ) : permView.previewAfterSave.length === 0 ? (
-                <p className="ep-settings-empty">Belum ada hak akses menu.</p>
-              ) : (
-                <ul className="ep-settings-effective-list">
-                  {permView.previewAfterSave.map((p) => (
-                    <li key={p}>
-                      <code>{p}</code>
-                    </li>
-                  ))}
-                </ul>
-              )}
-              {onOpenModulePerms && editUserForm.role ? (
-                <button
-                  type="button"
-                  className="ep-btn"
-                  onClick={() => onOpenModulePerms(editUserForm.role)}
-                >
-                  Kelola hak akses menu peran ini
-                </button>
-              ) : null}
+                <div>
+                  <strong className="ep-settings-field-label">PROPOSED ACCESS</strong>
+                  {permView.previewAfterSave.length === 0 ? (
+                    <p className="ep-settings-empty">NOT YET CONFIGURED</p>
+                  ) : (
+                    <ul className="ep-settings-effective-list">
+                      {permView.previewAfterSave.map((p) => (
+                        <li key={`prev-${p}`}>{modulePermLabel(p)}</li>
+                      ))}
+                    </ul>
+                  )}
+                </div>
+              </div>
             </div>
+            <div className="ep-settings-field ep-settings-field-span">
+              <button
+                type="button"
+                className="ep-btn"
+                onClick={() => setShowAdvancedEdit((v) => !v)}
+              >
+                {showEditAdvanced
+                  ? "Sembunyikan detail lanjutan"
+                  : "Tampilkan detail lanjutan"}
+              </button>
+            </div>
+            {showEditAdvanced ? (
+              <>
+                <label className="ep-settings-field">
+                  <span className="ep-settings-field-label">
+                    Peran sistem
+                    {editNeedsExplicitRole ? " (wajib dipilih)" : ""}
+                  </span>
+                  <select
+                    value={editUserForm.role}
+                    onChange={(e) =>
+                      setEditUserForm({ ...editUserForm, role: e.target.value })
+                    }
+                    disabled={editingUser.role === "super_admin"}
+                    required={editNeedsExplicitRole}
+                  >
+                    {roles.map((r) => (
+                      <option key={r.role_key} value={r.role_key}>
+                        {r.label}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                <label className="ep-settings-field">
+                  <span className="ep-settings-field-label">Peran kerja (teknis)</span>
+                  <select
+                    aria-label="Peran kerja teknis"
+                    value={editUserForm.operational_role}
+                    onChange={(e) =>
+                      setEditUserForm({
+                        ...editUserForm,
+                        operational_role: e.target.value,
+                      })
+                    }
+                  >
+                    <option value="">— Tidak ada —</option>
+                    {rolesOps.map((r) => (
+                      <option key={r} value={r}>
+                        {roleWorkLabel(r)} ({r})
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                {onOpenModulePerms && editUserForm.role ? (
+                  <div className="ep-settings-field ep-settings-field-span">
+                    <button
+                      type="button"
+                      className="ep-btn"
+                      onClick={() => onOpenModulePerms(editUserForm.role)}
+                    >
+                      Kelola hak akses menu peran ini
+                    </button>
+                  </div>
+                ) : null}
+              </>
+            ) : null}
           </form>
         ) : null}
       </DetailDrawer>
