@@ -195,6 +195,114 @@ def test_pdf_absolute_output_untrusted_host_rejected() -> None:
         client.fetch_sales_invoice_pdf("1")
 
 
+def test_pdf_rejects_http_absolute_url() -> None:
+    """Authenticated PDF absolute URL must be HTTPS."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith(PATH_API_TOKEN):
+            return httpx.Response(200, json=_token_payload())
+        if PATH_SI_PRINT in request.url.path:
+            return httpx.Response(
+                200,
+                json={
+                    "s": True,
+                    "d": {
+                        "output": "http://public.accurate.test/accurate/files/_temp/h.pdf",
+                    },
+                },
+            )
+        return httpx.Response(404)
+
+    client = _pdf_client(handler)
+    with pytest.raises(AccurateAuthError, match="non-HTTPS"):
+        client.fetch_sales_invoice_pdf("1")
+
+
+def test_pdf_rejects_https_to_http_redirect_downgrade() -> None:
+    """HTTPS origin must not follow HTTP Location (downgrade)."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith(PATH_API_TOKEN):
+            return httpx.Response(200, json=_token_payload())
+        if PATH_SI_PRINT in request.url.path:
+            return httpx.Response(
+                200,
+                json={"s": True, "d": {"output": "/accurate/files/_temp/d.pdf"}},
+            )
+        if request.url.path.endswith("/accurate/files/_temp/d.pdf"):
+            return httpx.Response(
+                302,
+                headers={
+                    "Location": "http://public.accurate.test/accurate/files/_temp/d2.pdf",
+                },
+                # Large body must not be unbounded-consumed on redirect.
+                content=b"x" * (2 * 1024 * 1024),
+            )
+        return httpx.Response(404)
+
+    client = _pdf_client(handler)
+    with pytest.raises(AccurateAuthError, match="non-HTTPS|downgrade"):
+        client.fetch_sales_invoice_pdf("1")
+
+
+def test_pdf_absolute_url_keeps_validated_trusted_host() -> None:
+    """Absolute PDF URL on another trusted Accurate host must be fetched there."""
+    seen: list[str] = []
+
+    def token_payload_cloud() -> dict[str, Any]:
+        return {
+            "s": True,
+            "d": {
+                "host": "https://public.accurate.id",
+                "session": "",
+                "database": {"id": 99, "host": "https://public.accurate.id"},
+            },
+        }
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(f"{request.url.scheme}://{request.url.host}{request.url.path}")
+        if request.url.path.endswith(PATH_API_TOKEN):
+            return httpx.Response(200, json=token_payload_cloud())
+        if PATH_SI_PRINT in request.url.path:
+            assert request.url.host == "public.accurate.id"
+            return httpx.Response(
+                200,
+                json={
+                    "s": True,
+                    "d": {
+                        "output": (
+                            "https://zeus.accurate.id/accurate/files/_temp/rot.pdf"
+                        ),
+                    },
+                },
+            )
+        if (
+            request.url.host == "zeus.accurate.id"
+            and request.url.path.endswith("/accurate/files/_temp/rot.pdf")
+        ):
+            return httpx.Response(
+                200, content=PDF_BYTES, headers={"content-type": "application/pdf"}
+            )
+        if request.url.host == "public.accurate.id" and "rot.pdf" in request.url.path:
+            raise AssertionError("must not fetch absolute PDF from previous DB host")
+        return httpx.Response(404)
+
+    client = AccurateReadClient(
+        account_base_url=ACCOUNT,
+        api_token=FAKE_TOKEN,
+        signature_secret=FAKE_SECRET,
+        db_id="99",
+        require_db_pin=False,
+        transport=httpx.MockTransport(handler),
+    )
+    assert client.fetch_sales_invoice_pdf("1") == PDF_BYTES
+    assert any(u.startswith("https://zeus.accurate.id/") for u in seen)
+    assert not any(
+        u.startswith("https://public.accurate.id/accurate/files/_temp/rot.pdf")
+        for u in seen
+    )
+
+
 def test_pdf_redirect_same_host_allowed_and_no_secret_leak() -> None:
     def handler(request: httpx.Request) -> httpx.Response:
         if request.url.path.endswith(PATH_API_TOKEN):

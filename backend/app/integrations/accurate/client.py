@@ -532,13 +532,21 @@ class AccurateReadClient:
         """Validasi redirect/absolute URL PDF sebelum mengirim header signed.
 
         Fail-closed: jangan teruskan Authorization/signature ke origin asing.
-        Host rotation Accurate (*.accurate.id) diizinkan hanya bila kedua sisi
-        adalah host cloud Accurate yang dikenal.
+        Wajib HTTPS (tolak downgrade HTTPS→HTTP). Host rotation Accurate
+        (*.accurate.id) hanya bila kedua sisi host cloud Accurate yang dikenal.
         """
         parsed = urlparse(destination_url)
-        if parsed.scheme not in {"https", "http"}:
+        from_norm = normalize_host(from_host)
+        from_parsed = urlparse(from_norm)
+        # Authenticated PDF hops require HTTPS. Reject cleartext and downgrade.
+        if parsed.scheme != "https":
             raise AccurateAuthError(
-                "Redirect PDF Accurate menolak skema tidak aman.",
+                "Redirect PDF Accurate menolak skema non-HTTPS.",
+                code="accurate_pdf_redirect_untrusted",
+            )
+        if from_parsed.scheme == "https" and parsed.scheme != "https":
+            raise AccurateAuthError(
+                "Redirect PDF Accurate menolak downgrade HTTPS.",
                 code="accurate_pdf_redirect_untrusted",
             )
         if parsed.username or parsed.password:
@@ -552,7 +560,6 @@ class AccurateReadClient:
                 code="accurate_pdf_redirect_untrusted",
             )
         to_host = normalize_host(f"{parsed.scheme}://{parsed.netloc}")
-        from_norm = normalize_host(from_host)
         if to_host != from_norm:
             if not (
                 self._is_accurate_cloud_host(from_norm)
@@ -608,14 +615,19 @@ class AccurateReadClient:
             raise RuntimeError("sales-invoice/print.do tidak mengembalikan path PDF.")
 
         db = self.ensure_db_session()
+        absolute_url: str | None = None
         if output.startswith("http://") or output.startswith("https://"):
-            # Absolute URL: jangan percaya path saja — wajib host DB terpercaya.
-            file_url = self._assert_trusted_pdf_destination(
+            # Absolute URL: trust gate, then fetch THAT validated host/URL.
+            absolute_url = self._assert_trusted_pdf_destination(
                 from_host=db.host,
                 destination_url=output,
             )
-            parsed = urlparse(file_url)
+            parsed = urlparse(absolute_url)
             file_path = parsed.path
+            # Persist trusted rotation host so subsequent hops stay aligned.
+            self._cached_host = normalize_host(
+                f"{parsed.scheme}://{parsed.netloc}"
+            )
         else:
             file_path = output if output.startswith("/") else f"/{output}"
             if not file_path.startswith("/accurate/files/"):
@@ -624,7 +636,10 @@ class AccurateReadClient:
                 raise RuntimeError("Path PDF Accurate tidak valid.")
 
         pdf_bytes = self._request_bytes_on_db_host(
-            "GET", file_path, max_bytes=bound
+            "GET",
+            file_path,
+            max_bytes=bound,
+            absolute_url=absolute_url,
         )
         if not pdf_bytes.startswith(b"%PDF"):
             raise RuntimeError("Respons Accurate bukan PDF valid.")
@@ -636,6 +651,7 @@ class AccurateReadClient:
         path: str,
         *,
         max_bytes: int = MAX_SALES_INVOICE_PDF_BYTES,
+        absolute_url: str | None = None,
     ) -> bytes:
         """GET bytes mentah PDF pada host DB — redirect terpercaya + stream bounded."""
         if not path.startswith("/accurate/files/"):
@@ -648,12 +664,22 @@ class AccurateReadClient:
             for attempt in range(1, _MAX_ATTEMPTS + 1):
                 try:
                     db = self.ensure_db_session(http)
-                    url = f"{db.host.rstrip('/')}{path}"
+                    if absolute_url:
+                        # Keep validated absolute destination host (do not rebuild
+                        # from a stale/previous DB host).
+                        url = absolute_url
+                        trusted_from = normalize_host(
+                            f"{urlparse(absolute_url).scheme}://"
+                            f"{urlparse(absolute_url).netloc}"
+                        )
+                    else:
+                        url = f"{db.host.rstrip('/')}{path}"
+                        trusted_from = db.host
                     return self._stream_trusted_pdf(
                         http,
                         method=method,
                         url=url,
-                        trusted_from_host=db.host,
+                        trusted_from_host=trusted_from,
                         path=path,
                         max_bytes=bound,
                         attempt=attempt,
@@ -716,11 +742,7 @@ class AccurateReadClient:
                             f"HTTP {resp.status_code} tanpa Location",
                             code="accurate_redirect_missing",
                         )
-                    # Baca/abaikan body redirect tanpa menyimpan.
-                    try:
-                        resp.read()
-                    except Exception:
-                        pass
+                    # Jangan konsumsi body redirect (unbounded). Tutup stream saja.
                     next_url = urljoin(str(resp.request.url), location)
                     trusted_url = self._assert_trusted_pdf_destination(
                         from_host=trusted_from_host,
