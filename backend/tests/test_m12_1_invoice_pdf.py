@@ -10,6 +10,7 @@ import pytest
 from fastapi.testclient import TestClient
 from pymongo.database import Database
 
+from app.integrations.accurate.auth import AccurateAuthError
 from app.integrations.accurate.client import (
     PATH_API_TOKEN,
     PATH_SI_PRINT,
@@ -25,6 +26,7 @@ DB_HOST = "https://public.accurate.test"
 FAKE_TOKEN = "tok-test"
 FAKE_SECRET = "sec-test"
 PDF_BYTES = b"%PDF-1.4 m12-1-fixture"
+EVIL_HOST = "https://evil.example"
 
 
 def _token_payload() -> dict[str, Any]:
@@ -132,6 +134,199 @@ def test_fetch_sales_invoice_pdf_oversized() -> None:
     client = _pdf_client(handler)
     with pytest.raises(RuntimeError, match="batas ukuran"):
         client.fetch_sales_invoice_pdf("1", max_bytes=1024)
+
+
+def test_pdf_redirect_to_untrusted_host_rejected() -> None:
+    """Jangan ikut redirect ke origin asing dengan header signed."""
+    seen_hosts: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen_hosts.append(request.url.host)
+        if request.url.path.endswith(PATH_API_TOKEN):
+            return httpx.Response(200, json=_token_payload())
+        if PATH_SI_PRINT in request.url.path:
+            return httpx.Response(
+                200,
+                json={"s": True, "d": {"output": "/accurate/files/_temp/r.pdf"}},
+            )
+        if request.url.host == "public.accurate.test" and request.url.path.endswith(
+            "/accurate/files/_temp/r.pdf"
+        ):
+            return httpx.Response(
+                302,
+                headers={
+                    "Location": f"{EVIL_HOST}/accurate/files/_temp/r.pdf",
+                },
+            )
+        if request.url.host == "evil.example":
+            return httpx.Response(
+                200,
+                content=PDF_BYTES,
+                headers={"content-type": "application/pdf"},
+            )
+        return httpx.Response(404)
+
+    client = _pdf_client(handler)
+    with pytest.raises(AccurateAuthError, match="tidak terpercaya"):
+        client.fetch_sales_invoice_pdf("1")
+    assert "evil.example" not in seen_hosts
+
+
+def test_pdf_absolute_output_untrusted_host_rejected() -> None:
+    """Path /accurate/files/ pada host asing tidak cukup untuk trust."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith(PATH_API_TOKEN):
+            return httpx.Response(200, json=_token_payload())
+        if PATH_SI_PRINT in request.url.path:
+            return httpx.Response(
+                200,
+                json={
+                    "s": True,
+                    "d": {
+                        "output": f"{EVIL_HOST}/accurate/files/_temp/abs.pdf",
+                    },
+                },
+            )
+        return httpx.Response(404)
+
+    client = _pdf_client(handler)
+    with pytest.raises(AccurateAuthError, match="tidak terpercaya"):
+        client.fetch_sales_invoice_pdf("1")
+
+
+def test_pdf_redirect_same_host_allowed_and_no_secret_leak() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith(PATH_API_TOKEN):
+            return httpx.Response(200, json=_token_payload())
+        if PATH_SI_PRINT in request.url.path:
+            return httpx.Response(
+                200,
+                json={"s": True, "d": {"output": "/accurate/files/_temp/ok.pdf"}},
+            )
+        if request.url.path.endswith("/accurate/files/_temp/ok.pdf"):
+            # Relative redirect same host
+            return httpx.Response(
+                308,
+                headers={"Location": "/accurate/files/_temp/ok2.pdf"},
+            )
+        if request.url.path.endswith("/accurate/files/_temp/ok2.pdf"):
+            # Signed headers must be present on trusted hop.
+            assert request.headers.get("authorization", "").startswith("Bearer ")
+            assert "x-api-signature" in {
+                k.lower() for k in request.headers.keys()
+            }
+            return httpx.Response(
+                200, content=PDF_BYTES, headers={"content-type": "application/pdf"}
+            )
+        return httpx.Response(404)
+
+    client = _pdf_client(handler)
+    assert client.fetch_sales_invoice_pdf("1") == PDF_BYTES
+
+
+def test_pdf_host_path_manipulation_rejected() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith(PATH_API_TOKEN):
+            return httpx.Response(200, json=_token_payload())
+        if PATH_SI_PRINT in request.url.path:
+            return httpx.Response(
+                200,
+                json={
+                    "s": True,
+                    "d": {"output": "/accurate/files/../secrets/x.pdf"},
+                },
+            )
+        return httpx.Response(404)
+
+    client = _pdf_client(handler)
+    with pytest.raises(RuntimeError, match="tidak valid"):
+        client.fetch_sales_invoice_pdf("1")
+
+
+def test_pdf_oversized_content_length_rejected_early() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith(PATH_API_TOKEN):
+            return httpx.Response(200, json=_token_payload())
+        if PATH_SI_PRINT in request.url.path:
+            return httpx.Response(
+                200,
+                json={"s": True, "d": {"output": "/accurate/files/_temp/cl.pdf"}},
+            )
+        if request.url.path.endswith("/accurate/files/_temp/cl.pdf"):
+            # Content-Length over bound — reject before accepting body as PDF.
+            return httpx.Response(
+                200,
+                headers={
+                    "content-type": "application/pdf",
+                    "content-length": "99999",
+                },
+                content=b"%PDF" + b"x" * 4000,
+            )
+        return httpx.Response(404)
+
+    client = _pdf_client(handler)
+    with pytest.raises(RuntimeError, match="batas ukuran"):
+        client.fetch_sales_invoice_pdf("1", max_bytes=2048)
+
+
+def test_pdf_chunked_stream_exceeds_limit() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith(PATH_API_TOKEN):
+            return httpx.Response(200, json=_token_payload())
+        if PATH_SI_PRINT in request.url.path:
+            return httpx.Response(
+                200,
+                json={"s": True, "d": {"output": "/accurate/files/_temp/ch.pdf"}},
+            )
+        if request.url.path.endswith("/accurate/files/_temp/ch.pdf"):
+            # No Content-Length; cumulative stream exceeds bound.
+            return httpx.Response(
+                200,
+                headers={"content-type": "application/pdf"},
+                content=b"%PDF-1.4 " + b"y" * 3000,
+            )
+        return httpx.Response(404)
+
+    client = _pdf_client(handler)
+    with pytest.raises(RuntimeError, match="batas ukuran"):
+        client.fetch_sales_invoice_pdf("1", max_bytes=1024)
+
+
+def test_pdf_upstream_timeout() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith(PATH_API_TOKEN):
+            return httpx.Response(200, json=_token_payload())
+        if PATH_SI_PRINT in request.url.path:
+            return httpx.Response(
+                200,
+                json={"s": True, "d": {"output": "/accurate/files/_temp/t.pdf"}},
+            )
+        if request.url.path.endswith("/accurate/files/_temp/t.pdf"):
+            raise httpx.ReadTimeout("simulated")
+        return httpx.Response(404)
+
+    client = _pdf_client(handler)
+    with pytest.raises(TimeoutError):
+        client.fetch_sales_invoice_pdf("1")
+
+
+def test_pdf_upstream_http_failure() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith(PATH_API_TOKEN):
+            return httpx.Response(200, json=_token_payload())
+        if PATH_SI_PRINT in request.url.path:
+            return httpx.Response(
+                200,
+                json={"s": True, "d": {"output": "/accurate/files/_temp/f.pdf"}},
+            )
+        if request.url.path.endswith("/accurate/files/_temp/f.pdf"):
+            return httpx.Response(503, json={"s": False})
+        return httpx.Response(404)
+
+    client = _pdf_client(handler)
+    with pytest.raises(ConnectionError):
+        client.fetch_sales_invoice_pdf("1")
 
 
 def _seed_invoice(db: Database, **overrides: Any) -> dict[str, Any]:

@@ -54,6 +54,14 @@ _RETRYABLE = {408, 425, 429, 500, 502, 503, 504}
 MAX_SALES_INVOICE_PDF_BYTES = 15 * 1024 * 1024
 
 
+class _PdfRetryable(Exception):
+    """Internal: retry PDF stream attempt (401/5xx soft)."""
+
+    def __init__(self, message: str, *, clear_session: bool = False) -> None:
+        super().__init__(message)
+        self.clear_session = clear_session
+
+
 class AccurateReadStatus(str, Enum):
     NOT_CONFIGURED = "not_configured"
     CONFIG_PRESENT = "config_present"
@@ -501,6 +509,72 @@ class AccurateReadClient:
         )
         return self._unwrap_detail(data)
 
+    @staticmethod
+    def _hostname_only(normalized_host: str) -> str:
+        parsed = urlparse(normalized_host)
+        netloc = (parsed.netloc or "").lower()
+        if "@" in netloc:
+            netloc = netloc.rsplit("@", 1)[-1]
+        return netloc.split(":")[0]
+
+    @classmethod
+    def _is_accurate_cloud_host(cls, normalized_host: str) -> bool:
+        host = cls._hostname_only(normalized_host)
+        return host == "accurate.id" or host.endswith(".accurate.id")
+
+    def _assert_trusted_pdf_destination(
+        self,
+        *,
+        from_host: str,
+        destination_url: str,
+        required_path_prefix: str = "/accurate/files/",
+    ) -> str:
+        """Validasi redirect/absolute URL PDF sebelum mengirim header signed.
+
+        Fail-closed: jangan teruskan Authorization/signature ke origin asing.
+        Host rotation Accurate (*.accurate.id) diizinkan hanya bila kedua sisi
+        adalah host cloud Accurate yang dikenal.
+        """
+        parsed = urlparse(destination_url)
+        if parsed.scheme not in {"https", "http"}:
+            raise AccurateAuthError(
+                "Redirect PDF Accurate menolak skema tidak aman.",
+                code="accurate_pdf_redirect_untrusted",
+            )
+        if parsed.username or parsed.password:
+            raise AccurateAuthError(
+                "Redirect PDF Accurate menolak kredensial di URL.",
+                code="accurate_pdf_redirect_untrusted",
+            )
+        if not parsed.netloc:
+            raise AccurateAuthError(
+                "Redirect PDF Accurate tanpa host.",
+                code="accurate_pdf_redirect_untrusted",
+            )
+        to_host = normalize_host(f"{parsed.scheme}://{parsed.netloc}")
+        from_norm = normalize_host(from_host)
+        if to_host != from_norm:
+            if not (
+                self._is_accurate_cloud_host(from_norm)
+                and self._is_accurate_cloud_host(to_host)
+            ):
+                raise AccurateAuthError(
+                    "Redirect PDF Accurate ke host tidak terpercaya.",
+                    code="accurate_pdf_redirect_untrusted",
+                )
+        path = parsed.path or ""
+        if not path.startswith(required_path_prefix):
+            raise AccurateAuthError(
+                "Redirect PDF Accurate di luar /accurate/files/.",
+                code="accurate_pdf_redirect_untrusted",
+            )
+        if ".." in path or "\\" in path or parsed.query or parsed.fragment:
+            raise AccurateAuthError(
+                "Path PDF Accurate tidak valid.",
+                code="accurate_pdf_redirect_untrusted",
+            )
+        return f"{to_host}{path}"
+
     def fetch_sales_invoice_pdf(
         self,
         accurate_id: str | int,
@@ -532,40 +606,63 @@ class AccurateReadClient:
             output = inner.strip()
         if not output:
             raise RuntimeError("sales-invoice/print.do tidak mengembalikan path PDF.")
+
+        db = self.ensure_db_session()
         if output.startswith("http://") or output.startswith("https://"):
-            parsed = urlparse(output)
-            file_path = parsed.path or ""
-            if parsed.query:
-                # Tolak query string eksternal — hanya path temp Accurate.
-                raise RuntimeError("Path PDF Accurate tidak valid.")
+            # Absolute URL: jangan percaya path saja — wajib host DB terpercaya.
+            file_url = self._assert_trusted_pdf_destination(
+                from_host=db.host,
+                destination_url=output,
+            )
+            parsed = urlparse(file_url)
+            file_path = parsed.path
         else:
             file_path = output if output.startswith("/") else f"/{output}"
-        if not file_path.startswith("/accurate/files/"):
-            raise RuntimeError("Path PDF Accurate di luar /accurate/files/.")
-        if ".." in file_path or "\\" in file_path:
-            raise RuntimeError("Path PDF Accurate tidak valid.")
+            if not file_path.startswith("/accurate/files/"):
+                raise RuntimeError("Path PDF Accurate di luar /accurate/files/.")
+            if ".." in file_path or "\\" in file_path or "?" in file_path or "#" in file_path:
+                raise RuntimeError("Path PDF Accurate tidak valid.")
 
-        pdf_bytes = self._request_bytes_on_db_host("GET", file_path)
-        if len(pdf_bytes) > bound:
-            raise RuntimeError("PDF Accurate melebihi batas ukuran.")
+        pdf_bytes = self._request_bytes_on_db_host(
+            "GET", file_path, max_bytes=bound
+        )
         if not pdf_bytes.startswith(b"%PDF"):
             raise RuntimeError("Respons Accurate bukan PDF valid.")
         return pdf_bytes
 
-    def _request_bytes_on_db_host(self, method: str, path: str) -> bytes:
-        """GET/POST bytes mentah pada host DB (PDF temp files)."""
+    def _request_bytes_on_db_host(
+        self,
+        method: str,
+        path: str,
+        *,
+        max_bytes: int = MAX_SALES_INVOICE_PDF_BYTES,
+    ) -> bytes:
+        """GET bytes mentah PDF pada host DB — redirect terpercaya + stream bounded."""
+        if not path.startswith("/accurate/files/"):
+            raise RuntimeError("Path PDF Accurate di luar /accurate/files/.")
+        if ".." in path or "\\" in path:
+            raise RuntimeError("Path PDF Accurate tidak valid.")
+        bound = max(1024, min(int(max_bytes), MAX_SALES_INVOICE_PDF_BYTES))
         last_err: Exception | None = None
         with self._http(follow_redirects=False) as http:
             for attempt in range(1, _MAX_ATTEMPTS + 1):
                 try:
                     db = self.ensure_db_session(http)
                     url = f"{db.host.rstrip('/')}{path}"
-                    resp = http.request(
-                        method,
-                        url,
-                        headers=self._signed_request_headers(),
+                    return self._stream_trusted_pdf(
+                        http,
+                        method=method,
+                        url=url,
+                        trusted_from_host=db.host,
+                        path=path,
+                        max_bytes=bound,
+                        attempt=attempt,
                     )
                 except AccurateAuthError:
+                    raise
+                except TimeoutError:
+                    raise
+                except RuntimeError:
                     raise
                 except httpx.TimeoutException as exc:
                     raise TimeoutError(f"Timeout Accurate {path}") from exc
@@ -574,7 +671,42 @@ class AccurateReadClient:
                         f"Koneksi Accurate gagal: {exc.__class__.__name__}"
                     )
                     continue
+                except _PdfRetryable as exc:
+                    last_err = ConnectionError(str(exc))
+                    if attempt >= _MAX_ATTEMPTS:
+                        break
+                    if exc.clear_session:
+                        self.clear_session()
+                    continue
 
+        if last_err:
+            raise last_err
+        raise ConnectionError(f"Accurate {path} gagal setelah retry")
+
+    def _stream_trusted_pdf(
+        self,
+        http: httpx.Client,
+        *,
+        method: str,
+        url: str,
+        trusted_from_host: str,
+        path: str,
+        max_bytes: int,
+        attempt: int,
+        _redirects: int = 0,
+    ) -> bytes:
+        """Stream PDF dengan batas ukuran; redirect hanya ke host terpercaya."""
+        if _redirects > 3:
+            raise AccurateAuthError(
+                "Terlalu banyak redirect PDF Accurate.",
+                code="accurate_pdf_redirect_untrusted",
+            )
+        try:
+            with http.stream(
+                method,
+                url,
+                headers=self._signed_request_headers(),
+            ) as resp:
                 if resp.status_code in {301, 302, 307, 308}:
                     location = resp.headers.get("Location") or resp.headers.get(
                         "location"
@@ -584,41 +716,41 @@ class AccurateReadClient:
                             f"HTTP {resp.status_code} tanpa Location",
                             code="accurate_redirect_missing",
                         )
-                    next_url = urljoin(str(resp.request.url), location)
-                    parsed = urlparse(next_url)
-                    if parsed.scheme and parsed.netloc:
-                        self._cached_host = normalize_host(
-                            f"{parsed.scheme}://{parsed.netloc}"
-                        )
-                    retry_url = (
-                        next_url
-                        if parsed.path and parsed.path != "/"
-                        else f"{self._cached_host}{path}"
-                    )
+                    # Baca/abaikan body redirect tanpa menyimpan.
                     try:
-                        resp = http.request(
-                            method,
-                            retry_url,
-                            headers=self._signed_request_headers(),
-                        )
-                    except httpx.TimeoutException as exc:
-                        raise TimeoutError(
-                            f"Timeout Accurate {path} setelah redirect"
-                        ) from exc
-                    except httpx.HTTPError as exc:
-                        last_err = ConnectionError(
-                            f"Koneksi Accurate gagal: {exc.__class__.__name__}"
-                        )
-                        continue
+                        resp.read()
+                    except Exception:
+                        pass
+                    next_url = urljoin(str(resp.request.url), location)
+                    trusted_url = self._assert_trusted_pdf_destination(
+                        from_host=trusted_from_host,
+                        destination_url=next_url,
+                    )
+                    # Host rotation Accurate: update cache hanya setelah trust check.
+                    parsed = urlparse(trusted_url)
+                    self._cached_host = normalize_host(
+                        f"{parsed.scheme}://{parsed.netloc}"
+                    )
+                    return self._stream_trusted_pdf(
+                        http,
+                        method=method,
+                        url=trusted_url,
+                        trusted_from_host=self._cached_host,
+                        path=path,
+                        max_bytes=max_bytes,
+                        attempt=attempt,
+                        _redirects=_redirects + 1,
+                    )
 
                 if resp.status_code == 401 and attempt < _MAX_ATTEMPTS:
-                    self.clear_session()
-                    continue
-                if resp.status_code in _RETRYABLE and attempt < _MAX_ATTEMPTS:
-                    last_err = ConnectionError(
-                        f"Accurate {path} error server HTTP {resp.status_code}"
+                    raise _PdfRetryable(
+                        f"Accurate {path} HTTP 401", clear_session=True
                     )
-                    continue
+                if resp.status_code in _RETRYABLE and attempt < _MAX_ATTEMPTS:
+                    raise _PdfRetryable(
+                        f"Accurate {path} error server HTTP {resp.status_code}",
+                        clear_session=False,
+                    )
                 if resp.status_code >= 500:
                     raise ConnectionError(
                         f"Accurate {path} error server HTTP {resp.status_code}"
@@ -628,18 +760,35 @@ class AccurateReadClient:
                         f"Accurate {path} HTTP {resp.status_code}",
                         code="accurate_http_error",
                     )
+
+                cl_raw = resp.headers.get("content-length")
+                if cl_raw is not None and str(cl_raw).strip() != "":
+                    try:
+                        content_length = int(str(cl_raw).strip())
+                    except ValueError as exc:
+                        raise RuntimeError(
+                            "Content-Length PDF Accurate tidak valid."
+                        ) from exc
+                    if content_length < 0 or content_length > max_bytes:
+                        raise RuntimeError("PDF Accurate melebihi batas ukuran.")
+
                 ctype = (resp.headers.get("content-type") or "").lower()
-                if "application/pdf" not in ctype and not resp.content.startswith(
-                    b"%PDF"
-                ):
+                buf = bytearray()
+                for chunk in resp.iter_bytes():
+                    if not chunk:
+                        continue
+                    if len(buf) + len(chunk) > max_bytes:
+                        raise RuntimeError("PDF Accurate melebihi batas ukuran.")
+                    buf.extend(chunk)
+
+                body = bytes(buf)
+                if "application/pdf" not in ctype and not body.startswith(b"%PDF"):
                     raise RuntimeError(
                         f"{path} content-type bukan PDF ({ctype or 'missing'})."
                     )
-                return bytes(resp.content)
-
-        if last_err:
-            raise last_err
-        raise ConnectionError(f"Accurate {path} gagal setelah retry")
+                return body
+        except httpx.TimeoutException as exc:
+            raise TimeoutError(f"Timeout Accurate {path}") from exc
 
     def fetch_sales_receipt_list(
         self,
