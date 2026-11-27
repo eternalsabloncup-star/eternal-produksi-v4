@@ -1538,20 +1538,172 @@ def list_documents(
     branch_id: str | None = None,
     doc_type: str | None = None,
     limit: int = 100,
-) -> list[dict[str, Any]]:
+    offset: int = 0,
+    q: str | None = None,
+) -> dict[str, Any]:
     require_paint_permission(user, PERM_PAINT_VIEW)
     paint.require_paint_indexes(db)
-    q: dict[str, Any] = {}
+    filt: dict[str, Any] = {}
     if branch_id:
-        q["branch_id"] = assert_paint_branch(user, branch_id)
+        filt["branch_id"] = assert_paint_branch(user, branch_id)
     elif not bypasses_branch(user):
         allowed = sorted(user_branch_ids(user))
-        q["branch_id"] = {"$in": allowed or ["__none__"]}
+        filt["branch_id"] = {"$in": allowed or ["__none__"]}
     if doc_type:
-        q["doc_type"] = doc_type
-    return list(
-        paint.coll(db, paint.DOCUMENTS)
-        .find(q, {"_id": 0})
+        filt["doc_type"] = doc_type
+    needle = _strip(q).lower()
+    if needle:
+        filt["$or"] = [
+            {"document_id": {"$regex": needle, "$options": "i"}},
+            {"used_by": {"$regex": needle, "$options": "i"}},
+            {"recorded_by": {"$regex": needle, "$options": "i"}},
+            {"purpose_name": {"$regex": needle, "$options": "i"}},
+        ]
+    page_size = max(1, min(int(limit), 200))
+    skip = max(0, int(offset))
+    coll = paint.coll(db, paint.DOCUMENTS)
+    total = coll.count_documents(filt)
+    items = list(
+        coll.find(filt, {"_id": 0})
         .sort("created_at", -1)
-        .limit(max(1, min(limit, 500)))
+        .skip(skip)
+        .limit(page_size)
     )
+    return {"items": items, "total": total, "limit": page_size, "offset": skip}
+
+
+def withdrawal_outstanding(
+    db: Database,
+    user: dict[str, Any],
+    *,
+    withdrawal_id: str,
+) -> dict[str, Any]:
+    """Per-line outstanding grams for return/conversion UX (read-only)."""
+    require_paint_permission(user, PERM_PAINT_VIEW)
+    paint.require_paint_indexes(db)
+    w = paint.get_document(db, withdrawal_id)
+    if w is None or w.get("doc_type") != DOC_WITHDRAWAL:
+        raise PaintNotFoundError("Pengambilan tidak ditemukan.")
+    assert_paint_branch(user, str(w.get("branch_id") or ""))
+    lines = []
+    for ln in w.get("lines") or []:
+        lid = str(ln.get("line_id") or "")
+        withdrawn = abs(int(ln.get("qty_mg") or 0))
+        outstanding = _withdrawal_outstanding_mg(db, w, lid)
+        lines.append(
+            {
+                "line_id": lid,
+                "paint_id": ln.get("paint_id"),
+                "withdrawn_mg": withdrawn,
+                "withdrawn_g": paint.mg_to_grams(withdrawn),
+                "outstanding_mg": outstanding,
+                "outstanding_g": paint.mg_to_grams(outstanding),
+            }
+        )
+    return {
+        "document_id": w["document_id"],
+        "branch_id": w.get("branch_id"),
+        "used_by": w.get("used_by"),
+        "status": w.get("status"),
+        "lines": lines,
+    }
+
+
+def paint_kpi_summary(
+    db: Database,
+    user: dict[str, Any],
+    *,
+    branch_id: str | None = None,
+    date_from: datetime | None = None,
+    date_to: datetime | None = None,
+) -> dict[str, Any]:
+    """Authoritative KPI for workspace header — balance + period flow."""
+    require_paint_permission(user, PERM_PAINT_STOCK_VIEW)
+    paint.require_paint_indexes(db)
+    stock_rows = list_stock(db, user, branch_id=branch_id)
+    available_mg = sum(int(r.get("qty_mg") or 0) for r in stock_rows)
+
+    filt: dict[str, Any] = {"status": STATUS_POSTED}
+    if branch_id:
+        filt["branch_id"] = assert_paint_branch(user, branch_id)
+    elif not bypasses_branch(user):
+        allowed = sorted(user_branch_ids(user))
+        filt["branch_id"] = {"$in": allowed or ["__none__"]}
+    if date_from or date_to:
+        created: dict[str, Any] = {}
+        if date_from:
+            created["$gte"] = date_from
+        if date_to:
+            created["$lte"] = date_to
+        filt["created_at"] = created
+
+    withdraw_mg = return_mg = waste_mg = 0
+    for d in paint.coll(db, paint.DOCUMENTS).find(
+        filt, {"_id": 0, "doc_type": 1, "lines": 1}
+    ):
+        dtype = d.get("doc_type")
+        for ln in d.get("lines") or []:
+            qty = abs(int(ln.get("qty_mg") or 0))
+            if dtype == DOC_WITHDRAWAL:
+                withdraw_mg += qty
+            elif dtype == DOC_RETURN:
+                return_mg += qty
+            elif dtype == DOC_WASTE:
+                waste_mg += qty
+    net_mg = withdraw_mg - return_mg
+    return {
+        "branch_id": branch_id,
+        "period": {
+            "from": date_from.isoformat() if date_from else None,
+            "to": date_to.isoformat() if date_to else None,
+        },
+        "available_mg": available_mg,
+        "available_g": paint.mg_to_grams(available_mg),
+        "net_usage_mg": net_mg,
+        "net_usage_g": paint.mg_to_grams(net_mg),
+        "return_mg": return_mg,
+        "return_g": paint.mg_to_grams(return_mg),
+        "waste_mg": waste_mg,
+        "waste_g": paint.mg_to_grams(waste_mg),
+        "withdraw_mg": withdraw_mg,
+        "withdraw_g": paint.mg_to_grams(withdraw_mg),
+    }
+
+
+def list_paint_users(
+    db: Database,
+    user: dict[str, Any],
+    *,
+    branch_id: str | None = None,
+    q: str | None = None,
+    limit: int = 50,
+) -> dict[str, Any]:
+    """Read-only user picker for used_by — active users in branch scope."""
+    require_paint_permission(user, PERM_PAINT_WITHDRAW)
+    paint.require_paint_indexes(db)
+    bid = assert_paint_branch(user, branch_id) if branch_id else None
+    needle = _strip(q).lower()
+    items: list[dict[str, Any]] = []
+    for u in users.list_users(db, include_inactive=False):
+        email = str(u.get("email") or u.get("email_normalized") or "").strip().lower()
+        if not email:
+            continue
+        branches = [str(b) for b in (u.get("branch_ids") or [])]
+        if bid and branches and bid not in {normalize_branch_identity(b) for b in branches}:
+            continue
+        if needle and needle not in email and needle not in str(
+            u.get("display_name") or ""
+        ).lower():
+            continue
+        items.append(
+            {
+                "user_id": u.get("id") or u.get("user_id"),
+                "email": email,
+                "display_name": users.operational_display_name(u.get("display_name")),
+                "branch_ids": branches,
+                "operational_role": u.get("operational_role"),
+            }
+        )
+        if len(items) >= max(1, min(int(limit), 100)):
+            break
+    return {"items": items, "total": len(items)}

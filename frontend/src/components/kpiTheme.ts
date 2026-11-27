@@ -113,6 +113,34 @@ export const KPI_THEME_BY_LABEL: Record<string, KpiVisualTheme> = {
     text: "#854F10",
     accent: "#BE7A20",
   },
+  "Stok Tersedia": {
+    key: "paint-available",
+    from: "#E2F0F6",
+    to: "#C6E4EF",
+    text: "#185C76",
+    accent: "#247FA6",
+  },
+  "Penggunaan Bersih": {
+    key: "paint-net-usage",
+    from: "#FFF1D9",
+    to: "#F9DCA6",
+    text: "#854F10",
+    accent: "#BE7A20",
+  },
+  Pengembalian: {
+    key: "paint-return",
+    from: "#E8F5EC",
+    to: "#C8EAD4",
+    text: "#206646",
+    accent: "#2E9665",
+  },
+  Waste: {
+    key: "paint-waste",
+    from: "#FDE6E7",
+    to: "#F4C4C9",
+    text: "#A02F40",
+    accent: "#C84B5C",
+  },
 };
 
 /** Alias judul existing agar identitas sama tanpa mengubah label data. */

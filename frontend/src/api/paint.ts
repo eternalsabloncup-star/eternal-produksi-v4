@@ -105,16 +105,67 @@ export type PaintDocument = {
   used_by?: string;
   purpose_name?: string;
   created_at?: string;
+  note?: string;
   lines?: Array<{
     line_id: string;
     paint_id: string;
     qty_mg: number;
     qty_g?: number;
+    meta?: Record<string, unknown>;
   }>;
+  source_lines?: Array<{
+    withdrawal_id: string;
+    withdrawal_line_id: string;
+    paint_id: string;
+    qty_mg: number;
+    qty_g?: number;
+  }>;
+  verified_return_mg?: number;
+  waste_mg?: number;
+  destination_paint_id?: string;
+  reason?: string;
+};
+
+export type PaintUser = {
+  user_id?: string;
+  email: string;
+  display_name: string;
+  branch_ids?: string[];
+  operational_role?: string | null;
+};
+
+export type PaintKpiSummary = {
+  branch_id?: string | null;
+  period: { from: string | null; to: string | null };
+  available_g: number;
+  net_usage_g: number;
+  return_g: number;
+  waste_g: number;
+  withdraw_g?: number;
 };
 
 export async function fetchPaintReady(): Promise<PaintReady> {
   return request("/api/paint/ready");
+}
+
+export async function fetchPaintSummary(branchId?: string) {
+  const q = branchId ? `?branch_id=${encodeURIComponent(branchId)}` : "";
+  return request<PaintKpiSummary>(`/api/paint/summary${q}`);
+}
+
+export async function fetchPaintUsers(opts?: {
+  branch_id?: string;
+  q?: string;
+  limit?: number;
+}) {
+  const params = new URLSearchParams();
+  if (opts?.branch_id) params.set("branch_id", opts.branch_id);
+  if (opts?.q) params.set("q", opts.q);
+  if (opts?.limit) params.set("limit", String(opts.limit));
+  const qs = params.toString();
+  return request<{ items: PaintUser[]; total: number }>(
+    `/api/paint/users${qs ? `?${qs}` : ""}`,
+  );
 }
 
 export async function fetchPaintCatalog(activeOnly = false) {
@@ -169,15 +220,39 @@ export async function fetchPaintDocuments(opts?: {
   branch_id?: string;
   doc_type?: string;
   limit?: number;
+  offset?: number;
+  q?: string;
 }) {
   const params = new URLSearchParams();
   if (opts?.branch_id) params.set("branch_id", opts.branch_id);
   if (opts?.doc_type) params.set("doc_type", opts.doc_type);
-  if (opts?.limit) params.set("limit", String(opts.limit));
+  if (opts?.limit != null) params.set("limit", String(opts.limit));
+  if (opts?.offset != null) params.set("offset", String(opts.offset));
+  if (opts?.q) params.set("q", opts.q);
   const qs = params.toString();
-  return request<{ items: PaintDocument[]; total: number }>(
-    `/api/paint/documents${qs ? `?${qs}` : ""}`,
-  );
+  return request<{
+    items: PaintDocument[];
+    total: number;
+    limit: number;
+    offset: number;
+  }>(`/api/paint/documents${qs ? `?${qs}` : ""}`);
+}
+
+export async function fetchWithdrawalOutstanding(documentId: string) {
+  return request<{
+    document_id: string;
+    used_by?: string;
+    branch_id?: string;
+    status?: string;
+    lines: Array<{
+      line_id: string;
+      paint_id: string;
+      withdrawn_mg: number;
+      withdrawn_g: number;
+      outstanding_mg: number;
+      outstanding_g: number;
+    }>;
+  }>(`/api/paint/documents/${encodeURIComponent(documentId)}/outstanding`);
 }
 
 export async function confirmPaintInbound(body: {
@@ -303,7 +378,6 @@ export async function previewPaintStocktake(body: {
   );
 }
 
-/** Explicit authorized snapshot — persists for finalize. */
 export async function createPaintStocktakeSession(body: {
   branch_id: string;
   counts?: Array<{ paint_id: string; counted_g: number }>;
@@ -314,7 +388,6 @@ export async function createPaintStocktakeSession(body: {
   });
 }
 
-/** @deprecated Use previewPaintStocktake (read-only) or createPaintStocktakeSession. */
 export async function startPaintStocktake(body: {
   branch_id: string;
   counts?: Array<{ paint_id: string; counted_g: number }>;

@@ -580,3 +580,66 @@ def test_m6_accurate_dark_adapter(paint_env: Database) -> None:
     )
     assert mapped["paint_id"] == ids["white"]
     assert len(accurate_paint.list_mappings(db)) == 1
+
+
+def test_ux_documents_pagination_and_kpi(paint_env: Database) -> None:
+    db = paint_env
+    ids = _seed_masters(db)
+    for i in range(3):
+        svc.confirm_inbound(
+            db,
+            KP,
+            branch_id="50",
+            paint_id=ids["white"],
+            qty_g=10,
+            idempotency_key=_key(f"in{i}"),
+            physical_confirmed=True,
+        )
+    page = svc.list_documents(db, KP, branch_id="50", limit=2, offset=0)
+    assert page["total"] >= 3
+    assert len(page["items"]) == 2
+    page2 = svc.list_documents(db, KP, branch_id="50", limit=2, offset=2)
+    assert len(page2["items"]) >= 1
+    kpi = svc.paint_kpi_summary(db, KP, branch_id="50")
+    assert kpi["available_mg"] == 30_000
+    assert kpi["available_g"] == 30.0
+
+
+def test_ux_withdrawal_outstanding(paint_env: Database) -> None:
+    db = paint_env
+    ids = _seed_masters(db)
+    svc.confirm_inbound(
+        db,
+        KP,
+        branch_id="50",
+        paint_id=ids["white"],
+        qty_g=50,
+        idempotency_key=_key(),
+        physical_confirmed=True,
+    )
+    w = svc.create_withdrawal(
+        db,
+        KP,
+        branch_id="50",
+        used_by_email="op@eternal.local",
+        purpose_id=ids["purpose"],
+        items=[{"paint_id": ids["white"], "qty_g": 20}],
+        idempotency_key=_key(),
+    )
+    line_id = w["document"]["lines"][0]["line_id"]
+    out = svc.withdrawal_outstanding(
+        db, KP, withdrawal_id=w["document"]["document_id"]
+    )
+    assert out["lines"][0]["outstanding_mg"] == 20_000
+    svc.confirm_return(
+        db,
+        KP,
+        withdrawal_id=w["document"]["document_id"],
+        withdrawal_line_id=line_id,
+        qty_g=5,
+        idempotency_key=_key(),
+    )
+    out2 = svc.withdrawal_outstanding(
+        db, KP, withdrawal_id=w["document"]["document_id"]
+    )
+    assert out2["lines"][0]["outstanding_mg"] == 15_000
