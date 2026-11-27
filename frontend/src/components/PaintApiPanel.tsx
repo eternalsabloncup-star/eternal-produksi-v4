@@ -710,6 +710,40 @@ export function PaintApiPanel() {
     stocktakeId,
     lines: stLines,
   });
+  const stPreviewSummary = useMemo(() => {
+    const raw = stPreview?.lines;
+    const lines = Array.isArray(raw)
+      ? (raw as Array<{ delta_mg?: number | null; counted_mg?: number | null }>)
+      : [];
+    const lineCount = Number(stPreview?.line_count ?? lines.length) || 0;
+    const counted = lines.filter((l) => l.counted_mg != null).length || stLines.length;
+    const withDiff = lines.filter(
+      (l) => l.delta_mg != null && Number(l.delta_mg) !== 0,
+    );
+    const totalDeltaMg = withDiff.reduce(
+      (s, l) => s + Number(l.delta_mg || 0),
+      0,
+    );
+    return {
+      lineCount,
+      counted,
+      diffCount: withDiff.length,
+      totalDeltaG: totalDeltaMg / 1000,
+    };
+  }, [stPreview, stLines.length]);
+
+  function confirmDocDetails(doc: PaintDocument): string[] {
+    const lines = (doc.lines || []).map(
+      (ln) =>
+        `${paintLabel(catalogMap.get(ln.paint_id), ln.paint_id)}: ${fmtG(ln.qty_g ?? gramsFromMg(Math.abs(ln.qty_mg)))} g`,
+    );
+    return [
+      `Identitas: ${DOC_LABEL[doc.doc_type] || doc.doc_type} · ${doc.document_id}`,
+      `Status: ${doc.status} · Cabang: ${doc.branch_id}`,
+      `Pengguna: ${doc.used_by || doc.recorded_by || "—"}`,
+      ...(lines.length ? [`Item: ${lines.join("; ")}`] : []),
+    ];
+  }
 
   function openSoftDelete(doc: PaintDocument) {
     setPendingDeleteId(doc.document_id);
@@ -718,10 +752,8 @@ export function PaintApiPanel() {
       title: "Soft Delete transaksi cat",
       message: `${DOC_LABEL[doc.doc_type] || doc.doc_type} · ${doc.document_id}`,
       details: [
-        `Status: ${doc.status}`,
-        `Cabang: ${doc.branch_id}`,
-        `Pengguna: ${doc.used_by || doc.recorded_by || "—"}`,
-        "Dampak stok akan dibalikkan melalui ledger compensating jika aman.",
+        ...confirmDocDetails(doc),
+        "Dampak: stok dibalikkan via ledger compensating jika aman; jejak audit tetap ada.",
       ],
       tone: "danger",
       requireReason: true,
@@ -739,8 +771,9 @@ export function PaintApiPanel() {
       title: "Koreksi transaksi posted",
       message: `${DOC_LABEL[doc.doc_type] || doc.doc_type} · ${doc.document_id}`,
       details: [
-        "Koreksi memakai compensating ledger (bukan overwrite diam-diam).",
-        "Transaksi dengan dependent return/konversi/waste dapat ditolak backend.",
+        ...confirmDocDetails(doc),
+        "Dampak: koreksi memakai compensating ledger (bukan overwrite diam-diam).",
+        "Transaksi dengan return/konversi/waste terkait dapat ditolak backend.",
       ],
       tone: "danger",
       requireReason: true,
@@ -1256,7 +1289,7 @@ export function PaintApiPanel() {
         >
           <form
             id="paint-inbound-form"
-            className="ep-settings-form-grid"
+            className="ep-paint-form"
             onSubmit={(e) => {
               e.preventDefault();
               if (!branchId) {
@@ -1280,56 +1313,58 @@ export function PaintApiPanel() {
             <p className="muted">
               Manual terkontrol. Integrasi Accurate purchasing tetap nonaktif.
             </p>
-            <label>
-              Cat
-              <select
-                required
-                value={inboundForm.paint_id}
-                onChange={(e) =>
-                  setInboundForm((s) => ({ ...s, paint_id: e.target.value }))
-                }
-              >
-                <option value="">Pilih cat</option>
-                {catalog
-                  .filter((c) => c.is_active !== false)
-                  .map((c) => (
-                    <option key={c.paint_id} value={c.paint_id}>
-                      {paintLabel(c, c.paint_id)}
-                    </option>
-                  ))}
-              </select>
-            </label>
-            <label>
-              Berat (gram)
-              <input
-                required
-                type="number"
-                min={0.001}
-                step="any"
-                value={inboundForm.qty_g}
-                onChange={(e) =>
-                  setInboundForm((s) => ({ ...s, qty_g: e.target.value }))
-                }
-              />
-            </label>
-            <label>
-              Pemasok / sumber
-              <input
-                value={inboundForm.supplier}
-                onChange={(e) =>
-                  setInboundForm((s) => ({ ...s, supplier: e.target.value }))
-                }
-              />
-            </label>
-            <label>
-              Catatan
-              <input
-                value={inboundForm.note}
-                onChange={(e) =>
-                  setInboundForm((s) => ({ ...s, note: e.target.value }))
-                }
-              />
-            </label>
+            <div className="ep-paint-form-grid">
+              <label>
+                Jenis cat
+                <select
+                  required
+                  value={inboundForm.paint_id}
+                  onChange={(e) =>
+                    setInboundForm((s) => ({ ...s, paint_id: e.target.value }))
+                  }
+                >
+                  <option value="">Pilih cat</option>
+                  {catalog
+                    .filter((c) => c.is_active !== false)
+                    .map((c) => (
+                      <option key={c.paint_id} value={c.paint_id}>
+                        {paintLabel(c, c.paint_id)}
+                      </option>
+                    ))}
+                </select>
+              </label>
+              <label>
+                Berat (g)
+                <input
+                  required
+                  type="number"
+                  min={0.001}
+                  step="any"
+                  value={inboundForm.qty_g}
+                  onChange={(e) =>
+                    setInboundForm((s) => ({ ...s, qty_g: e.target.value }))
+                  }
+                />
+              </label>
+              <label>
+                Pemasok / sumber
+                <input
+                  value={inboundForm.supplier}
+                  onChange={(e) =>
+                    setInboundForm((s) => ({ ...s, supplier: e.target.value }))
+                  }
+                />
+              </label>
+              <label>
+                Catatan
+                <input
+                  value={inboundForm.note}
+                  onChange={(e) =>
+                    setInboundForm((s) => ({ ...s, note: e.target.value }))
+                  }
+                />
+              </label>
+            </div>
           </form>
         </PaintModal>
       ) : null}
@@ -1358,7 +1393,7 @@ export function PaintApiPanel() {
         >
           <form
             id="paint-withdraw-form"
-            className="ep-settings-form-grid"
+            className="ep-paint-form"
             onSubmit={(e) => {
               e.preventDefault();
               if (!branchId) {
@@ -1406,160 +1441,167 @@ export function PaintApiPanel() {
               });
             }}
           >
-            <label>
-              Karyawan (nama / email)
-              <input
-                list="paint-user-list"
-                required
-                type="text"
-                autoComplete="off"
-                value={withdrawForm.used_by_email}
-                onChange={(e) => {
-                  setWithdrawForm((s) => ({
-                    ...s,
-                    used_by_email: e.target.value,
-                  }));
-                  setUserQ(e.target.value);
-                  void loadUsers(e.target.value);
-                }}
-                onFocus={() => void loadUsers(userQ)}
-                placeholder="Cari nama atau email karyawan"
-                aria-describedby="paint-user-hint"
-              />
-              <datalist id="paint-user-list">
-                {users.map((u) => (
-                  <option key={u.email} value={u.email}>
-                    {u.display_name || u.email}
-                  </option>
-                ))}
-              </datalist>
-              <span id="paint-user-hint" className="muted">
-                Pilih dari daftar hasil pencarian backend (bukan email bebas).
-              </span>
-            </label>
-            <label>
-              Tujuan
-              <select
-                required
-                value={withdrawForm.purpose_id}
-                onChange={(e) =>
-                  setWithdrawForm((s) => ({
-                    ...s,
-                    purpose_id: e.target.value,
-                  }))
-                }
-              >
-                <option value="">Pilih tujuan</option>
-                {purposes
-                  .filter((p) => p.is_active !== false)
-                  .map((p) => (
-                    <option key={p.purpose_id} value={p.purpose_id}>
-                      {p.name}
-                      {p.requires_po ? " (wajib PO)" : ""}
-                    </option>
-                  ))}
-              </select>
-            </label>
-            {purposeNeedsPo ? (
-              <label>
-                Referensi PO
-                <input
-                  required
-                  value={withdrawForm.accurate_po_id}
-                  onChange={(e) =>
-                    setWithdrawForm((s) => ({
-                      ...s,
-                      accurate_po_id: e.target.value,
-                    }))
-                  }
-                />
-              </label>
-            ) : (
-              <label>
-                Referensi PO (opsional)
-                <input
-                  value={withdrawForm.accurate_po_id}
-                  onChange={(e) =>
-                    setWithdrawForm((s) => ({
-                      ...s,
-                      accurate_po_id: e.target.value,
-                    }))
-                  }
-                />
-              </label>
-            )}
-            <div className="ep-paint-item-rows">
-              <strong>Item cat</strong>
-              {withdrawItems.map((it, idx) => (
-                <div className="ep-paint-item-row" key={idx}>
-                  <label>
-                    Cat
-                    <select
-                      required
-                      value={it.paint_id}
-                      onChange={(e) =>
+            <section className="ep-paint-form-section">
+              <div className="ep-paint-form-grid is-3">
+                <label>
+                  Pengguna
+                  <input
+                    list="paint-user-list"
+                    required
+                    type="text"
+                    autoComplete="off"
+                    value={withdrawForm.used_by_email}
+                    onChange={(e) => {
+                      setWithdrawForm((s) => ({
+                        ...s,
+                        used_by_email: e.target.value,
+                      }));
+                      setUserQ(e.target.value);
+                      void loadUsers(e.target.value);
+                    }}
+                    onFocus={() => void loadUsers(userQ)}
+                    placeholder="Cari nama atau email"
+                    aria-describedby="paint-user-hint"
+                  />
+                  <datalist id="paint-user-list">
+                    {users.map((u) => (
+                      <option key={u.email} value={u.email}>
+                        {u.display_name || u.email}
+                      </option>
+                    ))}
+                  </datalist>
+                  <span id="paint-user-hint" className="ep-paint-stock-hint">
+                    Pilih dari hasil pencarian backend.
+                  </span>
+                </label>
+                <label>
+                  Tujuan
+                  <select
+                    required
+                    value={withdrawForm.purpose_id}
+                    onChange={(e) =>
+                      setWithdrawForm((s) => ({
+                        ...s,
+                        purpose_id: e.target.value,
+                      }))
+                    }
+                  >
+                    <option value="">Pilih tujuan</option>
+                    {purposes
+                      .filter((p) => p.is_active !== false)
+                      .map((p) => (
+                        <option key={p.purpose_id} value={p.purpose_id}>
+                          {p.name}
+                          {p.requires_po ? " (wajib PO)" : ""}
+                        </option>
+                      ))}
+                  </select>
+                </label>
+                <label>
+                  {purposeNeedsPo ? "Referensi PO" : "Referensi PO (opsional)"}
+                  <input
+                    required={Boolean(purposeNeedsPo)}
+                    value={withdrawForm.accurate_po_id}
+                    onChange={(e) =>
+                      setWithdrawForm((s) => ({
+                        ...s,
+                        accurate_po_id: e.target.value,
+                      }))
+                    }
+                  />
+                </label>
+              </div>
+            </section>
+            <section className="ep-paint-form-section">
+              <h3 className="ep-paint-form-section-title">Daftar cat</h3>
+              <div className="ep-paint-item-rows">
+                {withdrawItems.map((it, idx) => (
+                  <div className="ep-paint-item-row" key={idx}>
+                    <label>
+                      Jenis cat
+                      <select
+                        required
+                        value={it.paint_id}
+                        onChange={(e) =>
+                          setWithdrawItems((rows) =>
+                            rows.map((r, i) =>
+                              i === idx ? { ...r, paint_id: e.target.value } : r,
+                            ),
+                          )
+                        }
+                      >
+                        <option value="">Pilih</option>
+                        {catalog
+                          .filter((c) => c.is_active !== false)
+                          .map((c) => (
+                            <option key={c.paint_id} value={c.paint_id}>
+                              {paintLabel(c, c.paint_id)}
+                            </option>
+                          ))}
+                      </select>
+                    </label>
+                    <label>
+                      Qty (g)
+                      <input
+                        required
+                        type="number"
+                        min={0.001}
+                        step="any"
+                        value={it.qty_g}
+                        onChange={(e) =>
+                          setWithdrawItems((rows) =>
+                            rows.map((r, i) =>
+                              i === idx ? { ...r, qty_g: e.target.value } : r,
+                            ),
+                          )
+                        }
+                      />
+                    </label>
+                    <label>
+                      Stok tersedia
+                      <input
+                        type="text"
+                        readOnly
+                        tabIndex={-1}
+                        value={
+                          it.paint_id
+                            ? `${fmtG(stockByPaint.get(it.paint_id) ?? 0)} g`
+                            : "—"
+                        }
+                        aria-label="Stok tersedia"
+                      />
+                    </label>
+                    <button
+                      type="button"
+                      className="ep-btn"
+                      disabled={withdrawItems.length <= 1}
+                      onClick={() =>
                         setWithdrawItems((rows) =>
-                          rows.map((r, i) =>
-                            i === idx ? { ...r, paint_id: e.target.value } : r,
-                          ),
+                          rows.filter((_, i) => i !== idx),
                         )
                       }
                     >
-                      <option value="">Pilih</option>
-                      {catalog
-                        .filter((c) => c.is_active !== false)
-                        .map((c) => (
-                          <option key={c.paint_id} value={c.paint_id}>
-                            {paintLabel(c, c.paint_id)} · stok{" "}
-                            {fmtG(stockByPaint.get(c.paint_id) ?? 0)} g
-                          </option>
-                        ))}
-                    </select>
-                  </label>
-                  <label>
-                    Qty (g)
-                    <input
-                      required
-                      type="number"
-                      min={0.001}
-                      step="any"
-                      value={it.qty_g}
-                      onChange={(e) =>
-                        setWithdrawItems((rows) =>
-                          rows.map((r, i) =>
-                            i === idx ? { ...r, qty_g: e.target.value } : r,
-                          ),
-                        )
-                      }
-                    />
-                  </label>
-                  <button
-                    type="button"
-                    className="ep-btn"
-                    disabled={withdrawItems.length <= 1}
-                    onClick={() =>
-                      setWithdrawItems((rows) => rows.filter((_, i) => i !== idx))
-                    }
-                  >
-                    Hapus
-                  </button>
-                </div>
-              ))}
-              <button
-                type="button"
-                className="ep-btn"
-                onClick={() =>
-                  setWithdrawItems((rows) => [
-                    ...rows,
-                    { paint_id: "", qty_g: "" },
-                  ])
-                }
-              >
-                Tambah Item
-              </button>
-            </div>
+                      Hapus
+                    </button>
+                  </div>
+                ))}
+                <button
+                  type="button"
+                  className="ep-btn"
+                  onClick={() =>
+                    setWithdrawItems((rows) => [
+                      ...rows,
+                      { paint_id: "", qty_g: "" },
+                    ])
+                  }
+                >
+                  Tambah Item
+                </button>
+              </div>
+            </section>
             <div className="ep-paint-mass-box">
-              Total gram: <strong className="ep-paint-qty">{fmtG(withdrawTotal)}</strong>
+              Total gram:{" "}
+              <strong className="ep-paint-qty">{fmtG(withdrawTotal)} g</strong>
             </div>
             <label>
               Catatan
@@ -1623,7 +1665,7 @@ export function PaintApiPanel() {
           {returnMode === "same" ? (
             <form
               id="paint-return-form"
-              className="ep-settings-form-grid"
+              className="ep-paint-form"
               onSubmit={(e) => {
                 e.preventDefault();
                 void runAction("Pengembalian dikonfirmasi.", async () => {
@@ -1642,85 +1684,107 @@ export function PaintApiPanel() {
               {!can("paint.return.confirm") ? (
                 <p className="muted">Tidak berwenang konfirmasi pengembalian.</p>
               ) : (
-                <>
-                  <label>
-                    Pengambilan asal
-                    <select
-                      required
-                      value={returnForm.withdrawal_id}
-                      onChange={(e) => {
-                        const id = e.target.value;
-                        setReturnForm((s) => ({
-                          ...s,
-                          withdrawal_id: id,
-                          withdrawal_line_id: "",
-                        }));
-                        void loadOutstanding(id);
-                      }}
-                    >
-                      <option value="">Pilih</option>
-                      {withdrawals.map((d) => (
-                        <option key={d.document_id} value={d.document_id}>
-                          {d.document_id} · {d.used_by || "—"}
-                        </option>
-                      ))}
-                    </select>
-                  </label>
-                  <label>
-                    Item
-                    <select
-                      required
-                      value={returnForm.withdrawal_line_id}
-                      onChange={(e) =>
-                        setReturnForm((s) => ({
-                          ...s,
-                          withdrawal_line_id: e.target.value,
-                        }))
-                      }
-                    >
-                      <option value="">Pilih baris</option>
-                      {(outstandingByWd[returnForm.withdrawal_id] || []).map(
-                        (ln) => (
-                        <option key={ln.line_id} value={ln.line_id}>
-                          {paintLabel(catalogMap.get(ln.paint_id), ln.paint_id)} ·
-                          awal {fmtG(ln.withdrawn_g)} · sisa{" "}
-                          {fmtG(ln.outstanding_g)} g
-                        </option>
-                      ),
-                      )}
-                    </select>
-                  </label>
-                  {returnForm.withdrawal_line_id ? (
-                    <p className="muted">
-                      Maks return:{" "}
-                      {fmtG(
-                        (outstandingByWd[returnForm.withdrawal_id] || []).find(
-                          (o) => o.line_id === returnForm.withdrawal_line_id,
-                        )?.outstanding_g,
-                      )}{" "}
-                      g
-                    </p>
-                  ) : null}
-                  <label>
-                    Qty kembali (g)
-                    <input
-                      required
-                      type="number"
-                      min={0.001}
-                      step="any"
-                      value={returnForm.qty_g}
-                      onChange={(e) =>
-                        setReturnForm((s) => ({ ...s, qty_g: e.target.value }))
-                      }
-                    />
-                  </label>
-                </>
+                <section className="ep-paint-form-section">
+                  <h3 className="ep-paint-form-section-title">Pengembalian warna asal</h3>
+                  <div className="ep-paint-form-grid">
+                    <label>
+                      Pengambilan asal
+                      <select
+                        required
+                        value={returnForm.withdrawal_id}
+                        onChange={(e) => {
+                          const id = e.target.value;
+                          setReturnForm((s) => ({
+                            ...s,
+                            withdrawal_id: id,
+                            withdrawal_line_id: "",
+                          }));
+                          void loadOutstanding(id);
+                        }}
+                      >
+                        <option value="">Pilih</option>
+                        {withdrawals.map((d) => (
+                          <option key={d.document_id} value={d.document_id}>
+                            {(d.used_by || "—") +
+                              (d.created_at
+                                ? ` · ${new Date(d.created_at).toLocaleString("id-ID", { timeZone: "Asia/Jakarta", dateStyle: "short", timeStyle: "short" })}`
+                                : "")}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                    <label>
+                      Item cat
+                      <select
+                        required
+                        value={returnForm.withdrawal_line_id}
+                        onChange={(e) =>
+                          setReturnForm((s) => ({
+                            ...s,
+                            withdrawal_line_id: e.target.value,
+                          }))
+                        }
+                      >
+                        <option value="">Pilih baris</option>
+                        {(outstandingByWd[returnForm.withdrawal_id] || []).map(
+                          (ln) => (
+                            <option key={ln.line_id} value={ln.line_id}>
+                              {paintLabel(catalogMap.get(ln.paint_id), ln.paint_id)}
+                            </option>
+                          ),
+                        )}
+                      </select>
+                    </label>
+                    <label>
+                      Outstanding (g)
+                      <input
+                        type="text"
+                        readOnly
+                        tabIndex={-1}
+                        value={
+                          returnForm.withdrawal_line_id
+                            ? `${fmtG(
+                                (outstandingByWd[returnForm.withdrawal_id] || []).find(
+                                  (o) =>
+                                    o.line_id === returnForm.withdrawal_line_id,
+                                )?.outstanding_g,
+                              )} g`
+                            : "—"
+                        }
+                      />
+                    </label>
+                    <label>
+                      Berat dikembalikan (g)
+                      <input
+                        required
+                        type="number"
+                        min={0.001}
+                        step="any"
+                        value={returnForm.qty_g}
+                        onChange={(e) =>
+                          setReturnForm((s) => ({ ...s, qty_g: e.target.value }))
+                        }
+                      />
+                      {returnForm.withdrawal_line_id ? (
+                        <span className="ep-paint-stock-hint">
+                          Maksimum return:{" "}
+                          {fmtG(
+                            (outstandingByWd[returnForm.withdrawal_id] || []).find(
+                              (o) => o.line_id === returnForm.withdrawal_line_id,
+                            )?.outstanding_g,
+                          )}{" "}
+                          g
+                        </span>
+                      ) : null}
+                    </label>
+                  </div>
+                </section>
               )}
             </form>
           ) : (
             <form
               id="paint-return-form"
-              className="ep-settings-form-grid"
+              className="ep-paint-form"
               onSubmit={(e) => {
                 e.preventDefault();
                 if (!branchId) {
@@ -1763,172 +1827,246 @@ export function PaintApiPanel() {
                 <p className="muted">Tidak berwenang konversi warna.</p>
               ) : (
                 <>
-                  {convSources.map((src, idx) => (
-                    <div className="ep-paint-item-rows" key={idx}>
+                  <section className="ep-paint-form-section">
+                    <h3 className="ep-paint-form-section-title">1. Sumber cat</h3>
+                    <div className="ep-paint-item-rows">
+                      {convSources.map((src, idx) => {
+                        const outLn = (
+                          outstandingByWd[src.withdrawal_id] || []
+                        ).find((l) => l.line_id === src.withdrawal_line_id);
+                        return (
+                          <div className="ep-paint-source-card" key={idx}>
+                            <div className="ep-paint-source-card-head">
+                              <strong>Sumber #{idx + 1}</strong>
+                              {convSources.length > 1 ? (
+                                <button
+                                  type="button"
+                                  className="ep-btn"
+                                  onClick={() =>
+                                    setConvSources((rows) =>
+                                      rows.filter((_, i) => i !== idx),
+                                    )
+                                  }
+                                >
+                                  Hapus sumber
+                                </button>
+                              ) : null}
+                            </div>
+                            <div className="ep-paint-form-grid is-3">
+                              <label>
+                                Pengambilan asal
+                                <select
+                                  required
+                                  value={src.withdrawal_id}
+                                  onChange={(e) => {
+                                    const id = e.target.value;
+                                    setConvSources((rows) =>
+                                      rows.map((r, i) =>
+                                        i === idx
+                                          ? {
+                                              ...r,
+                                              withdrawal_id: id,
+                                              withdrawal_line_id: "",
+                                            }
+                                          : r,
+                                      ),
+                                    );
+                                    void loadOutstanding(id);
+                                  }}
+                                >
+                                  <option value="">Pilih</option>
+                                  {withdrawals.map((d) => (
+                                    <option
+                                      key={d.document_id}
+                                      value={d.document_id}
+                                    >
+                                      {(d.used_by || "—") +
+                                        (d.created_at
+                                          ? ` · ${new Date(d.created_at).toLocaleString("id-ID", { timeZone: "Asia/Jakarta", dateStyle: "short", timeStyle: "short" })}`
+                                          : "")}
+                                    </option>
+                                  ))}
+                                </select>
+                              </label>
+                              <label>
+                                Item / warna asal
+                                <select
+                                  required
+                                  value={src.withdrawal_line_id}
+                                  onChange={(e) =>
+                                    setConvSources((rows) =>
+                                      rows.map((r, i) =>
+                                        i === idx
+                                          ? {
+                                              ...r,
+                                              withdrawal_line_id: e.target.value,
+                                            }
+                                          : r,
+                                      ),
+                                    )
+                                  }
+                                >
+                                  <option value="">Pilih</option>
+                                  {(
+                                    outstandingByWd[src.withdrawal_id] || []
+                                  ).map((ln) => (
+                                    <option key={ln.line_id} value={ln.line_id}>
+                                      {paintLabel(
+                                        catalogMap.get(ln.paint_id),
+                                        ln.paint_id,
+                                      )}
+                                    </option>
+                                  ))}
+                                </select>
+                              </label>
+                              <label>
+                                Berat Sumber (g)
+                                <input
+                                  required
+                                  type="number"
+                                  min={0.001}
+                                  step="any"
+                                  value={src.qty_g}
+                                  onChange={(e) =>
+                                    setConvSources((rows) =>
+                                      rows.map((r, i) =>
+                                        i === idx
+                                          ? { ...r, qty_g: e.target.value }
+                                          : r,
+                                      ),
+                                    )
+                                  }
+                                />
+                                {outLn ? (
+                                  <span className="ep-paint-stock-hint">
+                                    Outstanding: {fmtG(outLn.outstanding_g)} g
+                                  </span>
+                                ) : null}
+                              </label>
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                    <button
+                      type="button"
+                      className="ep-btn"
+                      onClick={() =>
+                        setConvSources((rows) => [
+                          ...rows,
+                          {
+                            withdrawal_id: "",
+                            withdrawal_line_id: "",
+                            qty_g: "",
+                          },
+                        ])
+                      }
+                    >
+                      Tambah sumber
+                    </button>
+                  </section>
+
+                  <section className="ep-paint-form-section">
+                    <h3 className="ep-paint-form-section-title">2. Hasil konversi</h3>
+                    <div className="ep-paint-form-grid is-3">
                       <label>
-                        Sumber pengambilan #{idx + 1}
+                        Masuk ke Stok Hitam
                         <select
                           required
-                          value={src.withdrawal_id}
-                          onChange={(e) => {
-                            const id = e.target.value;
-                            setConvSources((rows) =>
-                              rows.map((r, i) =>
-                                i === idx
-                                  ? {
-                                      ...r,
-                                      withdrawal_id: id,
-                                      withdrawal_line_id: "",
-                                    }
-                                  : r,
-                              ),
-                            );
-                            void loadOutstanding(id);
-                          }}
+                          value={convForm.destination_paint_id}
+                          onChange={(e) =>
+                            setConvForm((s) => ({
+                              ...s,
+                              destination_paint_id: e.target.value,
+                            }))
+                          }
                         >
                           <option value="">Pilih</option>
-                          {withdrawals.map((d) => (
-                            <option key={d.document_id} value={d.document_id}>
-                              {d.document_id} · {d.used_by || "—"}
+                          {blackPaints.map((c) => (
+                            <option key={c.paint_id} value={c.paint_id}>
+                              {paintLabel(c, c.paint_id)}
                             </option>
                           ))}
                         </select>
                       </label>
                       <label>
-                        Baris
-                        <select
-                          required
-                          value={src.withdrawal_line_id}
-                          onChange={(e) =>
-                            setConvSources((rows) =>
-                              rows.map((r, i) =>
-                                i === idx
-                                  ? {
-                                      ...r,
-                                      withdrawal_line_id: e.target.value,
-                                    }
-                                  : r,
-                              ),
-                            )
-                          }
-                        >
-                          <option value="">Pilih</option>
-                          {(outstandingByWd[src.withdrawal_id] || []).map(
-                            (ln) => (
-                            <option key={ln.line_id} value={ln.line_id}>
-                              {paintLabel(
-                                catalogMap.get(ln.paint_id),
-                                ln.paint_id,
-                              )}{" "}
-                              · sisa {fmtG(ln.outstanding_g)} g
-                            </option>
-                          ),
-                          )}
-                        </select>
-                      </label>
-                      <label>
-                        Berat Sumber (g)
+                        Berat Hasil Timbangan (g)
                         <input
                           required
                           type="number"
                           min={0.001}
                           step="any"
-                          value={src.qty_g}
+                          value={convForm.verified_return_g}
                           onChange={(e) =>
-                            setConvSources((rows) =>
-                              rows.map((r, i) =>
-                                i === idx
-                                  ? { ...r, qty_g: e.target.value }
-                                  : r,
-                              ),
-                            )
+                            setConvForm((s) => ({
+                              ...s,
+                              verified_return_g: e.target.value,
+                            }))
+                          }
+                        />
+                      </label>
+                      <label>
+                        Waste / Selisih (g)
+                        <input
+                          type="number"
+                          min={0}
+                          step="any"
+                          value={convForm.waste_g}
+                          onChange={(e) =>
+                            setConvForm((s) => ({
+                              ...s,
+                              waste_g: e.target.value,
+                            }))
                           }
                         />
                       </label>
                     </div>
-                  ))}
-                  <button
-                    type="button"
-                    className="ep-btn"
-                    onClick={() =>
-                      setConvSources((rows) => [
-                        ...rows,
-                        {
-                          withdrawal_id: "",
-                          withdrawal_line_id: "",
-                          qty_g: "",
-                        },
-                      ])
-                    }
-                  >
-                    Tambah sumber
-                  </button>
-                  <label>
-                    Masuk ke Stok Hitam
-                    <select
-                      required
-                      value={convForm.destination_paint_id}
-                      onChange={(e) =>
-                        setConvForm((s) => ({
-                          ...s,
-                          destination_paint_id: e.target.value,
-                        }))
-                      }
+                  </section>
+
+                  <section className="ep-paint-form-section">
+                    <h3 className="ep-paint-form-section-title">3. Rekonsiliasi</h3>
+                    <div
+                      className={`ep-paint-recon ${
+                        convStatus === "balanced"
+                          ? "is-ok"
+                          : convStatus === "unbalanced"
+                            ? "is-warn"
+                            : ""
+                      }`}
+                      role="status"
                     >
-                      <option value="">Pilih</option>
-                      {blackPaints.map((c) => (
-                        <option key={c.paint_id} value={c.paint_id}>
-                          {paintLabel(c, c.paint_id)}
-                        </option>
-                      ))}
-                    </select>
-                  </label>
-                  <label>
-                    Berat Hasil Timbangan (g)
-                    <input
-                      required
-                      type="number"
-                      min={0.001}
-                      step="any"
-                      value={convForm.verified_return_g}
-                      onChange={(e) =>
-                        setConvForm((s) => ({
-                          ...s,
-                          verified_return_g: e.target.value,
-                        }))
-                      }
-                    />
-                  </label>
-                  <label>
-                    Waste / selisih (g)
-                    <input
-                      type="number"
-                      min={0}
-                      step="any"
-                      value={convForm.waste_g}
-                      onChange={(e) =>
-                        setConvForm((s) => ({ ...s, waste_g: e.target.value }))
-                      }
-                    />
-                  </label>
-                  <div
-                    className={`ep-paint-mass-box ${
-                      convStatus === "balanced"
-                        ? "is-ok"
-                        : convStatus === "unbalanced"
-                          ? "is-warn"
-                          : ""
-                    }`}
-                    role="status"
-                  >
-                    Sumber {fmtG(convSourceTotal)} g · Hasil {fmtG(convDest)} g ·
-                    Waste {fmtG(convWaste)} g
-                    {convStatus === "incomplete"
-                      ? " — belum lengkap"
-                      : convStatus === "unbalanced"
-                        ? " — tidak seimbang (hasil+waste > sumber)"
-                        : " — seimbang"}
-                  </div>
+                      <div className="ep-paint-recon-row">
+                        <span>Total gram sumber</span>
+                        <span className="ep-paint-qty">{fmtG(convSourceTotal)} g</span>
+                      </div>
+                      <div className="ep-paint-recon-row">
+                        <span>Total gram kembali</span>
+                        <span className="ep-paint-qty">{fmtG(convDest)} g</span>
+                      </div>
+                      <div className="ep-paint-recon-row">
+                        <span>Waste</span>
+                        <span className="ep-paint-qty">{fmtG(convWaste)} g</span>
+                      </div>
+                      <div className="ep-paint-recon-row">
+                        <span>Selisih (sumber − hasil − waste)</span>
+                        <span className="ep-paint-qty">
+                          {convStatus === "incomplete"
+                            ? "—"
+                            : `${fmtG(convSourceTotal - convDest - convWaste)} g`}
+                        </span>
+                      </div>
+                      <div className="ep-paint-recon-row is-span-2">
+                        <p className="ep-paint-recon-status">
+                          Status:{" "}
+                          {convStatus === "incomplete"
+                            ? "Belum Lengkap"
+                            : convStatus === "unbalanced"
+                              ? "Tidak Seimbang"
+                              : "Seimbang"}
+                        </p>
+                      </div>
+                    </div>
+                  </section>
                 </>
               )}
             </form>
@@ -1960,7 +2098,7 @@ export function PaintApiPanel() {
         >
           <form
             id="paint-waste-form"
-            className="ep-settings-form-grid"
+            className="ep-paint-form"
             onSubmit={(e) => {
               e.preventDefault();
               void runAction("Waste tercatat.", async () => {
@@ -1975,73 +2113,86 @@ export function PaintApiPanel() {
               });
             }}
           >
-            <label>
-              Pengambilan
-              <select
-                required
-                value={wasteForm.withdrawal_id}
-                onChange={(e) => {
-                  const id = e.target.value;
-                  setWasteForm((s) => ({
-                    ...s,
-                    withdrawal_id: id,
-                    withdrawal_line_id: "",
-                  }));
-                  void loadOutstanding(id);
-                }}
-              >
-                <option value="">Pilih</option>
-                {withdrawals.map((d) => (
-                  <option key={d.document_id} value={d.document_id}>
-                    {d.document_id} · {d.used_by || "—"}
-                  </option>
-                ))}
-              </select>
-            </label>
-            <label>
-              Item
-              <select
-                required
-                value={wasteForm.withdrawal_line_id}
-                onChange={(e) =>
-                  setWasteForm((s) => ({
-                    ...s,
-                    withdrawal_line_id: e.target.value,
-                  }))
-                }
-              >
-                <option value="">Pilih</option>
-                {(outstandingByWd[wasteForm.withdrawal_id] || []).map((ln) => (
-                  <option key={ln.line_id} value={ln.line_id}>
-                    {paintLabel(catalogMap.get(ln.paint_id), ln.paint_id)} · sisa{" "}
-                    {fmtG(ln.outstanding_g)} g
-                  </option>
-                ))}
-              </select>
-            </label>
-            <label>
-              Berat waste (g)
-              <input
-                required
-                type="number"
-                min={0.001}
-                step="any"
-                value={wasteForm.qty_g}
-                onChange={(e) =>
-                  setWasteForm((s) => ({ ...s, qty_g: e.target.value }))
-                }
-              />
-            </label>
-            <label>
-              Alasan
-              <input
-                required
-                value={wasteForm.reason}
-                onChange={(e) =>
-                  setWasteForm((s) => ({ ...s, reason: e.target.value }))
-                }
-              />
-            </label>
+            <div className="ep-paint-form-grid">
+              <label>
+                Pengambilan
+                <select
+                  required
+                  value={wasteForm.withdrawal_id}
+                  onChange={(e) => {
+                    const id = e.target.value;
+                    setWasteForm((s) => ({
+                      ...s,
+                      withdrawal_id: id,
+                      withdrawal_line_id: "",
+                    }));
+                    void loadOutstanding(id);
+                  }}
+                >
+                  <option value="">Pilih</option>
+                  {withdrawals.map((d) => (
+                    <option key={d.document_id} value={d.document_id}>
+                      {d.document_id} · {d.used_by || "—"}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <label>
+                Item
+                <select
+                  required
+                  value={wasteForm.withdrawal_line_id}
+                  onChange={(e) =>
+                    setWasteForm((s) => ({
+                      ...s,
+                      withdrawal_line_id: e.target.value,
+                    }))
+                  }
+                >
+                  <option value="">Pilih</option>
+                  {(outstandingByWd[wasteForm.withdrawal_id] || []).map((ln) => (
+                    <option key={ln.line_id} value={ln.line_id}>
+                      {paintLabel(catalogMap.get(ln.paint_id), ln.paint_id)} ·
+                      sisa {fmtG(ln.outstanding_g)} g
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <label>
+                Berat waste (g)
+                <input
+                  required
+                  type="number"
+                  min={0.001}
+                  step="any"
+                  value={wasteForm.qty_g}
+                  onChange={(e) =>
+                    setWasteForm((s) => ({ ...s, qty_g: e.target.value }))
+                  }
+                />
+                {wasteForm.withdrawal_line_id ? (
+                  <span className="ep-paint-stock-hint">
+                    Maksimum:{" "}
+                    {fmtG(
+                      (outstandingByWd[wasteForm.withdrawal_id] || []).find(
+                        (o) => o.line_id === wasteForm.withdrawal_line_id,
+                      )?.outstanding_g,
+                    )}{" "}
+                    g outstanding
+                  </span>
+                ) : null}
+              </label>
+              <label>
+                Alasan
+                <input
+                  required
+                  value={wasteForm.reason}
+                  onChange={(e) =>
+                    setWasteForm((s) => ({ ...s, reason: e.target.value }))
+                  }
+                />
+              </label>
+            </div>
           </form>
         </PaintModal>
       ) : null}
@@ -2054,14 +2205,139 @@ export function PaintApiPanel() {
           onClose={closePaintModal}
           footer={
             <div className="ep-modal-foot-actions">
+              {stStep > 1 ? (
+                <button
+                  type="button"
+                  className="ep-btn"
+                  disabled={busy}
+                  onClick={() => setStStep((s) => (s > 1 ? ((s - 1) as 1 | 2 | 3 | 4) : s))}
+                >
+                  Kembali
+                </button>
+              ) : null}
               <button
                 type="button"
                 className="ep-btn"
                 disabled={busy}
                 onClick={closePaintModal}
               >
-                Tutup
+                Batal
               </button>
+              {stStep === 1 ? (
+                <button
+                  type="button"
+                  className="ep-btn primary"
+                  disabled={!stCanPreview}
+                  onClick={() => setStStep(2)}
+                >
+                  Lanjut preview
+                </button>
+              ) : null}
+              {stStep === 2 ? (
+                <>
+                  <button
+                    type="button"
+                    className="ep-btn"
+                    disabled={busy || !stCanPreview}
+                    onClick={() =>
+                      void runAction("Preview dihitung ulang (stok belum berubah).", async () => {
+                        const fp = stocktakeCountsFingerprint(stLines);
+                        const res = await previewPaintStocktake({
+                          branch_id: branchId,
+                          counts: stLines.map((l) => ({
+                            paint_id: l.paint_id,
+                            counted_g: Number(l.counted_g),
+                          })),
+                        });
+                        setStPreview(res.stocktake);
+                        setStPreviewFingerprint(fp);
+                      })
+                    }
+                  >
+                    Jalankan preview
+                  </button>
+                  <button
+                    type="button"
+                    className="ep-btn primary"
+                    disabled={!stCanSession}
+                    onClick={() => setStStep(3)}
+                  >
+                    Lanjut buat sesi
+                  </button>
+                </>
+              ) : null}
+              {stStep === 3 ? (
+                <button
+                  type="button"
+                  className="ep-btn primary"
+                  disabled={busy || !stCanSession}
+                  onClick={() =>
+                    void runAction("Sesi stocktake disimpan.", async () => {
+                      try {
+                        const res = await createPaintStocktakeSession({
+                          branch_id: branchId,
+                          counts: stLines.map((l) => ({
+                            paint_id: l.paint_id,
+                            counted_g: Number(l.counted_g),
+                          })),
+                        });
+                        const st = res.stocktake as {
+                          stocktake_id: string;
+                          cutoff_at?: string;
+                        };
+                        setStocktakeId(st.stocktake_id);
+                        setStStep(4);
+                      } catch (err) {
+                        const msg =
+                          err instanceof Error ? err.message : "Gagal buat sesi.";
+                        if (/conflict|versi|version|cas/i.test(msg)) {
+                          setStPreview(null);
+                          setStPreviewFingerprint(null);
+                          setStStep(2);
+                          throw new Error(
+                            `${msg} — jalankan preview ulang sebelum membuat sesi.`,
+                          );
+                        }
+                        throw err;
+                      }
+                    })
+                  }
+                >
+                  Buat sesi stocktake
+                </button>
+              ) : null}
+              {stStep === 4 ? (
+                <button
+                  type="button"
+                  className="ep-btn primary"
+                  disabled={
+                    busy ||
+                    !stCanFinalize ||
+                    !can("paint.stocktake.finalize")
+                  }
+                  onClick={() => {
+                    if (!stocktakeId || !stCanFinalize) return;
+                    setConfirmReq({
+                      title: "Finalisasi Stock Opname",
+                      message:
+                        "Periode akan dikunci sampai cutoff snapshot. Tindakan ini memakai hitungan sesi tersimpan.",
+                      details: [
+                        `Cabang: ${branchId}`,
+                        `Session: ${stocktakeId}`,
+                        `Item dihitung: ${stLines.length}`,
+                      ],
+                      tone: "danger",
+                      confirmLabel: "Finalize & kunci",
+                      cancelLabel: "Batal",
+                    });
+                    setConfirmOpen(true);
+                    setPendingDeleteId(null);
+                    setPendingCorrectId(`finalize:${stocktakeId}`);
+                  }}
+                >
+                  Finalisasi & kunci periode
+                </button>
+              ) : null}
             </div>
           }
         >
@@ -2082,7 +2358,7 @@ export function PaintApiPanel() {
           </div>
 
           {stStep === 1 ? (
-            <>
+            <div className="ep-paint-form">
               {!branchId ? (
                 <p className="ep-error">Pilih cabang di header sebelum stocktake.</p>
               ) : null}
@@ -2090,52 +2366,54 @@ export function PaintApiPanel() {
                 Isi gram fisik untuk setiap item. Angka 0 sah; kolom kosong belum
                 dihitung.
               </p>
-              <table className="ep-settings-data-table is-compact">
-                <thead>
-                  <tr>
-                    <th>Cat</th>
-                    <th>Sistem (g)</th>
-                    <th>Fisik (g)</th>
-                    <th>Status</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {stLines.map((ln) => (
-                    <tr key={ln.paint_id}>
-                      <td>
-                        {paintLabel(catalogMap.get(ln.paint_id), ln.paint_id)}
-                      </td>
-                      <td className="ep-paint-qty">{fmtG(ln.system_g)}</td>
-                      <td>
-                        <input
-                          type="number"
-                          min={0}
-                          step="any"
-                          value={ln.counted_g}
-                          aria-label={`Hitung fisik ${paintLabel(catalogMap.get(ln.paint_id), ln.paint_id)}`}
-                          onChange={(e) => {
-                            const v = e.target.value;
-                            setStLines((rows) =>
-                              rows.map((r) =>
-                                r.paint_id === ln.paint_id
-                                  ? {
-                                      ...r,
-                                      counted_g: v,
-                                      counted: v.trim() !== "",
-                                    }
-                                  : r,
-                              ),
-                            );
-                            setStPreview(null);
-                            setStPreviewFingerprint(null);
-                          }}
-                        />
-                      </td>
-                      <td>{ln.counted_g.trim() !== "" ? "Dihitung" : "Belum"}</td>
+              <div style={{ overflowX: "auto", maxWidth: "100%" }}>
+                <table className="ep-settings-data-table is-compact">
+                  <thead>
+                    <tr>
+                      <th>Cat</th>
+                      <th>Sistem (g)</th>
+                      <th>Fisik (g)</th>
+                      <th>Status</th>
                     </tr>
-                  ))}
-                </tbody>
-              </table>
+                  </thead>
+                  <tbody>
+                    {stLines.map((ln) => (
+                      <tr key={ln.paint_id}>
+                        <td>
+                          {paintLabel(catalogMap.get(ln.paint_id), ln.paint_id)}
+                        </td>
+                        <td className="ep-paint-qty">{fmtG(ln.system_g)}</td>
+                        <td>
+                          <input
+                            type="number"
+                            min={0}
+                            step="any"
+                            value={ln.counted_g}
+                            aria-label={`Hitung fisik ${paintLabel(catalogMap.get(ln.paint_id), ln.paint_id)}`}
+                            onChange={(e) => {
+                              const v = e.target.value;
+                              setStLines((rows) =>
+                                rows.map((r) =>
+                                  r.paint_id === ln.paint_id
+                                    ? {
+                                        ...r,
+                                        counted_g: v,
+                                        counted: v.trim() !== "",
+                                      }
+                                    : r,
+                                ),
+                              );
+                              setStPreview(null);
+                              setStPreviewFingerprint(null);
+                            }}
+                          />
+                        </td>
+                        <td>{ln.counted_g.trim() !== "" ? "Dihitung" : "Belum"}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
               {!stAllCounted ? (
                 <p className="ep-error" role="status">
                   Belum dihitung:{" "}
@@ -2143,19 +2421,11 @@ export function PaintApiPanel() {
                   wajib.
                 </p>
               ) : null}
-              <button
-                type="button"
-                className="ep-btn primary"
-                disabled={!stCanPreview}
-                onClick={() => setStStep(2)}
-              >
-                Lanjut preview
-              </button>
-            </>
+            </div>
           ) : null}
 
           {stStep === 2 ? (
-            <>
+            <div className="ep-paint-form">
               {!stAllCounted ? (
                 <p className="ep-error">
                   Ada item belum dihitung. Kembali ke langkah 1.
@@ -2167,51 +2437,44 @@ export function PaintApiPanel() {
                   ulang.
                 </p>
               ) : null}
-              <button
-                type="button"
-                className="ep-btn"
-                disabled={busy || !stCanPreview}
-                onClick={() =>
-                  void runAction("Preview dry-run (tanpa tulis DB).", async () => {
-                    const fp = stocktakeCountsFingerprint(stLines);
-                    const res = await previewPaintStocktake({
-                      branch_id: branchId,
-                      counts: stLines.map((l) => ({
-                        paint_id: l.paint_id,
-                        counted_g: Number(l.counted_g),
-                      })),
-                    });
-                    setStPreview(res.stocktake);
-                    setStPreviewFingerprint(fp);
-                  })
-                }
-              >
-                Jalankan preview
-              </button>
               {stPreviewFresh ? (
-                <div className="ep-paint-mass-box is-ok">
-                  Preview siap · persisted=false · baris{" "}
-                  {String(stPreview?.line_count ?? stLines.length)}
+                <div className="ep-paint-mass-box is-ok" role="status">
+                  <p style={{ margin: "0 0 0.5rem" }}>
+                    Preview berhasil. Terdapat {stPreviewSummary.lineCount} jenis
+                    cat yang diperiksa. Stok belum berubah.
+                  </p>
+                  <div className="ep-paint-recon" style={{ border: 0, padding: 0, background: "transparent" }}>
+                    <div className="ep-paint-recon-row">
+                      <span>Jumlah cat dihitung</span>
+                      <span className="ep-paint-qty">{stPreviewSummary.counted}</span>
+                    </div>
+                    <div className="ep-paint-recon-row">
+                      <span>Jumlah cat berselisih</span>
+                      <span className="ep-paint-qty">{stPreviewSummary.diffCount}</span>
+                    </div>
+                    <div className="ep-paint-recon-row">
+                      <span>Total selisih</span>
+                      <span className="ep-paint-qty">
+                        {fmtG(stPreviewSummary.totalDeltaG)} g
+                      </span>
+                    </div>
+                    <div className="ep-paint-recon-row is-span-2">
+                      <p className="ep-paint-recon-status">
+                        Status lanjut: {stCanSession ? "Siap buat sesi" : "Belum siap"}
+                      </p>
+                    </div>
+                  </div>
                 </div>
-              ) : null}
-              <div className="ep-modal-foot-actions">
-                <button type="button" className="ep-btn" onClick={() => setStStep(1)}>
-                  Kembali
-                </button>
-                <button
-                  type="button"
-                  className="ep-btn primary"
-                  disabled={!stCanSession}
-                  onClick={() => setStStep(3)}
-                >
-                  Lanjut buat sesi
-                </button>
-              </div>
-            </>
+              ) : (
+                <p className="muted">
+                  Jalankan preview untuk melihat selisih tanpa mengubah stok.
+                </p>
+              )}
+            </div>
           ) : null}
 
           {stStep === 3 ? (
-            <>
+            <div className="ep-paint-form">
               {!stCanSession ? (
                 <p className="ep-error">
                   Buat sesi hanya setelah preview sukses atas hitungan terkini.
@@ -2222,57 +2485,17 @@ export function PaintApiPanel() {
                   menyimpan snapshot untuk finalisasi.
                 </p>
               )}
-              <button
-                type="button"
-                className="ep-btn primary"
-                disabled={busy || !stCanSession}
-                onClick={() =>
-                  void runAction("Sesi stocktake disimpan.", async () => {
-                    try {
-                      const res = await createPaintStocktakeSession({
-                        branch_id: branchId,
-                        counts: stLines.map((l) => ({
-                          paint_id: l.paint_id,
-                          counted_g: Number(l.counted_g),
-                        })),
-                      });
-                      const st = res.stocktake as {
-                        stocktake_id: string;
-                        cutoff_at?: string;
-                      };
-                      setStocktakeId(st.stocktake_id);
-                      setStStep(4);
-                    } catch (err) {
-                      const msg =
-                        err instanceof Error ? err.message : "Gagal buat sesi.";
-                      if (/conflict|versi|version|cas/i.test(msg)) {
-                        setStPreview(null);
-                        setStPreviewFingerprint(null);
-                        setStStep(2);
-                        throw new Error(
-                          `${msg} — jalankan preview ulang sebelum membuat sesi.`,
-                        );
-                      }
-                      throw err;
-                    }
-                  })
-                }
-              >
-                Buat sesi stocktake
-              </button>
               {stocktakeId ? (
                 <p className="muted">Session: {stocktakeId}</p>
               ) : null}
-              <button type="button" className="ep-btn" onClick={() => setStStep(2)}>
-                Kembali
-              </button>
-            </>
+            </div>
           ) : null}
 
           {stStep === 4 ? (
-            <>
+            <div className="ep-paint-form">
               <div className="ep-paint-mass-box">
-                Cabang {branchId} · Dihitung {stLines.filter((l) => l.counted_g.trim() !== "").length}/
+                Cabang {branchId} · Dihitung{" "}
+                {stLines.filter((l) => l.counted_g.trim() !== "").length}/
                 {stLines.length} · Session {stocktakeId || "—"}
               </div>
               <p className="muted">
@@ -2282,40 +2505,7 @@ export function PaintApiPanel() {
               {!stAllCounted ? (
                 <p className="ep-error">Masih ada item wajib belum dihitung.</p>
               ) : null}
-              <button
-                type="button"
-                className="ep-btn primary"
-                disabled={
-                  busy ||
-                  !stCanFinalize ||
-                  !can("paint.stocktake.finalize")
-                }
-                onClick={() => {
-                  if (!stocktakeId || !stCanFinalize) return;
-                  setConfirmReq({
-                    title: "Finalisasi Stock Opname",
-                    message:
-                      "Periode akan dikunci sampai cutoff snapshot. Tindakan ini memakai hitungan sesi tersimpan.",
-                    details: [
-                      `Cabang: ${branchId}`,
-                      `Session: ${stocktakeId}`,
-                      `Item dihitung: ${stLines.length}`,
-                    ],
-                    tone: "danger",
-                    confirmLabel: "Finalize & kunci",
-                    cancelLabel: "Batal",
-                  });
-                  setConfirmOpen(true);
-                  setPendingDeleteId(null);
-                  setPendingCorrectId(`finalize:${stocktakeId}`);
-                }}
-              >
-                Finalisasi & kunci periode
-              </button>
-              <button type="button" className="ep-btn" onClick={() => setStStep(3)}>
-                Kembali
-              </button>
-            </>
+            </div>
           ) : null}
         </PaintModal>
       ) : null}
