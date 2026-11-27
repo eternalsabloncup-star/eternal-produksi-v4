@@ -39,6 +39,8 @@ P8C_BATCH_ID = "historical_parent_po_recovery_p8c"
 P8C_MANIFEST_NAME = "historical_parent_po_recovery_p8c.json"
 M924_BATCH_ID = "historical_po_recovery_m924_po_71100"
 M924_MANIFEST_NAME = "historical_po_recovery_m924_po_71100.json"
+M92B_BATCH_ID = "historical_parent_po_recovery_m92b"
+M92B_MANIFEST_NAME = "historical_parent_po_recovery_m92b.json"
 ALLOWED_BRANCHES = frozenset({"50", "150"})
 SHA40_RE = re.compile(r"^[0-9a-f]{40}$")
 
@@ -55,6 +57,7 @@ Outcome = Literal[
 
 MAINTENANCE_ACTOR = "historical_po_recovery_apply"
 P8C_MAINTENANCE_ACTOR = "historical_parent_po_recovery_p8c_apply"
+M92B_MAINTENANCE_ACTOR = "historical_parent_po_recovery_m92b_apply"
 DEFAULT_MAINTENANCE_TTL_SECONDS = 1800
 
 
@@ -99,6 +102,16 @@ BATCH_REGISTRY: dict[str, BatchSpec] = {
         require_id_list_sha256=True,
         require_customer_and_related_sj=True,
         maintenance_actor="historical_po_recovery_m924_po_71100_apply",
+        require_po_no=True,
+    ),
+    M92B_BATCH_ID: BatchSpec(
+        batch_id=M92B_BATCH_ID,
+        label=M92B_BATCH_ID,
+        expected_po_count=10,
+        default_manifest_name=M92B_MANIFEST_NAME,
+        require_id_list_sha256=True,
+        require_customer_and_related_sj=True,
+        maintenance_actor=M92B_MAINTENANCE_ACTOR,
         require_po_no=True,
     ),
 }
