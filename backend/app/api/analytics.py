@@ -5,8 +5,9 @@ from __future__ import annotations
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
+from pydantic import BaseModel, Field
 
-from app.auth.deps import AuthContext, require_session
+from app.auth.deps import AuthContext, require_csrf, require_session
 from app.auth.permissions import PERM_VIEW_REPORTS, has_permission
 from app.db import get_db
 from app.repositories.po_repository import get_by_accurate_id, po_collection
@@ -259,3 +260,121 @@ def get_finance_invoice(
             ) from exc
 
     return finance_invoice_view(doc, db=db)
+
+
+class AdminInvoiceReviewRequest(BaseModel):
+    outcome: str = Field(min_length=3, max_length=64)
+    reason: str = Field(min_length=0, max_length=2000)
+    evidence_ref: str | None = Field(default=None, max_length=500)
+    expected_source_fingerprint: str = Field(min_length=16, max_length=128)
+    expected_admin_version: int = Field(ge=0)
+    idempotency_key: str = Field(min_length=8, max_length=200)
+
+
+@router.get("/finance/invoice-reviews")
+def list_finance_invoice_reviews(
+    limit: int = Query(default=50, ge=1, le=200),
+    skip: int = Query(default=0, ge=0),
+    source_completeness: str | None = Query(default=None),
+    auth: AuthContext = Depends(require_session),
+) -> dict[str, Any]:
+    """M9.3E — administrative review queue (branch ACL, reports.view)."""
+    _require_finance_reports(auth)
+    from app.services.invoice_admin_review_service import list_admin_review_queue
+
+    branch_ids, branch_scope = _branch_scope(auth)
+    return list_admin_review_queue(
+        get_db(),
+        auth.user,
+        branch_ids=branch_ids,
+        branch_scope=branch_scope,
+        limit=limit,
+        skip=skip,
+        source_completeness=source_completeness,
+    )
+
+
+@router.get("/finance/invoice-reviews/{accurate_invoice_id}")
+def get_finance_invoice_review(
+    accurate_invoice_id: str,
+    auth: AuthContext = Depends(require_session),
+) -> dict[str, Any]:
+    """Administrative review detail + append-only history."""
+    _require_finance_reports(auth)
+    from app.services.invoice_admin_review_service import (
+        AdminReviewPermissionError,
+        get_admin_review_detail,
+    )
+
+    try:
+        return get_admin_review_detail(get_db(), auth.user, accurate_invoice_id)
+    except LookupError as exc:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, str(exc)) from exc
+    except AdminReviewPermissionError as exc:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Faktur tidak ditemukan") from exc
+
+
+@router.get("/finance/invoice-reviews/{accurate_invoice_id}/history")
+def get_finance_invoice_review_history(
+    accurate_invoice_id: str,
+    auth: AuthContext = Depends(require_session),
+) -> dict[str, Any]:
+    """Append-only administrative events for one invoice."""
+    _require_finance_reports(auth)
+    from app.repositories import invoice_admin_review_repository as admin_reviews
+    from app.services.invoice_admin_review_service import (
+        AdminReviewPermissionError,
+        get_admin_review_detail,
+    )
+
+    try:
+        detail = get_admin_review_detail(get_db(), auth.user, accurate_invoice_id)
+    except LookupError as exc:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, str(exc)) from exc
+    except AdminReviewPermissionError as exc:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Faktur tidak ditemukan") from exc
+    events = admin_reviews.list_events(get_db(), accurate_invoice_id)
+    return {
+        "accurate_invoice_id": accurate_invoice_id,
+        "events": events,
+        "count": len(events),
+        "admin_review_status": detail.get("admin_review_status"),
+        "admin_decision_stale": detail.get("admin_decision_stale"),
+    }
+
+
+@router.post("/finance/invoice-reviews/{accurate_invoice_id}")
+def post_finance_invoice_review(
+    accurate_invoice_id: str,
+    body: AdminInvoiceReviewRequest,
+    auth: AuthContext = Depends(require_csrf),
+) -> dict[str, Any]:
+    """Submit administrative decision — never opens Payment Gate."""
+    _require_finance_reports(auth)
+    from app.services.invoice_admin_review_service import (
+        AdminReviewConflictError,
+        AdminReviewPermissionError,
+        AdminReviewValidationError,
+        submit_admin_review,
+    )
+
+    try:
+        return submit_admin_review(
+            get_db(),
+            auth.user,
+            accurate_invoice_id=accurate_invoice_id,
+            outcome=body.outcome,
+            reason=body.reason,
+            evidence_ref=body.evidence_ref,
+            expected_source_fingerprint=body.expected_source_fingerprint,
+            expected_admin_version=body.expected_admin_version,
+            idempotency_key=body.idempotency_key,
+        )
+    except LookupError as exc:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, str(exc)) from exc
+    except AdminReviewPermissionError as exc:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Faktur tidak ditemukan") from exc
+    except AdminReviewValidationError as exc:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc)) from exc
+    except AdminReviewConflictError as exc:
+        raise HTTPException(status.HTTP_409_CONFLICT, str(exc)) from exc
