@@ -99,6 +99,12 @@ def _material_invoice_fields(doc: dict[str, Any]) -> dict[str, Any]:
         "lines": list(doc.get("lines") or []),
         "review_required": bool(doc.get("review_required")),
         "review_reason": doc.get("review_reason"),
+        # Additive identity/shape fields (M9.3C) — do not invent values.
+        "customer_id": doc.get("customer_id"),
+        "branch_id": doc.get("branch_id"),
+        "document_kind": doc.get("document_kind"),
+        "has_detail_expense": bool(doc.get("has_detail_expense")),
+        "currency": doc.get("currency"),
     }
 
 
@@ -157,9 +163,34 @@ def normalize_sales_invoice(payload: dict[str, Any]) -> dict[str, Any]:
         )
 
     review_reason = "; ".join(review_reasons) if review_reasons else None
+
+    invoice_no = as_text(payload.get("number"))
+    expense_rows = [
+        row for row in (payload.get("detailExpense") or []) if isinstance(row, dict)
+    ]
+    has_detail_expense = len(expense_rows) > 0
+    # Local import avoids circular import with finance classification helpers.
+    from app.services.invoice_finance_classification import infer_document_kind
+    from app.services.branch_identity import normalize_branch_identity
+
+    customer_id = as_text(payload.get("customerId")).strip()
+    branch_id = normalize_branch_identity(payload.get("branchId"))
+    currency = ""
+    raw_currency = payload.get("currency")
+    if isinstance(raw_currency, dict):
+        currency = as_text(raw_currency.get("code") or raw_currency.get("id"))
+    else:
+        currency = as_text(payload.get("currencyCode") or raw_currency)
+
+    document_kind = infer_document_kind(
+        invoice_no=invoice_no,
+        has_detail_expense=has_detail_expense,
+        item_line_count=len(lines),
+    )
+
     return {
         "accurate_invoice_id": accurate_id,
-        "invoice_no": as_text(payload.get("number")),
+        "invoice_no": invoice_no,
         "trans_date": as_text(payload.get("transDate")),
         "status": as_text(payload.get("status") or payload.get("statusName")),
         "total_amount": money_to_storage(total_amount) if total_amount is not None else None,
@@ -169,6 +200,11 @@ def normalize_sales_invoice(payload: dict[str, Any]) -> dict[str, Any]:
         "lines": lines,
         "review_required": bool(review_reason),
         "review_reason": review_reason,
+        "customer_id": customer_id or None,
+        "branch_id": branch_id,
+        "document_kind": document_kind,
+        "has_detail_expense": has_detail_expense,
+        "currency": currency or None,
     }
 
 

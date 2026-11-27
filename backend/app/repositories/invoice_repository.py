@@ -86,3 +86,44 @@ def resolve_po_ids_for_invoice(db: Database, accurate_invoice_id: str) -> list[s
     if not doc:
         return []
     return [str(x) for x in (doc.get("accurate_po_ids") or []) if str(x).strip()]
+
+
+def list_invoices(
+    db: Database,
+    *,
+    branch_ids: list[str] | set[str] | None = None,
+    branch_scope: bool = False,
+    limit: int = 100,
+    skip: int = 0,
+) -> list[dict[str, Any]]:
+    """List invoice snapshots for finance read-models.
+
+    When ``branch_scope`` is True, only invoices with a verified ``branch_id``
+    inside ``branch_ids`` are returned. Invoices missing ``branch_id`` are
+    excluded from branch-scoped listings (fail-closed — not cross-branch).
+    """
+    require_invoice_indexes(db)
+    query: dict[str, Any] = {}
+    if branch_scope:
+        from app.services.branch_identity import normalize_branch_identity
+
+        allowed = sorted(
+            {
+                nid
+                for nid in (
+                    normalize_branch_identity(x) for x in (branch_ids or [])
+                )
+                if nid
+            }
+        )
+        if not allowed:
+            return []
+        query["branch_id"] = {"$in": allowed}
+    cursor = (
+        invoices_collection(db)
+        .find(query, {"_id": 0})
+        .sort("synced_at", -1)
+        .skip(max(0, int(skip)))
+        .limit(max(1, min(int(limit), 200)))
+    )
+    return list(cursor)

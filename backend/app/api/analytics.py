@@ -173,3 +173,88 @@ def get_report(
 @router.get("/reports")
 def list_report_kinds(auth: AuthContext = Depends(require_session)) -> dict[str, Any]:
     return {"kinds": list(read_models.REPORT_KINDS)}
+
+
+def _require_finance_reports(auth: AuthContext) -> None:
+    """Finance invoice classification — reports.view only; no silent grants."""
+    if not has_permission(auth.user, PERM_VIEW_REPORTS):
+        raise HTTPException(status.HTTP_403_FORBIDDEN, "Akses laporan ditolak")
+
+
+@router.get("/finance/invoices")
+def list_finance_invoices(
+    limit: int = Query(default=50, ge=1, le=200),
+    skip: int = Query(default=0, ge=0),
+    finance_class: str | None = Query(default=None),
+    auth: AuthContext = Depends(require_session),
+) -> dict[str, Any]:
+    """M9.3C — derived finance classification read-model (branch ACL).
+
+    Additive RO view over Accurate invoice snapshots. Does not resolve reviews,
+    open Payment Gate, or invent SO/PO relationships.
+    """
+    _require_finance_reports(auth)
+    from app.repositories import invoice_repository as invoices
+    from app.services.invoice_finance_classification import finance_invoice_view
+    from app.services.object_auth import ObjectAuthError, assert_branch_access
+
+    branch_ids, branch_scope = _branch_scope(auth)
+    db = get_db()
+    # Fetch a bounded window then classify; branch_scope filters missing branch_id.
+    rows = invoices.list_invoices(
+        db,
+        branch_ids=branch_ids,
+        branch_scope=branch_scope,
+        limit=limit,
+        skip=skip,
+    )
+    items: list[dict[str, Any]] = []
+    for doc in rows:
+        view = finance_invoice_view(doc)
+        if finance_class and view.get("finance_class") != finance_class:
+            continue
+        if branch_scope:
+            # Defense in depth: re-assert object branch for each row.
+            try:
+                assert_branch_access(auth.user, scope_object=doc)
+            except ObjectAuthError:
+                continue
+        items.append(view)
+    return {
+        "items": items,
+        "count": len(items),
+        "source": "accurate_sales_invoices",
+        "derived": True,
+        "payment_gate_unchanged": True,
+    }
+
+
+@router.get("/finance/invoices/{accurate_invoice_id}")
+def get_finance_invoice(
+    accurate_invoice_id: str,
+    auth: AuthContext = Depends(require_session),
+) -> dict[str, Any]:
+    """Single-invoice derived finance classification — fail-closed on branch."""
+    _require_finance_reports(auth)
+    from app.repositories import invoice_repository as invoices
+    from app.services.invoice_finance_classification import finance_invoice_view
+    from app.services.object_auth import ObjectAuthError, assert_branch_access
+
+    db = get_db()
+    doc = invoices.get_invoice(db, accurate_invoice_id)
+    if doc is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Faktur tidak ditemukan")
+
+    _branch_ids, branch_scope = _branch_scope(auth)
+    if branch_scope:
+        # Missing branch identity → deny cross-branch exposure.
+        if not doc.get("branch_id"):
+            raise HTTPException(status.HTTP_404_NOT_FOUND, "Faktur tidak ditemukan")
+        try:
+            assert_branch_access(auth.user, scope_object=doc)
+        except ObjectAuthError as exc:
+            raise HTTPException(
+                status.HTTP_404_NOT_FOUND, "Faktur tidak ditemukan"
+            ) from exc
+
+    return finance_invoice_view(doc)
