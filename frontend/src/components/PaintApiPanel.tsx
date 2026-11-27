@@ -2,6 +2,7 @@ import {
   useCallback,
   useEffect,
   useMemo,
+  useRef,
   useState,
   type ReactNode,
 } from "react";
@@ -45,6 +46,16 @@ import { DataTable } from "./DataTable/DataTable";
 import { DEFAULT_TABLE_PAGE_SIZE } from "./DataTable/Pagination";
 import type { ColumnDef } from "./DataTable/types";
 import { KpiSummary, type KpiItem } from "./KpiSummary";
+import {
+  allRequiredCounted,
+  canCreateStocktakeSession,
+  canEnterStocktakePreview,
+  canFinalizeStocktake,
+  conversionMassStatus,
+  isPreviewStale,
+  resolvePaintUserEmail,
+  stocktakeCountsFingerprint,
+} from "./paintWorkspaceGuards";
 
 type PrimaryTab = "stock" | "history" | "reports" | "settings";
 type ActionModal =
@@ -206,7 +217,13 @@ export function PaintApiPanel() {
   const [stPreview, setStPreview] = useState<Record<string, unknown> | null>(
     null,
   );
+  const [stPreviewFingerprint, setStPreviewFingerprint] = useState<
+    string | null
+  >(null);
   const [stocktakeId, setStocktakeId] = useState<string | null>(null);
+  const [modalTriggerEl, setModalTriggerEl] = useState<HTMLElement | null>(
+    null,
+  );
 
   const can = useCallback((p: string) => perms.includes(p), [perms]);
 
@@ -312,8 +329,28 @@ export function PaintApiPanel() {
     });
     setStocktakeId(null);
     setStPreview(null);
+    setStPreviewFingerprint(null);
     setStStep(1);
   }, [branchId]);
+
+  function openPaintModal(
+    next: ActionModal,
+    trigger?: EventTarget | null,
+  ) {
+    setModalTriggerEl(
+      trigger instanceof HTMLElement ? trigger : null,
+    );
+    setModal(next);
+  }
+
+  function closePaintModal() {
+    if (busy) return;
+    setModal(null);
+    setSelectedDoc(null);
+    const el = modalTriggerEl;
+    setModalTriggerEl(null);
+    window.setTimeout(() => el?.focus(), 0);
+  }
 
   async function runAction(label: string, fn: () => Promise<unknown>) {
     setBusy(true);
@@ -642,7 +679,37 @@ export function PaintApiPanel() {
   );
   const convDest = Number(convForm.verified_return_g) || 0;
   const convWaste = Number(convForm.waste_g) || 0;
-  const convBalanced = convDest + convWaste <= convSourceTotal + 1e-9;
+  const convSourcesReady = convSources.every(
+    (s) =>
+      Boolean(s.withdrawal_id) &&
+      Boolean(s.withdrawal_line_id) &&
+      Number(s.qty_g) > 0,
+  );
+  const convResultReady =
+    Boolean(convForm.destination_paint_id) &&
+    Number(convForm.verified_return_g) > 0;
+  const convStatus = conversionMassStatus({
+    sourcesReady: convSourcesReady,
+    resultReady: convResultReady,
+    sourceTotal: convSourceTotal,
+    destG: convDest,
+    wasteG: convWaste,
+  });
+  const stAllCounted = allRequiredCounted(stLines);
+  const stCanPreview = canEnterStocktakePreview(branchId, stLines);
+  const stPreviewFresh =
+    Boolean(stPreview) &&
+    !isPreviewStale(stLines, stPreviewFingerprint);
+  const stCanSession = canCreateStocktakeSession({
+    branchId,
+    lines: stLines,
+    preview: stPreview,
+    previewFingerprint: stPreviewFingerprint,
+  });
+  const stCanFinalize = canFinalizeStocktake({
+    stocktakeId,
+    lines: stLines,
+  });
 
   function openSoftDelete(doc: PaintDocument) {
     setPendingDeleteId(doc.document_id);
@@ -763,8 +830,8 @@ export function PaintApiPanel() {
               <button
                 type="button"
                 className="ep-btn is-primary-action ep-paint-toolbar-item"
-                onClick={() => {
-                  setModal("withdraw");
+                onClick={(e) => {
+                  openPaintModal("withdraw", e.currentTarget);
                   void loadUsers("");
                   void refreshDocs();
                 }}
@@ -777,8 +844,8 @@ export function PaintApiPanel() {
                 type="button"
                 className="ep-btn is-primary-action ep-paint-toolbar-item"
                 title="Pengembalian / Konversi"
-                onClick={() => {
-                  setModal("return");
+                onClick={(e) => {
+                  openPaintModal("return", e.currentTarget);
                   void refreshDocs();
                 }}
               >
@@ -789,7 +856,7 @@ export function PaintApiPanel() {
               <button
                 type="button"
                 className="ep-btn ep-paint-toolbar-item"
-                onClick={() => setModal("inbound")}
+                onClick={(e) => openPaintModal("inbound", e.currentTarget)}
               >
                 Cat Masuk
               </button>
@@ -798,8 +865,8 @@ export function PaintApiPanel() {
               <button
                 type="button"
                 className="ep-btn ep-paint-toolbar-item"
-                onClick={() => {
-                  setModal("waste");
+                onClick={(e) => {
+                  openPaintModal("waste", e.currentTarget);
                   void refreshDocs();
                 }}
               >
@@ -810,8 +877,8 @@ export function PaintApiPanel() {
               <button
                 type="button"
                 className="ep-btn ep-paint-toolbar-item"
-                onClick={() => {
-                  setModal("stocktake");
+                onClick={(e) => {
+                  openPaintModal("stocktake", e.currentTarget);
                   setStStep(1);
                   setStLines(
                     stock
@@ -825,6 +892,7 @@ export function PaintApiPanel() {
                   );
                   setStocktakeId(null);
                   setStPreview(null);
+                  setStPreviewFingerprint(null);
                 }}
               >
                 Stock Opname
@@ -934,7 +1002,7 @@ export function PaintApiPanel() {
             }}
             onRowActivate={(r) => {
               setSelectedDoc(r);
-              setModal("detail");
+              openPaintModal("detail", document.activeElement);
             }}
             emptyMessage="Belum ada transaksi untuk filter ini."
           />
@@ -1168,10 +1236,11 @@ export function PaintApiPanel() {
         <PaintModal
           title="Cat Masuk"
           kicker="Penerimaan fisik"
-          onClose={() => setModal(null)}
+          busy={busy}
+          onClose={closePaintModal}
           footer={
             <div className="ep-modal-foot-actions">
-              <button type="button" className="ep-btn" onClick={() => setModal(null)}>
+              <button type="button" className="ep-btn" onClick={closePaintModal} disabled={busy}>
                 Batal
               </button>
               <button
@@ -1204,7 +1273,7 @@ export function PaintApiPanel() {
                   physical_confirmed: true,
                   idempotency_key: newPaintIdempotencyKey("in"),
                 });
-                setModal(null);
+                closePaintModal();
               });
             }}
           >
@@ -1269,10 +1338,11 @@ export function PaintApiPanel() {
         <PaintModal
           title="Pengambilan Cat"
           kicker="Serah fisik"
-          onClose={() => setModal(null)}
+          busy={busy}
+          onClose={closePaintModal}
           footer={
             <div className="ep-modal-foot-actions">
-              <button type="button" className="ep-btn" onClick={() => setModal(null)}>
+              <button type="button" className="ep-btn" onClick={closePaintModal} disabled={busy}>
                 Batal
               </button>
               <button
@@ -1311,27 +1381,38 @@ export function PaintApiPanel() {
                 setError("Minimal satu item cat dengan Qty positif.");
                 return;
               }
+              const resolvedEmail = resolvePaintUserEmail(
+                withdrawForm.used_by_email,
+                users,
+              );
+              if (!resolvedEmail) {
+                setError(
+                  "Pilih karyawan valid dari hasil pencarian (nama atau email).",
+                );
+                return;
+              }
               void runAction("Pengambilan tercatat.", async () => {
                 await createPaintWithdrawal({
                   branch_id: branchId,
-                  used_by_email: withdrawForm.used_by_email,
+                  used_by_email: resolvedEmail,
                   purpose_id: withdrawForm.purpose_id,
                   accurate_po_id: withdrawForm.accurate_po_id || undefined,
                   note: withdrawForm.note || undefined,
                   items,
                   idempotency_key: newPaintIdempotencyKey("wd"),
                 });
-                setModal(null);
+                closePaintModal();
                 setWithdrawItems([{ paint_id: "", qty_g: "" }]);
               });
             }}
           >
             <label>
-              Pengguna cat
+              Karyawan (nama / email)
               <input
                 list="paint-user-list"
                 required
-                type="email"
+                type="text"
+                autoComplete="off"
                 value={withdrawForm.used_by_email}
                 onChange={(e) => {
                   setWithdrawForm((s) => ({
@@ -1342,15 +1423,19 @@ export function PaintApiPanel() {
                   void loadUsers(e.target.value);
                 }}
                 onFocus={() => void loadUsers(userQ)}
-                placeholder="Cari email pengguna"
+                placeholder="Cari nama atau email karyawan"
+                aria-describedby="paint-user-hint"
               />
               <datalist id="paint-user-list">
                 {users.map((u) => (
                   <option key={u.email} value={u.email}>
-                    {u.display_name}
+                    {u.display_name || u.email}
                   </option>
                 ))}
               </datalist>
+              <span id="paint-user-hint" className="muted">
+                Pilih dari daftar hasil pencarian backend (bukan email bebas).
+              </span>
             </label>
             <label>
               Tujuan
@@ -1493,19 +1578,23 @@ export function PaintApiPanel() {
         <PaintModal
           title="Pengembalian / Konversi"
           kicker="Penerimaan return"
-          onClose={() => setModal(null)}
+          busy={busy}
+          onClose={closePaintModal}
           footer={
             <div className="ep-modal-foot-actions">
-              <button type="button" className="ep-btn" onClick={() => setModal(null)}>
+              <button type="button" className="ep-btn" onClick={closePaintModal} disabled={busy}>
                 Batal
               </button>
               <button
                 type="submit"
                 form="paint-return-form"
                 className="ep-btn primary"
-                disabled={busy}
+                disabled={
+                  busy ||
+                  (returnMode === "black" && convStatus !== "balanced")
+                }
               >
-                Konfirmasi
+                Konfirmasi Pengembalian / Konversi
               </button>
             </div>
           }
@@ -1546,7 +1635,7 @@ export function PaintApiPanel() {
                     condition: "fit",
                     idempotency_key: newPaintIdempotencyKey("rt"),
                   });
-                  setModal(null);
+                  closePaintModal();
                 });
               }}
             >
@@ -1638,9 +1727,11 @@ export function PaintApiPanel() {
                   setError("Pilih cabang terlebih dahulu.");
                   return;
                 }
-                if (!convBalanced) {
+                if (convStatus !== "balanced") {
                   setError(
-                    "Hasil + waste tidak boleh melebihi total gram sumber.",
+                    convStatus === "incomplete"
+                      ? "Lengkapi sumber dan hasil timbangan terlebih dahulu."
+                      : "Hasil + waste tidak boleh melebihi total gram sumber.",
                   );
                   return;
                 }
@@ -1664,7 +1755,7 @@ export function PaintApiPanel() {
                     waste_g: convWaste,
                     idempotency_key: newPaintIdempotencyKey("cv"),
                   });
-                  setModal(null);
+                  closePaintModal();
                 });
               }}
             >
@@ -1736,7 +1827,7 @@ export function PaintApiPanel() {
                         </select>
                       </label>
                       <label>
-                        Gram sumber
+                        Berat Sumber (g)
                         <input
                           required
                           type="number"
@@ -1773,7 +1864,7 @@ export function PaintApiPanel() {
                     Tambah sumber
                   </button>
                   <label>
-                    Destination Hitam
+                    Masuk ke Stok Hitam
                     <select
                       required
                       value={convForm.destination_paint_id}
@@ -1793,7 +1884,7 @@ export function PaintApiPanel() {
                     </select>
                   </label>
                   <label>
-                    Hasil timbangan (g)
+                    Berat Hasil Timbangan (g)
                     <input
                       required
                       type="number"
@@ -1821,13 +1912,22 @@ export function PaintApiPanel() {
                     />
                   </label>
                   <div
-                    className={`ep-paint-mass-box ${convBalanced ? "is-ok" : "is-warn"}`}
+                    className={`ep-paint-mass-box ${
+                      convStatus === "balanced"
+                        ? "is-ok"
+                        : convStatus === "unbalanced"
+                          ? "is-warn"
+                          : ""
+                    }`}
+                    role="status"
                   >
                     Sumber {fmtG(convSourceTotal)} g · Hasil {fmtG(convDest)} g ·
                     Waste {fmtG(convWaste)} g
-                    {!convBalanced
-                      ? " — tidak seimbang (hasil+waste > sumber)"
-                      : " — seimbang"}
+                    {convStatus === "incomplete"
+                      ? " — belum lengkap"
+                      : convStatus === "unbalanced"
+                        ? " — tidak seimbang (hasil+waste > sumber)"
+                        : " — seimbang"}
                   </div>
                 </>
               )}
@@ -1840,10 +1940,11 @@ export function PaintApiPanel() {
         <PaintModal
           title="Catat Waste"
           kicker="Tidak mengurangi gudang dua kali"
-          onClose={() => setModal(null)}
+          busy={busy}
+          onClose={closePaintModal}
           footer={
             <div className="ep-modal-foot-actions">
-              <button type="button" className="ep-btn" onClick={() => setModal(null)}>
+              <button type="button" className="ep-btn" onClick={closePaintModal} disabled={busy}>
                 Batal
               </button>
               <button
@@ -1870,7 +1971,7 @@ export function PaintApiPanel() {
                   reason: wasteForm.reason,
                   idempotency_key: newPaintIdempotencyKey("ws"),
                 });
-                setModal(null);
+                closePaintModal();
               });
             }}
           >
@@ -1949,10 +2050,16 @@ export function PaintApiPanel() {
         <PaintModal
           title="Stock Opname"
           kicker={`Langkah ${stStep} dari 4`}
-          onClose={() => setModal(null)}
+          busy={busy}
+          onClose={closePaintModal}
           footer={
             <div className="ep-modal-foot-actions">
-              <button type="button" className="ep-btn" onClick={() => setModal(null)}>
+              <button
+                type="button"
+                className="ep-btn"
+                disabled={busy}
+                onClick={closePaintModal}
+              >
                 Tutup
               </button>
             </div>
@@ -1961,8 +2068,8 @@ export function PaintApiPanel() {
           <div className="ep-paint-wizard-steps" aria-label="Progress stocktake">
             {[
               [1, "Hitung fisik"],
-              [2, "Preview"],
-              [3, "Sesi"],
+              [2, "Preview selisih"],
+              [3, "Buat sesi"],
               [4, "Finalisasi"],
             ].map(([n, label]) => (
               <span
@@ -1979,6 +2086,10 @@ export function PaintApiPanel() {
               {!branchId ? (
                 <p className="ep-error">Pilih cabang di header sebelum stocktake.</p>
               ) : null}
+              <p className="muted">
+                Isi gram fisik untuk setiap item. Angka 0 sah; kolom kosong belum
+                dihitung.
+              </p>
               <table className="ep-settings-data-table is-compact">
                 <thead>
                   <tr>
@@ -2001,31 +2112,41 @@ export function PaintApiPanel() {
                           min={0}
                           step="any"
                           value={ln.counted_g}
-                          aria-label={`Hitung fisik ${ln.paint_id}`}
-                          onChange={(e) =>
+                          aria-label={`Hitung fisik ${paintLabel(catalogMap.get(ln.paint_id), ln.paint_id)}`}
+                          onChange={(e) => {
+                            const v = e.target.value;
                             setStLines((rows) =>
                               rows.map((r) =>
                                 r.paint_id === ln.paint_id
                                   ? {
                                       ...r,
-                                      counted_g: e.target.value,
-                                      counted: e.target.value !== "",
+                                      counted_g: v,
+                                      counted: v.trim() !== "",
                                     }
                                   : r,
                               ),
-                            )
-                          }
+                            );
+                            setStPreview(null);
+                            setStPreviewFingerprint(null);
+                          }}
                         />
                       </td>
-                      <td>{ln.counted ? "Dihitung" : "Belum"}</td>
+                      <td>{ln.counted_g.trim() !== "" ? "Dihitung" : "Belum"}</td>
                     </tr>
                   ))}
                 </tbody>
               </table>
+              {!stAllCounted ? (
+                <p className="ep-error" role="status">
+                  Belum dihitung:{" "}
+                  {stLines.filter((l) => l.counted_g.trim() === "").length} item
+                  wajib.
+                </p>
+              ) : null}
               <button
                 type="button"
                 className="ep-btn primary"
-                disabled={!branchId}
+                disabled={!stCanPreview}
                 onClick={() => setStStep(2)}
               >
                 Lanjut preview
@@ -2035,37 +2156,44 @@ export function PaintApiPanel() {
 
           {stStep === 2 ? (
             <>
+              {!stAllCounted ? (
+                <p className="ep-error">
+                  Ada item belum dihitung. Kembali ke langkah 1.
+                </p>
+              ) : null}
+              {stPreview && !stPreviewFresh ? (
+                <p className="ep-error" role="alert">
+                  Preview kedaluwarsa karena angka fisik berubah. Jalankan preview
+                  ulang.
+                </p>
+              ) : null}
               <button
                 type="button"
                 className="ep-btn"
-                disabled={busy || !branchId}
+                disabled={busy || !stCanPreview}
                 onClick={() =>
                   void runAction("Preview dry-run (tanpa tulis DB).", async () => {
+                    const fp = stocktakeCountsFingerprint(stLines);
                     const res = await previewPaintStocktake({
                       branch_id: branchId,
-                      counts: stLines
-                        .filter((l) => l.counted)
-                        .map((l) => ({
-                          paint_id: l.paint_id,
-                          counted_g: Number(l.counted_g),
-                        })),
+                      counts: stLines.map((l) => ({
+                        paint_id: l.paint_id,
+                        counted_g: Number(l.counted_g),
+                      })),
                     });
                     setStPreview(res.stocktake);
+                    setStPreviewFingerprint(fp);
                   })
                 }
               >
                 Jalankan preview
               </button>
-              {stPreview ? (
+              {stPreviewFresh ? (
                 <div className="ep-paint-mass-box is-ok">
-                  Status: {String(stPreview.status)} · persisted={" "}
-                  {String(stPreview.persisted)} · baris{" "}
-                  {String(stPreview.line_count ?? "")}
+                  Preview siap · persisted=false · baris{" "}
+                  {String(stPreview?.line_count ?? stLines.length)}
                 </div>
               ) : null}
-              <p className="muted">
-                Belum dihitung: {stLines.filter((l) => !l.counted).length} item
-              </p>
               <div className="ep-modal-foot-actions">
                 <button type="button" className="ep-btn" onClick={() => setStStep(1)}>
                   Kembali
@@ -2073,6 +2201,7 @@ export function PaintApiPanel() {
                 <button
                   type="button"
                   className="ep-btn primary"
+                  disabled={!stCanSession}
                   onClick={() => setStStep(3)}
                 >
                   Lanjut buat sesi
@@ -2083,27 +2212,49 @@ export function PaintApiPanel() {
 
           {stStep === 3 ? (
             <>
+              {!stCanSession ? (
+                <p className="ep-error">
+                  Buat sesi hanya setelah preview sukses atas hitungan terkini.
+                </p>
+              ) : (
+                <p className="muted">
+                  Preview valid untuk cabang {branchId}. Membuat sesi akan
+                  menyimpan snapshot untuk finalisasi.
+                </p>
+              )}
               <button
                 type="button"
                 className="ep-btn primary"
-                disabled={busy || !branchId}
+                disabled={busy || !stCanSession}
                 onClick={() =>
                   void runAction("Sesi stocktake disimpan.", async () => {
-                    const res = await createPaintStocktakeSession({
-                      branch_id: branchId,
-                      counts: stLines
-                        .filter((l) => l.counted)
-                        .map((l) => ({
+                    try {
+                      const res = await createPaintStocktakeSession({
+                        branch_id: branchId,
+                        counts: stLines.map((l) => ({
                           paint_id: l.paint_id,
                           counted_g: Number(l.counted_g),
                         })),
-                    });
-                    const st = res.stocktake as {
-                      stocktake_id: string;
-                      cutoff_at?: string;
-                    };
-                    setStocktakeId(st.stocktake_id);
-                    setStStep(4);
+                      });
+                      const st = res.stocktake as {
+                        stocktake_id: string;
+                        cutoff_at?: string;
+                      };
+                      setStocktakeId(st.stocktake_id);
+                      setStStep(4);
+                    } catch (err) {
+                      const msg =
+                        err instanceof Error ? err.message : "Gagal buat sesi.";
+                      if (/conflict|versi|version|cas/i.test(msg)) {
+                        setStPreview(null);
+                        setStPreviewFingerprint(null);
+                        setStStep(2);
+                        throw new Error(
+                          `${msg} — jalankan preview ulang sebelum membuat sesi.`,
+                        );
+                      }
+                      throw err;
+                    }
                   })
                 }
               >
@@ -2121,23 +2272,34 @@ export function PaintApiPanel() {
           {stStep === 4 ? (
             <>
               <div className="ep-paint-mass-box">
-                Cabang {branchId} · Dihitung{" "}
-                {stLines.filter((l) => l.counted).length}/{stLines.length} ·
-                Session {stocktakeId || "—"}
+                Cabang {branchId} · Dihitung {stLines.filter((l) => l.counted_g.trim() !== "").length}/
+                {stLines.length} · Session {stocktakeId || "—"}
               </div>
+              <p className="muted">
+                Finalisasi mengunci periode sampai cutoff snapshot. Pastikan semua
+                item wajib sudah dihitung.
+              </p>
+              {!stAllCounted ? (
+                <p className="ep-error">Masih ada item wajib belum dihitung.</p>
+              ) : null}
               <button
                 type="button"
                 className="ep-btn primary"
-                disabled={busy || !stocktakeId || !can("paint.stocktake.finalize")}
+                disabled={
+                  busy ||
+                  !stCanFinalize ||
+                  !can("paint.stocktake.finalize")
+                }
                 onClick={() => {
-                  if (!stocktakeId) return;
+                  if (!stocktakeId || !stCanFinalize) return;
                   setConfirmReq({
                     title: "Finalisasi Stock Opname",
-                    message: "Periode akan dikunci sampai cutoff snapshot.",
+                    message:
+                      "Periode akan dikunci sampai cutoff snapshot. Tindakan ini memakai hitungan sesi tersimpan.",
                     details: [
                       `Cabang: ${branchId}`,
                       `Session: ${stocktakeId}`,
-                      `Item dihitung: ${stLines.filter((l) => l.counted).length}`,
+                      `Item dihitung: ${stLines.length}`,
                     ],
                     tone: "danger",
                     confirmLabel: "Finalize & kunci",
@@ -2162,10 +2324,8 @@ export function PaintApiPanel() {
         <PaintModal
           title={DOC_LABEL[selectedDoc.doc_type] || selectedDoc.doc_type}
           kicker={selectedDoc.document_id}
-          onClose={() => {
-            setModal(null);
-            setSelectedDoc(null);
-          }}
+          busy={busy}
+          onClose={closePaintModal}
           footer={
             <div className="ep-modal-foot-actions">
               {can("paint.document.edit") &&
@@ -2191,10 +2351,8 @@ export function PaintApiPanel() {
               <button
                 type="button"
                 className="ep-btn"
-                onClick={() => {
-                  setModal(null);
-                  setSelectedDoc(null);
-                }}
+                disabled={busy}
+                onClick={closePaintModal}
               >
                 Tutup
               </button>
@@ -2241,31 +2399,50 @@ export function PaintApiPanel() {
           setPendingCorrectId(null);
         }}
         onConfirm={(reason) => {
+          if (busy) return;
           const delId = pendingDeleteId;
           const corr = pendingCorrectId;
-          setConfirmOpen(false);
           if (delId) {
             void runAction("Dokumen dihapus (soft).", async () => {
               await softDeletePaintDocument(delId, {
                 reason,
                 idempotency_key: newPaintIdempotencyKey("sd"),
               });
-              setModal(null);
-              setSelectedDoc(null);
+              setConfirmOpen(false);
+              setPendingDeleteId(null);
+              setPendingCorrectId(null);
+              closePaintModal();
             });
           } else if (corr?.startsWith("finalize:")) {
             const sid = corr.slice("finalize:".length);
             void runAction("Stocktake finalized.", async () => {
-              await finalizePaintStocktake(sid, {
-                idempotency_key: newPaintIdempotencyKey("fin"),
-                counts: stLines
-                  .filter((l) => l.counted)
-                  .map((l) => ({
+              try {
+                await finalizePaintStocktake(sid, {
+                  idempotency_key: newPaintIdempotencyKey("fin"),
+                  counts: stLines.map((l) => ({
                     paint_id: l.paint_id,
                     counted_g: Number(l.counted_g),
                   })),
-              });
-              setModal(null);
+                });
+                setConfirmOpen(false);
+                setPendingDeleteId(null);
+                setPendingCorrectId(null);
+                closePaintModal();
+              } catch (err) {
+                const msg =
+                  err instanceof Error ? err.message : "Finalisasi gagal.";
+                if (/conflict|versi|version|cas/i.test(msg)) {
+                  setConfirmOpen(false);
+                  setPendingCorrectId(null);
+                  setStPreview(null);
+                  setStPreviewFingerprint(null);
+                  setStStep(2);
+                  throw new Error(
+                    `${msg} — jalankan preview ulang, lalu buat sesi baru bila perlu.`,
+                  );
+                }
+                throw err;
+              }
             });
           } else if (corr) {
             void runAction("Transaksi dikoreksi.", async () => {
@@ -2273,12 +2450,12 @@ export function PaintApiPanel() {
                 reason,
                 idempotency_key: newPaintIdempotencyKey("corr"),
               });
-              setModal(null);
-              setSelectedDoc(null);
+              setConfirmOpen(false);
+              setPendingDeleteId(null);
+              setPendingCorrectId(null);
+              closePaintModal();
             });
           }
-          setPendingDeleteId(null);
-          setPendingCorrectId(null);
         }}
       />
     </div>
@@ -2288,19 +2465,63 @@ export function PaintApiPanel() {
 function PaintModal(props: {
   title: string;
   kicker?: string;
+  busy?: boolean;
   onClose: () => void;
   children: ReactNode;
   footer: ReactNode;
 }) {
+  const dialogRef = useRef<HTMLDivElement>(null);
+  const closeRef = useRef<HTMLButtonElement>(null);
+
+  useEffect(() => {
+    const root = dialogRef.current;
+    if (!root) return;
+    const focusables = () =>
+      [
+        ...root.querySelectorAll<HTMLElement>(
+          'button:not([disabled]), [href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])',
+        ),
+      ].filter((el) => !el.hasAttribute("disabled"));
+    window.setTimeout(() => {
+      const list = focusables();
+      (list.find((el) => el !== closeRef.current) || closeRef.current)?.focus();
+    }, 0);
+
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") {
+        if (!props.busy) {
+          e.preventDefault();
+          props.onClose();
+        }
+        return;
+      }
+      if (e.key !== "Tab") return;
+      const list = focusables();
+      if (!list.length) return;
+      const first = list[0];
+      const last = list[list.length - 1];
+      if (e.shiftKey && document.activeElement === first) {
+        e.preventDefault();
+        last.focus();
+      } else if (!e.shiftKey && document.activeElement === last) {
+        e.preventDefault();
+        first.focus();
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [props.busy, props.onClose, props.title]);
+
   return (
     <div
       className="ep-modalshade ep-modalshade-center"
       onClick={(e) => {
-        if (e.target === e.currentTarget) props.onClose();
+        if (e.target === e.currentTarget && !props.busy) props.onClose();
       }}
     >
       <div
-        className="ep-modal"
+        ref={dialogRef}
+        className="ep-modal ep-paint-modal"
         role="dialog"
         aria-modal="true"
         aria-label={props.title}
@@ -2314,10 +2535,12 @@ function PaintModal(props: {
             <h2>{props.title}</h2>
           </div>
           <button
+            ref={closeRef}
             type="button"
             className="ep-x"
             onClick={props.onClose}
             aria-label="Tutup"
+            disabled={props.busy}
           >
             ×
           </button>
