@@ -1,0 +1,40 @@
+---
+description: Routes every Eternal V4 task. Read the five UI/UX skills when the task affects the interface. Skip full visual QA for backend-only work.
+alwaysApply: true
+---
+
+# Eternal V4 — Task Router
+
+STANDARD_VERSION: ETERNAL_V4_UIUX_1.0
+SOURCE_PLUGIN: eternal-cursor-workflow v0.1.24
+REPOSITORY: eternalsabloncup-star/eternal-produksi-v4
+
+This router only chooses when the standard applies.
+It does not replace the master rule or the five skills.
+
+Before implementation or review, read the master rule
+and these five skills when the task includes any of:
+
+- UI/UX, layout, or visual work.
+- Frontend implementation.
+- Responsive or CSS change.
+- Component, form, table, or modal change.
+- Frontend state or API behavior that the user sees.
+- A backend change that materially affects UI state,
+  actions, permissions, or displayed information.
+
+.cursor/rules/eternal-v4-uiux.mdc
+.cursor/skills/eternal-v4-design-system/SKILL.md
+.cursor/skills/eternal-v4-layout-system/SKILL.md
+.cursor/skills/eternal-v4-frontend-engineering/SKILL.md
+.cursor/skills/eternal-v4-visual-qa/SKILL.md
+.cursor/skills/eternal-v4-uiux-quality-gate/SKILL.md
+
+Backend-only work that does not change the API contract
+or UI behavior does not require the five skills or full
+browser visual QA.
+
+Business rules, security, RBAC, data safety, and the
+engineering release gates still apply.
+
+If a material conflict remains, HOLD and report it.
