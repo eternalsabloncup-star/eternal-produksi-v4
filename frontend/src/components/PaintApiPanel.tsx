@@ -730,96 +730,108 @@ export function PaintApiPanel() {
 
       <KpiSummary items={kpis} />
 
-      <div className="ep-paint-primary-actions" aria-label="Aksi utama">
-        {can("paint.withdraw.create") ? (
-          <button
-            type="button"
-            className="ep-btn is-primary-action"
-            onClick={() => {
-              setModal("withdraw");
-              void loadUsers("");
-              void refreshDocs();
-            }}
-          >
-            Ambil Cat
-          </button>
-        ) : null}
-        {can("paint.return.confirm") || can("paint.conversion.confirm") ? (
-          <button
-            type="button"
-            className="ep-btn is-primary-action"
-            onClick={() => {
-              setModal("return");
-              void refreshDocs();
-            }}
-          >
-            Pengembalian / Konversi
-          </button>
-        ) : null}
-        {can("paint.inbound.confirm") ? (
-          <button
-            type="button"
-            className="ep-btn"
-            onClick={() => setModal("inbound")}
-          >
-            Cat Masuk
-          </button>
-        ) : null}
-        {can("paint.waste.record") ? (
-          <button
-            type="button"
-            className="ep-btn"
-            onClick={() => {
-              setModal("waste");
-              void refreshDocs();
-            }}
-          >
-            Waste
-          </button>
-        ) : null}
-        {can("paint.stocktake.run") ? (
-          <button
-            type="button"
-            className="ep-btn"
-            onClick={() => {
-              setModal("stocktake");
-              setStStep(1);
-              setStLines(
-                stock
-                  .filter((s) => !branchId || s.branch_id === branchId)
-                  .map((s) => ({
-                    paint_id: s.paint_id,
-                    system_g: s.qty_g ?? gramsFromMg(s.qty_mg),
-                    counted_g: "",
-                    counted: false,
-                  })),
-              );
-              setStocktakeId(null);
-              setStPreview(null);
-            }}
-          >
-            Stock Opname
-          </button>
-        ) : null}
-      </div>
-
       <div
-        className="ep-settings-subtabs"
-        role="tablist"
-        aria-label="Area Manajemen Cat"
+        className="ep-paint-toolbar"
+        data-testid="paint-toolbar"
+        aria-label="Toolbar Manajemen Cat"
       >
-        {PRIMARY_TABS.map((t) => (
-          <button
-            key={t.id}
-            type="button"
-            role="tab"
-            aria-selected={tab === t.id}
-            className={`ep-settings-subtab${tab === t.id ? " is-active" : ""}`}
-            onClick={() => setTab(t.id)}
+        <div className="ep-paint-toolbar-scroll">
+          <div
+            className="ep-paint-toolbar-nav"
+            role="tablist"
+            aria-label="Area Manajemen Cat"
           >
-            {t.label}
-          </button>
-        ))}
+            {PRIMARY_TABS.map((t) => (
+              <button
+                key={t.id}
+                type="button"
+                role="tab"
+                aria-selected={tab === t.id}
+                className={`ep-settings-subtab ep-paint-toolbar-item${tab === t.id ? " is-active" : ""}`}
+                onClick={() => setTab(t.id)}
+              >
+                {t.label}
+              </button>
+            ))}
+          </div>
+          <span className="ep-paint-toolbar-sep" aria-hidden="true" />
+          <div
+            className="ep-paint-toolbar-actions"
+            aria-label="Aksi utama"
+          >
+            {can("paint.withdraw.create") ? (
+              <button
+                type="button"
+                className="ep-btn is-primary-action ep-paint-toolbar-item"
+                onClick={() => {
+                  setModal("withdraw");
+                  void loadUsers("");
+                  void refreshDocs();
+                }}
+              >
+                Ambil Cat
+              </button>
+            ) : null}
+            {can("paint.return.confirm") || can("paint.conversion.confirm") ? (
+              <button
+                type="button"
+                className="ep-btn is-primary-action ep-paint-toolbar-item"
+                title="Pengembalian / Konversi"
+                onClick={() => {
+                  setModal("return");
+                  void refreshDocs();
+                }}
+              >
+                Pengembalian/Konversi
+              </button>
+            ) : null}
+            {can("paint.inbound.confirm") ? (
+              <button
+                type="button"
+                className="ep-btn ep-paint-toolbar-item"
+                onClick={() => setModal("inbound")}
+              >
+                Cat Masuk
+              </button>
+            ) : null}
+            {can("paint.waste.record") ? (
+              <button
+                type="button"
+                className="ep-btn ep-paint-toolbar-item"
+                onClick={() => {
+                  setModal("waste");
+                  void refreshDocs();
+                }}
+              >
+                Waste
+              </button>
+            ) : null}
+            {can("paint.stocktake.run") ? (
+              <button
+                type="button"
+                className="ep-btn ep-paint-toolbar-item"
+                onClick={() => {
+                  setModal("stocktake");
+                  setStStep(1);
+                  setStLines(
+                    stock
+                      .filter((s) => !branchId || s.branch_id === branchId)
+                      .map((s) => ({
+                        paint_id: s.paint_id,
+                        system_g: s.qty_g ?? gramsFromMg(s.qty_mg),
+                        counted_g: "",
+                        counted: false,
+                      })),
+                  );
+                  setStocktakeId(null);
+                  setStPreview(null);
+                }}
+              >
+                Stock Opname
+              </button>
+            ) : null}
+          </div>
+        </div>
       </div>
 
       {error ? (

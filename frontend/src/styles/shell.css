@@ -5600,12 +5600,65 @@ td.ep-num,
   min-height: 44px;
   font-size: 16px;
 }
-.ep-paint-primary-actions {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 0.4rem;
+/* Single-row paint toolbar: nav + actions, toolbar-only horizontal scroll */
+.ep-paint-toolbar {
+  min-width: 0;
+  max-width: 100%;
 }
-.ep-paint-primary-actions .ep-btn.is-primary-action {
+.ep-paint-toolbar-scroll {
+  display: flex;
+  flex-wrap: nowrap;
+  align-items: center;
+  gap: 0.4rem;
+  min-width: 0;
+  max-width: 100%;
+  overflow-x: auto;
+  overflow-y: hidden;
+  overscroll-behavior-x: contain;
+  -webkit-overflow-scrolling: touch;
+  scrollbar-width: thin;
+  padding: 0.1rem 0 0.25rem;
+}
+.ep-paint-toolbar-nav,
+.ep-paint-toolbar-actions {
+  display: flex;
+  flex-wrap: nowrap;
+  align-items: center;
+  gap: 0.35rem;
+  flex: 0 0 auto;
+}
+.ep-paint-toolbar-sep {
+  flex: 0 0 auto;
+  align-self: stretch;
+  width: 1px;
+  min-height: 1.75rem;
+  margin: 0 0.15rem;
+  background: #c5d2ce;
+}
+.ep-paint-toolbar-item {
+  flex: 0 0 auto;
+  white-space: nowrap;
+  min-height: 36px;
+  height: 36px;
+  box-sizing: border-box;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0 0.7rem;
+  font-size: 0.8125rem;
+  line-height: 1;
+}
+.ep-paint-toolbar .ep-settings-subtab.ep-paint-toolbar-item {
+  margin: 0;
+  border-radius: 6px;
+  background: #f7faf8;
+}
+.ep-paint-toolbar .ep-settings-subtab.ep-paint-toolbar-item.is-active {
+  border-color: #2f6b52;
+  background: #e8f3ee;
+  color: #1a4d3e;
+}
+.ep-paint-toolbar .ep-btn.is-primary-action {
   background: #2a5f3a;
   color: #f4faf6;
   border-color: #2a5f3a;
