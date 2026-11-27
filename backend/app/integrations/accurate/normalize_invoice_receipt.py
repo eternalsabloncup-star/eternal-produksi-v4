@@ -104,6 +104,7 @@ def _material_invoice_fields(doc: dict[str, Any]) -> dict[str, Any]:
         "branch_id": doc.get("branch_id"),
         "document_kind": doc.get("document_kind"),
         "has_detail_expense": bool(doc.get("has_detail_expense")),
+        "detail_expense_count": doc.get("detail_expense_count"),
         "currency": doc.get("currency"),
         # Additive monetary evidence (M9.3D) — source flags, not invented.
         "taxable": doc.get("taxable"),
@@ -239,6 +240,7 @@ def normalize_sales_invoice(payload: dict[str, Any]) -> dict[str, Any]:
         "branch_id": branch_id,
         "document_kind": document_kind,
         "has_detail_expense": has_detail_expense,
+        "detail_expense_count": len(expense_rows),
         "currency": currency or None,
         "taxable": taxable,
         "cash_discount": money_to_storage(cash_discount) if cash_discount is not None else None,
