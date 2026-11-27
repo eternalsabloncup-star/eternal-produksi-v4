@@ -105,6 +105,10 @@ def _material_invoice_fields(doc: dict[str, Any]) -> dict[str, Any]:
         "document_kind": doc.get("document_kind"),
         "has_detail_expense": bool(doc.get("has_detail_expense")),
         "currency": doc.get("currency"),
+        # Additive monetary evidence (M9.3D) — source flags, not invented.
+        "taxable": doc.get("taxable"),
+        "cash_discount": doc.get("cash_discount"),
+        "tax1_amount": doc.get("tax1_amount"),
     }
 
 
@@ -135,6 +139,15 @@ def normalize_sales_invoice(payload: dict[str, Any]) -> dict[str, Any]:
         else:
             assert qty is not None
             qty_store = money_to_storage(qty)
+        # Authoritative line monetary value = Accurate totalPrice (M9.3D).
+        # Do not invent from qty×unitPrice when totalPrice absent/invalid.
+        total_price, total_price_err = parse_money(raw.get("totalPrice"))
+        unit_price, _unit_err = parse_money(raw.get("unitPrice"))
+        item_cash_discount, _disc_err = parse_money(raw.get("itemCashDiscount"))
+        if total_price_err and raw.get("totalPrice") is not None:
+            review_reasons.append(
+                f"line {as_text(raw.get('id'))} totalPrice: {total_price_err}"
+            )
         lines.append(
             {
                 "accurate_line_id": as_text(raw.get("id")),
@@ -142,6 +155,15 @@ def normalize_sales_invoice(payload: dict[str, Any]) -> dict[str, Any]:
                 "sales_order_detail_id": as_text(raw.get("salesOrderDetailId")),
                 "item_id": as_text(raw.get("itemId")),
                 "qty": qty_store,
+                "unit_price": money_to_storage(unit_price) if unit_price is not None else None,
+                "item_cash_discount": (
+                    money_to_storage(item_cash_discount)
+                    if item_cash_discount is not None
+                    else None
+                ),
+                "total_price": (
+                    money_to_storage(total_price) if total_price is not None else None
+                ),
             }
         )
 
@@ -188,6 +210,19 @@ def normalize_sales_invoice(payload: dict[str, Any]) -> dict[str, Any]:
         item_line_count=len(lines),
     )
 
+    taxable_raw = payload.get("taxable")
+    taxable: bool | None
+    if isinstance(taxable_raw, bool):
+        taxable = taxable_raw
+    elif taxable_raw is None:
+        taxable = None
+    else:
+        parsed_tax, tax_err = parse_accurate_bool(taxable_raw)
+        taxable = parsed_tax if tax_err is None else None
+
+    cash_discount, _cd_err = parse_money(payload.get("cashDiscount"))
+    tax1_amount, _t1_err = parse_money(payload.get("tax1Amount"))
+
     return {
         "accurate_invoice_id": accurate_id,
         "invoice_no": invoice_no,
@@ -205,6 +240,9 @@ def normalize_sales_invoice(payload: dict[str, Any]) -> dict[str, Any]:
         "document_kind": document_kind,
         "has_detail_expense": has_detail_expense,
         "currency": currency or None,
+        "taxable": taxable,
+        "cash_discount": money_to_storage(cash_discount) if cash_discount is not None else None,
+        "tax1_amount": money_to_storage(tax1_amount) if tax1_amount is not None else None,
     }
 
 

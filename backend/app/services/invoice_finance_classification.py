@@ -218,11 +218,53 @@ def classify_invoice_finance(doc: dict[str, Any] | None) -> dict[str, Any]:
     }
 
 
-def finance_invoice_view(doc: dict[str, Any]) -> dict[str, Any]:
-    """Additive finance read-model row — does not replace invoice source of truth."""
+def finance_invoice_view(
+    doc: dict[str, Any],
+    *,
+    db: Any | None = None,
+) -> dict[str, Any]:
+    """Additive finance read-model row — does not replace invoice source of truth.
+
+    When ``db`` is provided, Multi-SO parent SO snapshots are loaded for
+    fail-closed verification (M9.3D). Allocation never opens Payment Gate.
+    """
     classified = classify_invoice_finance(doc)
+    from app.services.invoice_multi_so_allocation import (
+        allocate_multi_so_invoice,
+        load_parent_so_docs,
+    )
+
+    parent_docs = None
+    if db is not None and classified.get("po_association") == PO_ASSOCIATION_MULTI:
+        so_ids = [
+            as_text(x).strip()
+            for x in (doc.get("accurate_po_ids") or [])
+            if as_text(x).strip()
+        ]
+        # Also include line SO ids for completeness.
+        for ln in doc.get("lines") or []:
+            if isinstance(ln, dict):
+                sid = as_text(ln.get("sales_order_id")).strip()
+                if sid and sid not in so_ids:
+                    so_ids.append(sid)
+        parent_docs = load_parent_so_docs(db, so_ids)
+
+    allocation = allocate_multi_so_invoice(doc, parent_so_docs=parent_docs)
+    # Hard isolation: allocation never grants payment eligibility.
+    payment_gate_eligible = False
+    if classified.get("po_association") == PO_ASSOCIATION_MULTI:
+        payment_gate_eligible = False
+    else:
+        payment_gate_eligible = bool(classified.get("payment_gate_eligible"))
+
     return {
         **classified,
+        "payment_gate_eligible": payment_gate_eligible,
+        "payment_gate_label": (
+            "Memenuhi Prasyarat Mapping"
+            if payment_gate_eligible
+            else "Tidak Berlaku"
+        ),
         "source_status": as_text(doc.get("status")) or None,
         "accurate_po_ids": [
             as_text(x).strip()
@@ -230,4 +272,13 @@ def finance_invoice_view(doc: dict[str, Any]) -> dict[str, Any]:
             if as_text(x).strip()
         ],
         "primary_accurate_po_id": as_text(doc.get("primary_accurate_po_id")).strip() or "",
+        "allocation_status": allocation.get("allocation_status"),
+        "allocation_basis": allocation.get("allocation_basis"),
+        "verified_parent_so_ids": allocation.get("verified_parent_so_ids") or [],
+        "allocations_by_so": allocation.get("allocations_by_so") or [],
+        "allocated_total": allocation.get("allocated_total"),
+        "unallocated_total": allocation.get("unallocated_total"),
+        "reconciliation_difference": allocation.get("reconciliation_difference"),
+        "payment_allocation": False,
+        "allocation_reasons": allocation.get("reasons") or [],
     }

@@ -210,7 +210,7 @@ def list_finance_invoices(
     )
     items: list[dict[str, Any]] = []
     for doc in rows:
-        view = finance_invoice_view(doc)
+        view = finance_invoice_view(doc, db=db)
         if finance_class and view.get("finance_class") != finance_class:
             continue
         if branch_scope:
@@ -226,6 +226,7 @@ def list_finance_invoices(
         "source": "accurate_sales_invoices",
         "derived": True,
         "payment_gate_unchanged": True,
+        "payment_allocation": False,
     }
 
 
@@ -257,4 +258,4 @@ def get_finance_invoice(
                 status.HTTP_404_NOT_FOUND, "Faktur tidak ditemukan"
             ) from exc
 
-    return finance_invoice_view(doc)
+    return finance_invoice_view(doc, db=db)
