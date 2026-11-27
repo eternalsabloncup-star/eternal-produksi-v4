@@ -5562,3 +5562,101 @@ td.ep-num,
     grid-template-columns: minmax(0, 1fr);
   }
 }
+
+/* —— Manajemen Cat workspace —— */
+.ep-paint-workspace {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+  min-width: 0;
+}
+.ep-paint-header {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 0.75rem;
+}
+.ep-paint-header h1 {
+  margin: 0;
+  font-size: 1.25rem;
+  font-weight: 700;
+  letter-spacing: -0.02em;
+}
+.ep-paint-header .ep-sub {
+  margin: 0.15rem 0 0;
+  color: #5a6a68;
+  font-size: 0.875rem;
+}
+.ep-paint-header-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem;
+}
+.ep-paint-header-actions select,
+.ep-paint-header-actions input,
+.ep-paint-header-actions button {
+  min-height: 44px;
+  font-size: 16px;
+}
+.ep-paint-primary-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+}
+.ep-paint-primary-actions .ep-btn.is-primary-action {
+  background: #2a5f3a;
+  color: #f4faf6;
+  border-color: #2a5f3a;
+}
+.ep-paint-qty {
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+  white-space: nowrap;
+}
+.ep-paint-mass-box {
+  border: 1px solid #d5e0dc;
+  border-radius: 8px;
+  padding: 0.65rem 0.75rem;
+  background: #f7faf8;
+  font-size: 0.875rem;
+}
+.ep-paint-mass-box.is-warn {
+  border-color: #e2b56a;
+  background: #fff8eb;
+}
+.ep-paint-mass-box.is-ok {
+  border-color: #9dceb0;
+  background: #eef8f1;
+}
+.ep-paint-wizard-steps {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+  margin-bottom: 0.75rem;
+}
+.ep-paint-wizard-steps .ep-settings-subtab {
+  pointer-events: none;
+}
+.ep-paint-item-rows {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+.ep-paint-item-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1.6fr) minmax(5.5rem, 0.7fr) auto;
+  gap: 0.4rem;
+  align-items: end;
+}
+@media (max-width: 640px) {
+  .ep-paint-item-row {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .ep-paint-header-actions select,
+  .ep-paint-header-actions input,
+  .ep-paint-header-actions button {
+    width: 100%;
+  }
+}

@@ -331,14 +331,60 @@ def post_correct(
 def get_documents(
     branch_id: str | None = None,
     doc_type: str | None = None,
-    limit: int = Query(default=100, ge=1, le=500),
+    limit: int = Query(default=50, ge=1, le=200),
+    offset: int = Query(default=0, ge=0),
+    q: str | None = None,
     auth: AuthContext = Depends(require_session),
 ) -> dict[str, Any]:
     try:
-        items = svc.list_documents(
-            get_db(), auth.user, branch_id=branch_id, doc_type=doc_type, limit=limit
+        return svc.list_documents(
+            get_db(),
+            auth.user,
+            branch_id=branch_id,
+            doc_type=doc_type,
+            limit=limit,
+            offset=offset,
+            q=q,
         )
-        return {"items": items, "total": len(items)}
+    except Exception as exc:  # noqa: BLE001
+        raise _handle(exc) from exc
+
+
+@router.get("/documents/{document_id}/outstanding")
+def get_withdrawal_outstanding(
+    document_id: str,
+    auth: AuthContext = Depends(require_session),
+) -> dict[str, Any]:
+    try:
+        return svc.withdrawal_outstanding(
+            get_db(), auth.user, withdrawal_id=document_id
+        )
+    except Exception as exc:  # noqa: BLE001
+        raise _handle(exc) from exc
+
+
+@router.get("/summary")
+def get_paint_summary(
+    branch_id: str | None = None,
+    auth: AuthContext = Depends(require_session),
+) -> dict[str, Any]:
+    try:
+        return svc.paint_kpi_summary(get_db(), auth.user, branch_id=branch_id)
+    except Exception as exc:  # noqa: BLE001
+        raise _handle(exc) from exc
+
+
+@router.get("/users")
+def get_paint_users(
+    branch_id: str | None = None,
+    q: str | None = None,
+    limit: int = Query(default=50, ge=1, le=100),
+    auth: AuthContext = Depends(require_session),
+) -> dict[str, Any]:
+    try:
+        return svc.list_paint_users(
+            get_db(), auth.user, branch_id=branch_id, q=q, limit=limit
+        )
     except Exception as exc:  # noqa: BLE001
         raise _handle(exc) from exc
 
